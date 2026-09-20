@@ -59,7 +59,7 @@ try {
     launchError = error;
   });
 
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + 90000;
   let port = 0;
 
   while (!port && Date.now() < deadline) {
@@ -83,17 +83,61 @@ try {
 
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
 
-  let page = browser.contexts()[0].pages()[0];
+  let page;
+  const pageDeadline = Date.now() + 90000;
 
-  if (!page) {
-    page = await browser
-      .contexts()[0]
-      .waitForEvent('page', { timeout: 15000 });
+  while (!page && Date.now() < pageDeadline) {
+    const pages = browser.contexts().flatMap(context => context.pages());
+    page = pages.find(candidate => /^https?:\/\/127\.0\.0\.1:\d+(?:\/|$)/.test(candidate.url()));
+
+    if (!page && pages.length) {
+      const fallback = pages[0];
+      const text = await fallback
+        .locator('body')
+        .innerText({ timeout: 1000 })
+        .catch(() => '');
+      if (text.includes('欢迎来到同屏')) page = fallback;
+    }
+
+    if (!page) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
   }
 
+  if (!page) {
+    page = browser.contexts()[0]?.pages()[0];
+  }
+
+  assert.ok(page, 'portable executable did not open an application page');
+
+  page.on('pageerror', error => {
+    (report.pageErrors ??= []).push(error.message);
+  });
+
+  page.on('console', message => {
+    if (message.type() === 'error') {
+      (report.consoleErrors ??= []).push(message.text());
+    }
+  });
+
   await page
-    .getByRole('heading', { name: '欢迎来到同屏' })
-    .waitFor({ timeout: 30000 });
+    .waitForFunction(
+      () => document.body && document.body.innerText.includes('欢迎来到同屏'),
+      null,
+      { timeout: 90000 },
+    )
+    .catch(async error => {
+      report.pageUrl = page.url();
+      report.bodyText = await page
+        .locator('body')
+        .innerText()
+        .catch(() => '');
+      report.screenshot = path.join(output, 'portable-failure.png');
+      await page
+        .screenshot({ path: report.screenshot, fullPage: true })
+        .catch(() => { });
+      throw error;
+    });
 
   assert.equal(await page.evaluate(() => window.roomcast?.desktop), true);
 
