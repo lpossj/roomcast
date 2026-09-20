@@ -28,7 +28,7 @@
     "dist": "npm run build && electron-builder --win portable",
     "dist:zip": "npm run build && electron-builder --win zip",
     "dist:nsis": "npm run build && electron-builder --win nsis",
-    "release:build": "npm run build && electron-builder --win portable && electron-builder --win zip",
+    "release:build": "npm run build && electron-builder --win portable --publish never && electron-builder --win zip --publish never",
     "check:network": "node scripts/check-network-architecture.mjs",
     "prepare:obs": "node scripts/prepare-embedded-obs.mjs",
     "prepare:obs:release": "node scripts/prepare-embedded-obs.mjs --release",
