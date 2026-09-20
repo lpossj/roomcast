@@ -6,7 +6,7 @@ Roomcast 只面向合法、知情同意的屏幕共享与聊天。使用前请�
 
 > 当前版本是公开测试版（Beta），仅面向 Windows 10/11 x64。观看者和房主都需要安装 Roomcast。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
 
-[下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.2-beta.1.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues) · [安全报告](SECURITY.md)
+[下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.2-beta.1.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
 
 Roomcast 0.14.2 Beta 的媒体架构是：
 
