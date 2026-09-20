@@ -225,6 +225,10 @@ function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
     const requestedType = requested.sourceType === 'window' ? 'window' : 'monitor';
     const preferredSourceId = String(requested.sourceId || '');
     setLoading(true); setAudioLoading(false); setError(''); setAudioError(''); setBackendNotice('');
+    // IDs belong to the backend that enumerated them. A failed refresh must
+    // never leave native sources selectable as OBS sources (or vice versa).
+    setSources(current => ({ ...current, monitors: [], windows: [] }));
+    setSettings(current => ({ ...current, sourceId: '' }));
     const applySources = (value, activeBackend) => {
       const items = requestedType === 'monitor' ? value.monitors : value.windows;
       setSources(current => ({ ...value, applications: current.applications || [] }));

@@ -6,6 +6,7 @@ node_modules/
 dist/
 dist-*/
 release/
+release-*/
 out/
 coverage/
 .vite/

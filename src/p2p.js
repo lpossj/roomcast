@@ -48,6 +48,14 @@ const allowed = new Set([
 const beforeJoin = new Set(['room:join']);
 const INVITE_SECRET = /^[A-Za-z0-9_-]{43}$/;
 
+// The host does not start the authentication clock until the data channel is
+// actually open (see accept()). The viewer must therefore wait for
+// PEER_AUTH_ICE_TIMEOUT_MS + PEER_AUTH_TIMEOUT_MS, otherwise a first join whose
+// ICE setup is slow fails on the viewer side even though the host is still
+// waiting and able to authenticate.
+const PEER_AUTH_ICE_TIMEOUT_MS = 25_000;
+const PEER_AUTH_TOTAL_TIMEOUT_MS = PEER_AUTH_ICE_TIMEOUT_MS + PEER_AUTH_TIMEOUT_MS;
+
 const defaultScreenSettings = {
   width: 1920,
   height: 1080,
@@ -961,7 +969,7 @@ export class P2PRoom {
     try {
       await withTimeout(
         hostReady,
-        25_000,
+        PEER_AUTH_TOTAL_TIMEOUT_MS,
         '无法与房主建立 P2P 连接。',
       );
     } catch (error) {
@@ -1719,15 +1727,7 @@ export class P2PRoom {
 
     let requests = 0;
 
-    const timeout =
-      setTimeout(
-        () => {
-          if (!authenticated) {
-            connection.close();
-          }
-        },
-        PEER_AUTH_TIMEOUT_MS,
-      );
+    let timeout;
 
     const cleanup = () => {
       if (closed) return;
@@ -1766,6 +1766,30 @@ export class P2PRoom {
     );
 
     try {
+      // ICE/data-channel setup has its own deadline. Authentication starts
+      // only after a challenge can actually be delivered to the viewer.
+      if (!connection.open) {
+        await new Promise((resolve, reject) => {
+          const finish = error => {
+            clearTimeout(timeout);
+            connection.off('open', opened);
+            connection.off('close', ended);
+            connection.off('error', ended);
+            if (error) reject(error); else resolve();
+          };
+          const opened = () => finish();
+          const ended = () => finish(new Error('P2P 连接已关闭。'));
+          connection.once('open', opened);
+          connection.once('close', ended);
+          connection.once('error', ended);
+          timeout = setTimeout(() => finish(new Error('P2P 连接建立超时。')), PEER_AUTH_ICE_TIMEOUT_MS);
+        });
+      }
+      if (closed || !connection.open) return;
+      timeout = setTimeout(() => {
+        if (!authenticated) connection.close();
+      }, PEER_AUTH_TIMEOUT_MS);
+
       const challenge = {
         protocol:
           PEER_AUTH_PROTOCOL,
@@ -1876,6 +1900,7 @@ export class P2PRoom {
         );
       }
 
+      if (closed || !connection.open) return;
       authenticated = true;
 
       clearTimeout(timeout);
@@ -2335,23 +2360,12 @@ export class P2PRoom {
       return;
     }
 
-    if (
-      !this.room?.streams
-        ?.some(
-          stream => (
-            stream.memberId
-            === this.id
-          ),
-        )
-      || !this.room.members
-        .some(
-          member => (
-            member.id === from
-          ),
-        )
-    ) {
-      return;
-    }
+    // The local room server already validates that the sender is an
+    // authenticated member and that this host currently has a live stream.
+    // Do not gate screen signaling on the cached room state here: the first
+    // offer can arrive before that cache updates, which silently drops the
+    // request and makes the first viewer connection attempt time out.
+
 
     if (
       kind === 'vdo-request'
@@ -2413,13 +2427,7 @@ export class P2PRoom {
 
         if (
           !this.connected
-          || !this.room?.streams
-            ?.some(
-              stream => (
-                stream.memberId
-                === this.id
-              ),
-            )
+          || !this.screenStream?.active
         ) {
           this.closeLocalScreen(
             from,

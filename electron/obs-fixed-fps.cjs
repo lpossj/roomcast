@@ -453,7 +453,9 @@ class ObsWebSocketClient {
             this.pending.delete(requestId);
             const status = packet.d?.requestStatus;
             if (!status?.result) {
-              pending.reject(new Error(`OBS 请求失败：${pending.type}（${status?.code ?? 'unknown'}）${status?.comment ? ` ${status.comment}` : ''}`));
+              const error = new Error(`OBS 请求失败：${pending.type}（${status?.code ?? 'unknown'}）${status?.comment ? ` ${status.comment}` : ''}`);
+              error.code = status?.code;
+              pending.reject(error);
               return;
             }
             pending.resolve(packet.d?.responseData || {});
@@ -553,6 +555,12 @@ class ObsFixedFpsEngine {
     this.password = '';
     this.version = '';
     this.probes = new Set();
+    // Names OBS already accepted RemoveInput for. obs_source_remove() only
+    // marks the source removed; the OBS object (and therefore GetInputList)
+    // keeps reporting it until the destruction task thread actually frees it.
+    // Those names must never be re-added as "still alive" probes, otherwise
+    // cleanup can never confirm success and sources() fails intermittently.
+    this.removedOwnedInputs = new Set();
     this.capture = null;
     this.closing = false;
     this.onUnexpectedExit = typeof onUnexpectedExit === 'function' ? onUnexpectedExit : null;
@@ -569,7 +577,8 @@ class ObsFixedFpsEngine {
     const workMarkerPath = path.join(this.obsDir, WORK_MARKER);
     let workMarker;
     try { workMarker = JSON.parse(await fs.readFile(workMarkerPath, 'utf8')); } catch { }
-    const ready = (await exists(this.exe)) && workMarker?.embeddedVersion === EMBEDDED_OBS_VERSION;
+    const ready = workMarker?.embeddedVersion === EMBEDDED_OBS_VERSION
+      && (await Promise.all(REQUIRED_EMBEDDED_OBS_PATHS.map(relative => exists(path.join(this.obsDir, relative))))).every(Boolean);
     if (ready) {
       return {
         prepared: true,
@@ -581,26 +590,34 @@ class ObsFixedFpsEngine {
       };
     }
 
-    if (await exists(this.obsDir)) {
-      if (!(await exists(workMarkerPath))) {
-        throw new Error(`拒绝覆盖未识别的 OBS 工作目录：${this.obsDir}`);
+    const workExists = await exists(this.obsDir);
+    if (workExists && !(await exists(workMarkerPath))) {
+      throw new Error(`拒绝覆盖未识别的 OBS 工作目录：${this.obsDir}`);
+    }
+    // Never publish an incomplete working copy. Interrupted staging directories
+    // cannot poison the next attempt, and the prior managed copy stays intact
+    // until all replacement files have been copied successfully.
+    await fs.mkdir(path.dirname(this.obsDir), { recursive: true });
+    const stagingDir = await fs.mkdtemp(`${this.obsDir}.prepare-`);
+    try {
+      for (const folder of ['bin', 'data', 'obs-plugins']) {
+        const from = path.join(this.bundleDir, folder);
+        if (!(await exists(from))) throw new Error(`Roomcast 内置 OBS 不完整：缺少 ${folder}。`);
+        await fs.cp(from, path.join(stagingDir, folder), { recursive: true, force: true });
       }
-      await fs.rm(this.obsDir, { recursive: true, force: true });
+      await fs.writeFile(path.join(stagingDir, 'portable_mode.txt'), '');
+      await writeJson(path.join(stagingDir, WORK_MARKER), {
+        schema: 2,
+        embeddedVersion: EMBEDDED_OBS_VERSION,
+        bundleBinarySha256: bundleMarker.binarySha256 || null,
+        preparedAt: new Date().toISOString(),
+        purpose: 'Roomcast isolated fixed-FPS capture backend',
+      });
+      if (workExists) await fs.rm(this.obsDir, { recursive: true, force: true });
+      await fs.rename(stagingDir, this.obsDir);
+    } finally {
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     }
-    await fs.mkdir(this.obsDir, { recursive: true });
-    for (const folder of ['bin', 'data', 'obs-plugins']) {
-      const from = path.join(this.bundleDir, folder);
-      if (!(await exists(from))) throw new Error(`Roomcast 内置 OBS 不完整：缺少 ${folder}。`);
-      await fs.cp(from, path.join(this.obsDir, folder), { recursive: true, force: true });
-    }
-    await fs.writeFile(path.join(this.obsDir, 'portable_mode.txt'), '');
-    await writeJson(workMarkerPath, {
-      schema: 2,
-      embeddedVersion: EMBEDDED_OBS_VERSION,
-      bundleBinarySha256: bundleMarker.binarySha256 || null,
-      preparedAt: new Date().toISOString(),
-      purpose: 'Roomcast isolated fixed-FPS capture backend',
-    });
     return {
       prepared: true,
       obsDir: this.obsDir,
@@ -763,6 +780,7 @@ class ObsFixedFpsEngine {
           'StartVirtualCam',
           'StopVirtualCam',
           'GetSceneItemId',
+          'RemoveSceneItem',
           'SetSceneItemTransform',
           'GetInputSettings',
           'GetInputList',
@@ -823,7 +841,26 @@ class ObsFixedFpsEngine {
     const response = await this.client.request('GetInputList');
     return (response.inputs || [])
       .map(item => String(item?.inputName || ''))
-      .filter(name => name.startsWith(PROBE_PREFIX));
+      .filter(name => name.startsWith(PROBE_PREFIX) && !this.removedOwnedInputs.has(name));
+  }
+
+  async removeOwnedInput(inputName) {
+    // RemoveInput marks the source removed, but scene references can survive
+    // until a render tick. A minimized idle OBS may not render that scene.
+    // Detach our scene item explicitly before removing/reusing the input.
+    const item = await this.client.request('GetSceneItemId', {
+      sceneName: SCENE, sourceName: inputName,
+    }).catch(() => null);
+    if (Number.isInteger(item?.sceneItemId)) {
+      await this.client.request('RemoveSceneItem', { sceneName: SCENE, sceneItemId: item.sceneItemId });
+    }
+    await this.client.request('RemoveInput', { inputName }).catch(error => {
+      // Detaching the last scene reference may already destroy the input.
+      if (error.code !== 600) throw error;
+    });
+    // Only reachable when RemoveInput succeeded (or reported 600 = already
+    // gone). Record it so late enumeration cannot resurrect it as a failure.
+    this.removedOwnedInputs.add(inputName);
   }
 
   async cleanupProbeInputs({ timeoutMs = 2500, pollMs = 100, settleMs = 250, delayFn = delay } = {}) {
@@ -846,7 +883,7 @@ class ObsFixedFpsEngine {
 
       for (const inputName of candidates) {
         try {
-          await this.client.request('RemoveInput', { inputName });
+          await this.removeOwnedInput(inputName);
           removed.add(inputName);
           this.probes.delete(inputName);
         } catch {
@@ -907,7 +944,7 @@ class ObsFixedFpsEngine {
             .map(item => ({ id: String(item.itemValue), name: String(item.itemName || item.itemValue) }));
         } finally {
           try {
-            await this.client.request('RemoveInput', { inputName });
+            await this.removeOwnedInput(inputName);
             this.probes.delete(inputName);
           } catch {
             // Do not drop tracking on failure. cleanupProbeInputs()/close()
@@ -918,13 +955,11 @@ class ObsFixedFpsEngine {
       }
     } finally {
       // Enumeration data is already valid at this point. OBS/WGC can
-      // occasionally acknowledge RemoveInput late during the first source scan.
-      // Do not discard a valid source list merely because cleanup confirmation
-      // missed this short foreground window. Keep every unresolved probe tracked:
-      // the next sources()/selectSource() call performs a strict pre-clean and
-      // close() retries cleanup before the managed OBS worker is terminated.
-      const cleanup = await this.cleanupProbeInputs({ timeoutMs: 1200, settleMs: 150 });
-      for (const inputName of cleanup.remaining) this.probes.add(inputName);
+      // occasionally acknowledge RemoveInput late during the first source scan,
+      // so do not discard a valid source list for a short foreground cleanup.
+      // cleanupProbeInputs() keeps anything it could not remove tracked, and
+      // the next sources()/selectSource() call performs a strict pre-clean.
+      await this.cleanupProbeInputs({ timeoutMs: 1200, settleMs: 150 });
     }
     return result;
   }
@@ -944,7 +979,7 @@ class ObsFixedFpsEngine {
     const virtualCam = await this.client.request('GetVirtualCamStatus').catch(() => ({ outputActive: false }));
     if (virtualCam.outputActive) await this.client.request('StopVirtualCam');
 
-    await this.client.request('RemoveInput', { inputName: CAPTURE_INPUT }).catch(() => {});
+    await this.removeOwnedInput(CAPTURE_INPUT).catch(() => {});
     const descriptor = normalizedType === 'monitor' ? VIDEO_PROBES.monitors : VIDEO_PROBES.windows;
     const inputSettings = normalizedType === 'monitor'
       ? { monitor_id: sourceId, capture_cursor: cursor === true }
@@ -980,7 +1015,7 @@ class ObsFixedFpsEngine {
     const actual = await this.client.request('GetInputSettings', { inputName: CAPTURE_INPUT });
     const actualId = String(actual.inputSettings?.[descriptor.propertyName] || '');
     if (actualId !== sourceId) {
-      await this.client.request('RemoveInput', { inputName: CAPTURE_INPUT }).catch(() => {});
+      await this.removeOwnedInput(CAPTURE_INPUT).catch(() => {});
       throw new Error('OBS 没有接受所选采集源。');
     }
 
@@ -1086,7 +1121,7 @@ class ObsFixedFpsEngine {
       return { ok: true };
     }
     await this.stopVirtualCamera().catch(() => {});
-    await this.client.request('RemoveInput', { inputName: CAPTURE_INPUT }).catch(() => {});
+    await this.removeOwnedInput(CAPTURE_INPUT).catch(() => {});
     this.capture = null;
     return { ok: true };
   }
@@ -1134,7 +1169,7 @@ class ObsFixedFpsEngine {
         // source through the supported websocket API. This gives capture worker
         // threads time to unwind before the process is terminated.
         await this.stopVirtualCamera().catch(() => {});
-        await this.client.request('RemoveInput', { inputName: CAPTURE_INPUT }).catch(() => {});
+        await this.removeOwnedInput(CAPTURE_INPUT).catch(() => {});
         this.capture = null;
         probeCleanup = await this.cleanupProbeInputs({ timeoutMs: 3000, pollMs: 100, settleMs: 500, delayFn });
 

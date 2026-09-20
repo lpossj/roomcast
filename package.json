@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.2-beta.1",
+  "version": "0.14.2-beta.2",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -162,6 +162,7 @@
       "icon": "build-assets/roomcast-icon.ico"
     },
     "portable": {
+      "unpackDirName": true,
       "artifactName": "Roomcast-${version}-Windows.exe"
     },
     "nsis": {

@@ -97,6 +97,15 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium
 
+      - name: Verify packaged OBS runtime
+        run: npm run check:obs-package
+
+      - name: Verify portable relaunch preserves runtime
+        run: node scripts/check-portable-lifetime.cjs "release/Roomcast-${{ steps.version.outputs.version }}-Windows.exe"
+
+      - name: Verify capture backend switching
+        run: node scripts/check-capture-backend-switch.cjs
+
       - name: Verify packaged release
         run: npm run verify:release
 
