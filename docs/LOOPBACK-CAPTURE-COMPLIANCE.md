@@ -58,7 +58,7 @@ npm run fetch:runtime
 
 The addon has no verified upstream version/revision in this snapshot. Identify this
 prebuilt artifact by its SHA-256, not by an invented upstream version. Obtain the
-matching Roomcast 0.14.1 Windows ZIP from the GitHub/Gitee Release page (the same
+matching Roomcast 0.14.2-beta.1 Windows ZIP from the GitHub/Gitee Release page (the same
 release as this source), extract it locally, and copy these files:
 
 - ZIP: resources/runtime/loopback-capture/loopback_capture_addon.node

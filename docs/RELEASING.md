@@ -5,7 +5,7 @@
 ## 版本定位
 
 - 0.x 版本是公开测试版，允许在 minor 版本中调整行为，但不承诺完整跨版本兼容。
-- 每次发布一个 tag：vMAJOR.MINOR.PATCH，例如 v0.14.1。
+- 每次发布一个 tag：vMAJOR.MINOR.PATCH，例如 v0.14.2-beta.1。
 - GitHub Releases 是主发布渠道；Gitee 可以作为镜像，但必须使用同一份构建产物和 SHA256。
 - Beta 发布使用 GitHub 的 prerelease 标记，不宣称正式版或稳定版。
 
@@ -35,7 +35,7 @@ npm run fetch:runtime
 
 仓库不包含第三方预编译的 loopback_capture_addon.node。首次发布前需要：
 
-1. 在已有运行环境中执行 npm run package:runtime，生成 release/Roomcast-0.14.1-loopback-capture.zip。
+1. 在已有运行环境中执行 npm run package:runtime，生成 release/Roomcast-0.14.2-beta.1-loopback-capture.zip。
 2. 新建一个已发布的 runtime 资产 Release（例如 tag 为 runtime-2026.09，标题为 Roomcast Runtime Assets），把这个 ZIP 上传为公开资产。不要只放在 draft release，否则 CI 无法匿名下载。
 3. 在 GitHub 仓库 Variables 中设置 ROOMCAST_LOOPBACK_ARCHIVE_URL 为该 runtime 资产的稳定下载地址。
 4. 后续 CI 发布和源码构建都通过该地址下载并校验 SHA256。
@@ -62,7 +62,7 @@ npm run verify:release
 - release/SHA256.txt
 - runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz
 
-发布前应在干净 Windows 10/11 x64 机器上完成 docs/RELEASE_CHECKLIST-0.14.1.md 中的验收项。
+发布前应在干净 Windows 10/11 x64 机器上完成 docs/RELEASE_CHECKLIST-0.14.2-beta.1.md 中的验收项。
 
 ## GitHub Actions
 
@@ -100,9 +100,9 @@ Beta 发布说明应包含：
 
 ```powershell
 git add -A
-git commit -m "Release Roomcast 0.14.1 Beta"
-git tag v0.14.1
-git push origin main v0.14.1
+git commit -m "Release Roomcast 0.14.2-beta.1 Beta"
+git tag v0.14.2-beta.1
+git push origin main v0.14.2-beta.1
 ```
 
 `npm run package:source` 会检查工作区是否干净，避免把未提交内容错误地排除在源码包之外。

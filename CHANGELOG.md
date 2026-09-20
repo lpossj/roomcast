@@ -2,6 +2,10 @@
 
 Roomcast 使用 GitHub Releases 作为主发布记录。本文件保留版本索引，详细内容见 docs/RELEASE_NOTES-<version>.md。
 
+## 0.14.2-beta.1
+
+- 修正发布版本标识；原 v0.14.1 tag 指向旧提交，已为本次 Beta 使用新版本号。
+
 ## 0.14.1 Beta
 
 - 公开测试版基础发布。

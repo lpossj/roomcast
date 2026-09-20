@@ -17,7 +17,7 @@
 - 本机服务监听 127.0.0.1。
 - 退出后无 OBS / Electron / Roomcast 残留。
 
-详细检查表见 docs/RELEASE_CHECKLIST-0.14.1.md。
+详细检查表见 docs/RELEASE_CHECKLIST-0.14.2-beta.1.md。
 
 ## 尚未充分验证
 

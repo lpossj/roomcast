@@ -5,7 +5,7 @@
 ## 版本号
 
 - package.json 是应用版本号的唯一来源。
-- Git tag 使用 vMAJOR.MINOR.PATCH 格式，例如 v0.14.1。
+- Git tag 使用 vMAJOR.MINOR.PATCH 格式，例如 v0.14.2-beta.1。
 - 发布产物文件名包含版本号。
 - 0.x 系列不承诺完整兼容性；破坏性变更在 minor 版本发布，并在 Release notes 中说明。
 - 1.0 之后再声明稳定的公开兼容基线。

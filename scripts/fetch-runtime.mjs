@@ -25,8 +25,9 @@ export const LOOPBACK_FILES = Object.freeze({
 });
 
 export const LOOPBACK_DIR = path.join(rootDir, 'runtime', 'loopback-capture');
+// 固定指向已发布的 runtime 资产，避免主版本 tag 和运行时组件版本绑定。
 export const DEFAULT_LOOPBACK_ARCHIVE_URL =
-  `https://github.com/lpossj/roomcast/releases/download/v${packageInfo.version}/Roomcast-${packageInfo.version}-loopback-capture.zip`;
+  'https://github.com/lpossj/roomcast/releases/download/runtime-2026.09/Roomcast-0.14.2-beta.1-loopback-capture.zip';
 
 function sha256(filePath) {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex');

@@ -121,14 +121,14 @@ npm.cmd run dist:obs-verified
 ## 7. 验证签名
 
 ```powershell
-Get-AuthenticodeSignature .\release\Roomcast-0.14.1-Windows.exe |
+Get-AuthenticodeSignature .\release\Roomcast-0.14.2-beta.1-Windows.exe |
   Format-List Status, StatusMessage, SignerCertificate
 ```
 
 也可以使用：
 
 ```powershell
-.\scripts\Check-RoomcastSignature.ps1 -Version 0.14.1
+.\scripts\Check-RoomcastSignature.ps1 -Version 0.14.2-beta.1
 ```
 
 正常正式签名应为：
@@ -148,7 +148,7 @@ Invoke-TrustedSigning `
   -Endpoint "https://<region>.codesigning.azure.net/" `
   -CodeSigningAccountName "<account-name>" `
   -CertificateProfileName "<profile-name>" `
-  -Files ".\release\Roomcast-0.14.1-Windows.exe" `
+  -Files ".\release\Roomcast-0.14.2-beta.1-Windows.exe" `
   -FileDigest SHA256 `
   -TimestampRfc3161 "http://timestamp.acs.microsoft.com" `
   -TimestampDigest SHA256
@@ -165,7 +165,7 @@ Invoke-TrustedSigning `
   /td SHA256 `
   /dlib "$env:ProgramFiles\Microsoft Trusted Signing Client Tools\Azure.CodeSigning.Dlib.dll" `
   /dmdf ".\scripts\azure-trusted-signing.example.json" `
-  ".\release\Roomcast-0.14.1-Windows.exe"
+  ".\release\Roomcast-0.14.2-beta.1-Windows.exe"
 ```
 
 `azure-trusted-signing.example.json` 需要复制成正式文件并填入真实值，不要直接提交真实关联信息。

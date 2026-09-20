@@ -23,15 +23,15 @@
 1. 打包出：
 
 ```text
-release\Roomcast-0.14.1-Windows.exe
-release\Roomcast-0.14.1-Windows.zip
+release\Roomcast-0.14.2-beta.1-Windows.exe
+release\Roomcast-0.14.2-beta.1-Windows.zip
 ```
 
 2. 生成 SHA-256：
 
 ```powershell
-Get-FileHash .\release\Roomcast-0.14.1-Windows.exe -Algorithm SHA256
-Get-FileHash .\release\Roomcast-0.14.1-Windows.zip -Algorithm SHA256
+Get-FileHash .\release\Roomcast-0.14.2-beta.1-Windows.exe -Algorithm SHA256
+Get-FileHash .\release\Roomcast-0.14.2-beta.1-Windows.zip -Algorithm SHA256
 ```
 
 3. 发布时明确写：
@@ -109,13 +109,13 @@ npm.cmd run dist:zip
 .\scripts\Sign-RoomcastSelfSigned.ps1 `
   -PfxPath ".\build-assets\D4Y0-roomcast-selfsigned.pfx" `
   -Password "<你的PFX密码>" `
-  -Version "0.14.1"
+  -Version "0.14.2-beta.1"
 ```
 
 ### 3. 验证
 
 ```powershell
-.\scripts\Check-RoomcastSignature.ps1 -Version 0.14.1
+.\scripts\Check-RoomcastSignature.ps1 -Version 0.14.2-beta.1
 ```
 
 自签名通常会显示不是 `Valid`，这是正常的。
@@ -253,7 +253,7 @@ http://timestamp.acs.microsoft.com
 4. 签名完成后立刻验证：
 
 ```powershell
-Get-AuthenticodeSignature .\release\Roomcast-0.14.1-Windows.exe |
+Get-AuthenticodeSignature .\release\Roomcast-0.14.2-beta.1-Windows.exe |
   Format-List Status, StatusMessage, SignerCertificate
 ```
 
