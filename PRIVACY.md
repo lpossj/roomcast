@@ -21,3 +21,15 @@ Roomcast 是本地运行的 Windows Electron 屏幕共享与文字聊天程序�
 ## 用户责任
 
 邀请链接、房间号、临时 TURN 凭据和聊天内容只应发送给实际房间成员。不要将长期 TURN Worker access key 放入邀请、截图、日志或公开仓库。
+
+## 第三方网络服务
+
+Roomcast 自身不运营中心化聊天或媒体存储服务，但默认可能使用以下第三方网络服务：
+
+- PeerJS 公共信令服务：未配置 PEER_SERVER_URL 时，P2P 连接控制元数据和 ICE 信息可能经过 PeerJS 公共云。
+- VDO.Ninja：VDO direct fallback 可能连接 wss://wss.vdo.ninja。
+- Cloudflare TURN 或你自行配置的 TURN 服务：只有 direct race exhausted 后才可能使用；TURN 服务商可能看到连接元数据、IP 和加密媒体流量，但不应看到聊天文字或本地文件。
+
+这些第三方服务有自己的隐私政策、日志保留和可用性策略。你可以通过自建 PeerJS 和 TURN、或在网络策略中限制相关域名，降低对公共服务的依赖。
+
+详见 docs/自建信令.md。

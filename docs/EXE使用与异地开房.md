@@ -1,4 +1,6 @@
-# Roomcast 0.14.1：EXE 使用与异地开房
+# Roomcast 0.14.1 Beta：EXE 使用与异地开房
+
+当前版本为公开测试版（Beta）。默认可能使用 PeerJS 公共信令和 VDO.Ninja direct fallback，详见 PRIVACY.md 和 docs/自建信令.md。
 
 ## 准备
 

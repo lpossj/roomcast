@@ -14,8 +14,8 @@
 
 ```powershell
 npm ci
-npm test
-npm run build
+npm run fetch:runtime   # 如果本地还没有 loopback 组件
+npm run check
 ```
 
 涉及网络、房间、媒体、图片、Electron 主进程或 OBS runtime 的修改，必须同时运行相关测试和全量回归测试。

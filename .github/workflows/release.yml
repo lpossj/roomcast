@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号，例如 0.14.1-beta.1 或 0.14.1'
+        required: true
+        type: string
+      loopback_archive_url:
+        description: '可选：loopback 组件 ZIP 下载地址；留空使用默认 Release 资产'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build beta release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}' }
+          $version = $version.Trim().TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "无效版本号：$version"
+          }
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($packageVersion -ne $version) {
+            throw "package.json version ($packageVersion) does not match release version ($version)"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Resolve loopback archive URL
+        shell: pwsh
+        env:
+          DISPATCH_LOOPBACK_URL: ${{ github.event.inputs.loopback_archive_url }}
+          REPO_LOOPBACK_URL: ${{ vars.ROOMCAST_LOOPBACK_ARCHIVE_URL }}
+        run: |
+          $url = if ($env:DISPATCH_LOOPBACK_URL) { $env:DISPATCH_LOOPBACK_URL } else { $env:REPO_LOOPBACK_URL }
+          "ROOMCAST_LOOPBACK_ARCHIVE_URL=$url" >> $env:GITHUB_ENV
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run project checks
+        run: npm run check
+
+      - name: Prepare loopback runtime
+        run: node scripts/fetch-runtime.mjs
+
+      - name: Prepare embedded OBS runtime
+        run: npm run prepare:obs:release
+
+      - name: Verify release license inputs
+        run: node scripts/check-licenses.mjs --release
+
+      - name: Build portable EXE and ZIP
+        run: npm run release:build
+
+      - name: Package source archive
+        run: npm run package:source
+
+      - name: Package loopback runtime asset
+        run: npm run package:runtime
+
+      - name: Generate SHA256 values
+        run: node scripts/generate-checksums.mjs --strict
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Verify packaged release
+        run: npm run verify:release
+
+      - name: Publish beta release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          $notes = "docs/RELEASE_NOTES-$env:VERSION.md"
+          if (-not (Test-Path $notes)) {
+            $notes = Join-Path $env:TEMP "roomcast-release-notes-$env:VERSION.md"
+            (Get-Content "docs/RELEASE_NOTES-TEMPLATE.md" -Raw).Replace('VERSION', $env:VERSION) | Set-Content -LiteralPath $notes -Encoding utf8
+            Write-Warning "未找到 docs/RELEASE_NOTES-$env:VERSION.md，已从模板生成临时发布说明。"
+          }
+          gh release view $env:TAG --json tagName *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $null = git rev-parse -q --verify "refs/tags/$env:TAG" 2> $null
+            if ($LASTEXITCODE -eq 0) {
+              gh release create $env:TAG --title "Roomcast $env:VERSION Beta" --notes-file $notes --prerelease --draft
+            } else {
+              gh release create $env:TAG --target $env:GITHUB_SHA --title "Roomcast $env:VERSION Beta" --notes-file $notes --prerelease --draft
+            }
+          }
+          $assets = @(
+            "release/Roomcast-$env:VERSION-Windows.exe",
+            "release/Roomcast-$env:VERSION-Windows.zip",
+            "release/Roomcast-$env:VERSION-source.zip",
+            "release/Roomcast-$env:VERSION-loopback-capture.zip",
+            "release/SHA256.txt",
+            "runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz"
+          )
+          gh release upload $env:TAG @assets --clobber
+          gh release edit $env:TAG --draft=false --prerelease --title "Roomcast $env:VERSION Beta"

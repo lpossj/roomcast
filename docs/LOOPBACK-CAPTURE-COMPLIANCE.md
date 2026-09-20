@@ -39,12 +39,27 @@ Providing upstream source, a matching revision/tag, or a reproducible build scri
 
 Do not delete the addon from the local runtime while the system-audio feature is in use. Removing it breaks the existing Windows loopback capture path.
 
+## 自动获取（推荐）
+
+干净源码仓库运行：
+
+```powershell
+npm run fetch:runtime
+```
+
+脚本会从稳定 Release 资产下载 loopback 组件 ZIP，并校验两个文件的 SHA256。也可以设置：
+
+- ROOMCAST_LOOPBACK_ARCHIVE：本地已解压目录或 ZIP。
+- ROOMCAST_LOOPBACK_ARCHIVE_URL：自定义下载地址。
+
+发布维护者应先运行 npm run package:runtime，并把生成的 Roomcast-<version>-loopback-capture.zip 作为 Release 资产上传。
+
 ## Obtain the component for a clean source checkout
 
 The addon has no verified upstream version/revision in this snapshot. Identify this
 prebuilt artifact by its SHA-256, not by an invented upstream version. Obtain the
-matching Roomcast 0.14.1 Windows ZIP from the maintainer's original release post/netdisk
-share (the same release as this source), extract it locally, and copy these files:
+matching Roomcast 0.14.1 Windows ZIP from the GitHub/Gitee Release page (the same
+release as this source), extract it locally, and copy these files:
 
 - ZIP: resources/runtime/loopback-capture/loopback_capture_addon.node
   → checkout: runtime/loopback-capture/loopback_capture_addon.node
@@ -64,7 +79,6 @@ LICENSE
 After copying, run 'npm run setup'. It verifies both files before reporting readiness;
 a missing or mismatching component stops setup with this document's location.
 Do not rename a different binary into place or use an unverified download.
-The release publisher must keep the matching Windows ZIP available alongside the
-source archive. OBS is prepared separately by 'npm run prepare:obs' (or the existing
+The release publisher must keep the matching Windows ZIP and the standalone loopback ZIP available alongside the source archive. OBS is prepared separately by 'npm run prepare:obs' (or the existing
 release before-pack hook). This acquisition process does not supply the missing
 addon source/rebuild provenance, which remains explicitly unknown.

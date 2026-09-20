@@ -1,6 +1,6 @@
 # Cloudflare TURN 部署
 
-Roomcast 0.14.1 不会一开始就把媒体交给 TURN。当前连接顺序是：
+Roomcast 0.14.1 Beta 不会一开始就把媒体交给 TURN。当前连接顺序是：
 
 ```text
 Roomcast P2P direct (t=0)

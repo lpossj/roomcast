@@ -34,3 +34,11 @@
 - 图片接收端校验 magic bytes、尺寸上限与总缓存上限，并回收 ObjectURL。
 - Electron 正式包启用最小 fuses：禁用 RunAsNode、NODE_OPTIONS、Node CLI inspect，启用 Cookie 加密、ASAR 完整性校验和 only-load-app-from-asar。
 - 本地服务已设置 CSP、`X-Content-Type-Options`、`Referrer-Policy` 等响应头。
+
+## GitHub 私密漏洞报告
+
+如果仓库公开，优先使用 GitHub Security Advisories 私密报告入口：
+
+- https://github.com/lpossj/roomcast/security/advisories/new
+
+如果暂时无法使用 GitHub 私密报告，再通过上方邮箱或 QQ 联系。不要在公开 issue 中披露未修复漏洞、邀请密钥或 TURN access key。

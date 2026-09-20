@@ -15,24 +15,35 @@
     "start:viewer": "node scripts/start-viewer.cjs",
     "start:viewer:clean": "node scripts/start-viewer.cjs --clean",
     "setup": "node scripts/setup.mjs",
+    "fetch:runtime": "node scripts/fetch-runtime.mjs",
+    "check": "npm run check:licenses && npm test && npm run build && npm run check:network",
+    "check:licenses": "node scripts/check-licenses.mjs",
     "test": "node --test tests/*.test.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
+    "smoke:desktop": "node scripts/smoke-desktop.mjs",
+    "package:source": "node scripts/package-source.mjs",
+    "package:runtime": "node scripts/package-loopback-asset.mjs",
+    "checksums": "node scripts/generate-checksums.mjs",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder --win portable",
     "dist:zip": "npm run build && electron-builder --win zip",
     "dist:nsis": "npm run build && electron-builder --win nsis",
+    "release:build": "npm run build && electron-builder --win portable && electron-builder --win zip",
     "check:network": "node scripts/check-network-architecture.mjs",
     "prepare:obs": "node scripts/prepare-embedded-obs.mjs",
     "prepare:obs:release": "node scripts/prepare-embedded-obs.mjs --release",
+    "prepare:release": "npm run fetch:runtime && npm run prepare:obs:release",
     "check:obs-bridge": "electron scripts/check-obs-electron-bridge.cjs",
     "check:obs-virtualcam-wait": "node scripts/check-obs-virtualcam-wait.cjs",
     "check:obs-transition": "electron scripts/check-obs-static-motion.cjs",
     "check:obs-transition-metrics": "node scripts/check-obs-transition-metrics.cjs",
     "check:obs-package": "node scripts/check-packaged-obs-step5d.cjs",
-    "dist:obs-verified": "npm run dist && npm run check:obs-package"
+    "dist:obs-verified": "npm run dist && npm run check:obs-package && npm run verify:release"
   },
   "engines": {
     "node": ">=22"
   },
+  "packageManager": "npm@11.16.0",
   "dependencies": {
     "@vdoninja/sdk": "1.6.1",
     "dotenv": "^17.2.3",
@@ -40,9 +51,11 @@
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@vitejs/plugin-react": "^5.1.1",
     "electron": "44.3.0",
     "electron-builder": "^26.0.12",
+    "esbuild": "0.28.2",
     "playwright": "^1.58.2",
     "vite": "^7.3.0",
     "lucide-react": "^0.577.0",

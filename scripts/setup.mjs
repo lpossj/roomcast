@@ -20,7 +20,7 @@ for (const [file, expected] of loopbackFiles) {
   const bytes = await readFile(path.join(rootDir, 'runtime', 'loopback-capture', file)).catch(() => null);
   if (!bytes || createHash('sha256').update(bytes).digest('hex') !== expected) {
     throw new Error('系统音频组件缺失或校验失败：' + file
-      + '。请按 docs/LOOPBACK-CAPTURE-COMPLIANCE.md 从对应发布 ZIP 取得并校验组件，再运行 npm run setup。');
+      + '。请先运行 npm run fetch:runtime，或按 docs/LOOPBACK-CAPTURE-COMPLIANCE.md 从对应发布 ZIP 取得并校验组件，再运行 npm run setup。');
   }
 }
 

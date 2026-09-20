@@ -1,10 +1,14 @@
-# Roomcast 0.14.1
+# Roomcast 0.14.1 Beta
 
 Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间最多 10 人，可多人同时共享。
 
 Roomcast 只面向合法、知情同意的屏幕共享与聊天。使用前请阅读 [ACCEPTABLE_USE.md](ACCEPTABLE_USE.md)。
 
-Roomcast 0.14.1 的媒体架构是：
+> 当前版本是公开测试版（Beta），仅面向 Windows 10/11 x64。观看者和房主都需要安装 Roomcast。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
+
+[下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.1.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues) · [安全报告](SECURITY.md)
+
+Roomcast 0.14.1 Beta 的媒体架构是：
 
 ```text
 原生 Roomcast P2P (t=0)
@@ -73,24 +77,28 @@ Windows 系统声音按 Core Audio 会话枚举，可选择共享/排除具体�
 
 ## 构建
 
-干净源码包不含系统音频预编译组件。先按 [组件取得与校验](docs/LOOPBACK-CAPTURE-COMPLIANCE.md) 从同版本发布 ZIP 复制两个必要文件；`npm ci` 不会下载该组件。
+干净源码包不含系统音频预编译组件。先运行 `npm run fetch:runtime`，从稳定 Release 资产下载并校验组件；也可以设置 `ROOMCAST_LOOPBACK_ARCHIVE` 或 `ROOMCAST_LOOPBACK_ARCHIVE_URL` 使用本地 ZIP / 自定义下载地址。详见 [组件取得与校验](docs/LOOPBACK-CAPTURE-COMPLIANCE.md)。
 
 ```powershell
 npm ci
+npm run fetch:runtime
 npm run setup
-npm test
-npm run build
-npm run check:network
+npm run check
 npm run dist:obs-verified
 ```
 
 常用目标：
 
 ```text
-npm run pack       -> release/win-unpacked
-npm run dist       -> Windows portable EXE
-npm run dist:zip   -> ZIP
-npm run dist:nsis  -> NSIS installer
+npm run pack           -> release/win-unpacked
+npm run dist           -> Windows portable EXE
+npm run dist:zip       -> ZIP
+npm run dist:nsis      -> NSIS installer
+npm run release:build  -> 一次构建 portable EXE 和 ZIP
+npm run package:source -> 源码 ZIP
+npm run package:runtime -> loopback 组件 ZIP
+npm run checksums      -> release/SHA256.txt
+npm run verify:release -> 打包后 EXE smoke 校验
 ```
 
 OBS 发布包必须通过 `scripts/check-packaged-obs-step5d.cjs` 验证。不要通过猜测 DLL 用途来裁剪 OBS runtime；Step 6B 的任何体积优化都必须配套 packaged OBS verifier。
