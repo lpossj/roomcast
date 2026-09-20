@@ -96,7 +96,7 @@ try {
         .locator('body')
         .innerText({ timeout: 1000 })
         .catch(() => '');
-      if (text.includes('欢迎来到同屏')) page = fallback;
+      if (text.includes('同屏 Roomcast') && text.includes('创建房间')) page = fallback;
     }
 
     if (!page) {
@@ -122,7 +122,10 @@ try {
 
   await page
     .waitForFunction(
-      () => document.body && document.body.innerText.includes('欢迎来到同屏'),
+      () => {
+        const text = document.body?.innerText || '';
+        return text.includes('同屏 Roomcast') && text.includes('创建房间');
+      },
       null,
       { timeout: 90000 },
     )
