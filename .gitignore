@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.npm-cache/
+
+# Build output
+dist/
+dist-*/
+release/
+out/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Local runtime / large binaries: keep locally, do not publish
+runtime/
+
+# Test output
+test-results/
+playwright-report/
+
+# Local configuration and logs
+.env
+.env.*
+!.env.example
+*.log
+npm-debug.log*
+theme-preferences.json
+
+# Temporary / backup / reference artifacts
+*.bak
+*.orig
+*.rej
+*.patch
+*.tmp
+Thumbs.db
+Desktop.ini
+backup*/
+reference*/
+PartyLink*/

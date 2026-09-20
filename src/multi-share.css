@@ -1,0 +1,271 @@
+.multi-stage {
+  height: auto;
+  min-height: 400px;
+  max-height: none;
+  overflow: auto;
+}
+
+.screen-grid {
+  --preview-card-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px;
+  min-height: 100%;
+  align-items: flex-start;
+  align-content: flex-start;
+  background: #0b1116;
+}
+
+.stream-view {
+  display: flex;
+  flex: 0 0 var(--preview-card-width);
+  width: var(--preview-card-width);
+  max-width: 100%;
+  flex-direction: column;
+  min-width: 0;
+  background: #080d11;
+  border: 1px solid #2e3b43;
+  border-radius: 9px;
+  overflow: hidden;
+  align-self: flex-start;
+  height: fit-content;
+  transition: flex-basis .12s ease, width .12s ease;
+}
+
+.stream-parameter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #34434b;
+  font-size: 8px;
+  white-space: nowrap;
+  overflow: auto;
+}
+
+.stream-parameter-bar strong {
+  color: inherit;
+  font-size: 10px;
+}
+
+.stream-parameter-bar span {
+  padding-left: 10px;
+  border-left: 1px solid #ffffff12;
+}
+
+.stream-view .screen-player {
+  aspect-ratio: auto;
+  height: auto;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+/* In the room grid, only the media stage owns the 16:9 ratio. The outer card
+   wraps the metadata bar + media stage instead of stretching to the grid row. */
+.stream-view .screen-player:not(:fullscreen) .player-stage {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+/* Fullscreen still uses the whole viewport below the metadata row. */
+.stream-view .screen-player:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+}
+
+.stream-view .screen-player:fullscreen .player-stage {
+  width: 100%;
+  aspect-ratio: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.role-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-style: normal;
+  font-size: 7px;
+  color: #8ca197;
+  background: #ffffff0a;
+}
+
+.role-badge.owner {
+  color: #f0cf83;
+  background: #795d251f;
+}
+
+.role-badge.admin {
+  color: #9fdcc3;
+  background: #315c4929;
+}
+
+.permission-member {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  background: #111922;
+  border-radius: 8px;
+  margin-bottom: 22px;
+}
+
+.permission-member .avatar {
+  width: 42px;
+  height: 42px;
+}
+
+.permission-member strong {
+  font-size: 13px;
+}
+
+.permission-member span {
+  display: block;
+  color: #7f949e;
+  font-size: 10px;
+  margin-top: 6px;
+}
+
+@media (max-width: 1100px) {
+  .stream-parameter-bar span:nth-of-type(n+3) {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .screen-grid {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .stream-view .screen-player {
+    min-height: 0;
+  }
+}
+
+.screen-player.awaiting-entry {
+  min-height: 0
+}
+
+.stream-view .screen-player.awaiting-entry:not(:fullscreen) .player-stage {
+  min-height: 0;
+  aspect-ratio: 16 / 9
+}
+
+.screen-player.awaiting-entry .player-controls {
+  display: none
+}
+
+.screen-player .player-loading {
+  z-index: 3
+}
+
+.screen-player .player-top {
+  right: 104px;
+  z-index: 4
+}
+
+.screen-player .player-top button {
+  pointer-events: auto
+}
+
+.floating-detached-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: #8ca59b;
+  background: #06090c;
+  pointer-events: none;
+}
+
+.floating-detached-placeholder svg {
+  color: var(--green);
+  opacity: .88;
+}
+
+.floating-detached-placeholder strong {
+  color: #d0e6dc;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.floating-detached-placeholder span {
+  color: #70858f;
+  font-size: 9px;
+}
+
+/* Main/preview/fullscreen player metadata must sit above the picture instead
+   of overlaying and covering it. It participates in normal layout so the
+   video stage always starts below the bar. */
+.screen-player .player-info-overlay {
+  position: relative;
+  z-index: 4;
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid #ffffff18;
+  border-radius: 0;
+  overflow: hidden;
+  white-space: normal;
+  box-shadow: none;
+  transition: opacity .16s ease;
+  pointer-events: none;
+}
+
+.screen-player.controls-hidden .player-info-overlay {
+  display: none;
+}
+
+.screen-player .exit-view-button {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  margin: 0;
+  transition: opacity .16s ease;
+}
+
+.screen-player.controls-hidden .exit-view-button {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* A detached source keeps its original video alive for MediaSource/
+   captureStream/audio ownership, but nothing from the in-room player UI is
+   visually duplicated while the desktop window owns the picture. */
+.screen-player.detached-source .player-stage > video {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.screen-player.detached-source .floating-detached-placeholder {
+  z-index: 5;
+}
+
+/* Use the same avatar palette already used throughout Roomcast. */
+.screen-player .player-info-overlay.avatar-color-0 { background: #394631; color: #c5d4a7; }
+.screen-player .player-info-overlay.avatar-color-1 { background: #383551; color: #c6bbea; }
+.screen-player .player-info-overlay.avatar-color-2 { background: #2b454e; color: #a3d2df; }
+.screen-player .player-info-overlay.avatar-color-3 { background: #533b38; color: #e7b5ac; }
+.screen-player .player-info-overlay.avatar-color-4 { background: #29463d; color: #abe4c9; }
+.screen-player .player-info-overlay.avatar-color-5 { background: #4a3427; color: #f2c29c; }
+.screen-player .player-info-overlay.avatar-color-6 { background: #263f57; color: #a9d5f5; }
+.screen-player .player-info-overlay.avatar-color-7 { background: #4d2945; color: #efb4df; }
+.screen-player .player-info-overlay.avatar-color-8 { background: #4b4826; color: #e9e09c; }
+.screen-player .player-info-overlay.avatar-color-9 { background: #263f3f; color: #a8e2df; }

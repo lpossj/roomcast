@@ -1,0 +1,38 @@
+Roomcast Notice
+================
+
+Roomcast
+Copyright (c) 2026 Roomcast / D4Y0.
+
+Roomcast includes third-party open-source components. The complete inventory and license texts are maintained in:
+
+- THIRD-PARTY-NOTICES.txt
+
+Notable bundled components:
+
+- Electron / Chromium: separate license files are shipped beside Roomcast.exe.
+- OBS Studio 32.1.2: GPL-2.0-or-later. License text and corresponding source archive are shipped under runtime/obs-bundle and runtime/obs-source.
+- Roomcast loopback capture addon: MIT License, Copyright (c) 2025 Matin Tat. License text is shipped under runtime/loopback-capture/LICENSE.
+- Server packages and bundled renderer dependencies (including React, PeerJS, Lucide and Socket.IO client): see THIRD-PARTY-NOTICES.txt.
+- VDO.Ninja SDK 1.6.1: MPL-2.0. Unminified source and license are shipped in resources/app.asar under node_modules/@vdoninja/sdk/ (vdoninja-sdk.js and LICENSE). The matching source package is also available at https://registry.npmjs.org/@vdoninja/sdk/-/sdk-1.6.1.tgz. The SDK remains under MPL-2.0.
+
+The Roomcast name and marks are addressed in TRADEMARKS.md. Privacy and security boundaries are addressed in PRIVACY.md and SECURITY.md.
+
+License
+-------
+
+Roomcast project source is licensed under the Apache License, Version 2.0.
+See LICENSE for the complete license text.
+Copyright (c) 2026 Roomcast / D4Y0.
+
+Third-party precompiled component
+---------------------------------
+
+The bundled Roomcast loopback capture addon is a separate MIT-licensed third-party precompiled component. It is not covered by the Roomcast Apache-2.0 source license. Its MIT license and copyright notice are preserved under runtime/loopback-capture/LICENSE. Source/rebuild provenance is tracked in docs/LOOPBACK-CAPTURE-COMPLIANCE.md and should be published when available.
+
+OBS Studio is distributed under GPL-2.0-or-later with its corresponding source archive as described above.
+
+Acceptable use
+--------------
+
+See ACCEPTABLE_USE.md for lawful, consent-based use expectations. That policy does not modify the rights granted by the Apache-2.0 or MIT licenses.
