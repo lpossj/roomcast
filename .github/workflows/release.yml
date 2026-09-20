@@ -73,6 +73,9 @@ jobs:
       - name: Prepare loopback runtime
         run: node scripts/fetch-runtime.mjs
 
+      - name: Prepare Electron runtime
+        run: npm run setup
+
       - name: Prepare embedded OBS runtime
         run: npm run prepare:obs:release
 
