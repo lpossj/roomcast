@@ -61,6 +61,16 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
   useEffect(() => { clearLegacySize(); return () => { floatingPlayer.current?.close(); floatingPlayer.current = null; }; }, []);
   useEffect(() => { if (!entered) { floatingPlayer.current?.close(); floatingPlayer.current = null; } }, [entered]);
   useEffect(() => {
+    if (window.roomcast?.desktop || !entered || own || !reportViewing) return undefined;
+    const resume = () => {
+      if (document.visibilityState !== 'visible') return;
+      videoRef.current?.play().catch(() => { });
+      void reportViewing(stream.memberId, 'view:start').then(() => setRetry(value => value + 1)).catch(() => { });
+    };
+    document.addEventListener('visibilitychange', resume);
+    return () => document.removeEventListener('visibilitychange', resume);
+  }, [entered, own, reportViewing, stream.memberId]);
+  useEffect(() => {
     floatingPlayer.current?.updateAudio?.({
       soundAvailable: !own && !deafened,
       soundEnabled: sound && !deafened && !own,
@@ -1765,7 +1775,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
             onViewingChange?.(stream.memberId, false);
             if (document.fullscreenElement === containerRef.current) document.exitFullscreen().catch(() => { });
           }}>退出观看</button>}
-          <div className="player-controls" onPointerEnter={() => { interaction.current.hover = true; showUi(); }} onPointerLeave={() => { interaction.current.hover = false; armUiHide(); }} onPointerDown={controlPointerDown}><div>{!own && <><button aria-label={sound ? '关闭共享声音' : '播放共享声音'} title={sound ? '关闭共享声音' : '播放共享声音'} onClick={() => { setSound(value => !value); videoRef.current?.play().catch(() => { }); }}>{sound && !deafened && volume > 0 ? <Volume2 size={18} /> : <VolumeX size={18} />}</button><label className="player-volume" title={`音量 ${Math.round(volume * 100)}%`}><input aria-label="共享音量" type="range" min="0" max="1" step="0.01" value={volume} onChange={event => { const next = Number(event.target.value); setVolume(next); if (next > 0) setSound(true); }} /><span>{Math.round(volume * 100)}%</span></label></>}<button title="窗口模式" aria-label="窗口模式" onClick={toggleWindowMode}><AppWindow size={18} /></button><button title={fullscreen ? '退出全屏' : '全屏'} aria-label={fullscreen ? '退出全屏' : '全屏'} onClick={toggleFullscreen}>{fullscreen ? <Minimize size={18} /> : <Expand size={18} />}</button></div></div>
+          <div className="player-controls" onPointerEnter={() => { interaction.current.hover = true; showUi(); }} onPointerLeave={() => { interaction.current.hover = false; armUiHide(); }} onPointerDown={controlPointerDown}><div>{!own && <><button aria-label={sound ? '关闭共享声音' : '播放共享声音'} title={sound ? '关闭共享声音' : '播放共享声音'} onClick={() => { setSound(value => !value); videoRef.current?.play().catch(() => { }); }}>{sound && !deafened && volume > 0 ? <Volume2 size={18} /> : <VolumeX size={18} />}</button><label className="player-volume" title={`音量 ${Math.round(volume * 100)}%`}><input aria-label="共享音量" type="range" min="0" max="1" step="0.01" value={volume} onChange={event => { const next = Number(event.target.value); setVolume(next); if (next > 0) setSound(true); }} /><span>{Math.round(volume * 100)}%</span></label></>}{window.roomcast?.desktop && <button title="窗口模式" aria-label="窗口模式" onClick={toggleWindowMode}><AppWindow size={18} /></button>}<button title={fullscreen ? '退出全屏' : '全屏'} aria-label={fullscreen ? '退出全屏' : '全屏'} onClick={toggleFullscreen}>{fullscreen ? <Minimize size={18} /> : <Expand size={18} />}</button></div></div>
         </>}
       </div>
     </div>

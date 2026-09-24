@@ -377,8 +377,13 @@ try {
   assert.deepEqual(nativeFrameState.contentBounds, nativeFrameState.bounds, `frameless 浮窗不应保留原生标题栏占用：${JSON.stringify(nativeFrameState)}`);
   assert.equal(nativeFrameState.minimizable, false, '独立小窗不应保留原生最小化能力/按钮');
   assert.equal(nativeFrameState.maximizable, false, '独立小窗不应保留原生最大化能力/按钮');
-  assert.equal(nativeFrameState.alwaysOnTop, true);
+  assert.equal(nativeFrameState.alwaysOnTop, false);
   assert.equal(nativeFrameState.resizable, true);
+
+  await showFloatingUi(child);
+  await clickFloatingButton(child, '置顶小窗');
+  await child.getByRole('button', { name: '取消置顶', exact: true }).waitFor();
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL() === 'about:blank').isAlwaysOnTop()), true);
 
   const fullButton = child.getByRole('button', { name: '全屏', exact: true });
   const exitWindowButton = child.getByRole('button', { name: '退出小窗', exact: true });
@@ -551,6 +556,10 @@ try {
   assert.equal(native.resizable, true);
   assert.equal(native.bounds.width, 1000);
   assert.equal(native.bounds.height, 700);
+  await showFloatingUi(child);
+  await clickFloatingButton(child, '取消置顶');
+  await child.getByRole('button', { name: '置顶小窗', exact: true }).waitFor();
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL() === 'about:blank').isAlwaysOnTop()), false);
   await showFloatingUi(child);
   await clickFloatingButton(child, '全屏');
   await page.waitForFunction(() => document.querySelector('#floating-test .stream-view').dataset.windowMode === 'FLOATING_FULLSCREEN');

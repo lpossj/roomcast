@@ -73,6 +73,9 @@ jobs:
       - name: Prepare loopback runtime
         run: node scripts/fetch-runtime.mjs
 
+      - name: Prepare integrated web invite
+        run: node scripts/fetch-web-invite.mjs
+
       - name: Prepare Electron runtime
         run: npm run setup
 

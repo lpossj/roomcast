@@ -20,7 +20,9 @@ npm run setup
 npm run check
 ```
 
-npm run check 会执行许可证检查、单元测试、Vite 构建和网络架构自检。
+npm run check 会依次执行许可证检查、单元测试、Vite 构建和网络架构自检。
+
+注意 `check` 的顺序是"先测试、后构建"，所以单元测试**不得依赖 `dist/` 等构建产物**（`dist/` 被 gitignore，干净检出上不存在）。测试需要构建产物时请自建临时 fixture，否则 CI 与 Release workflow 会在测试步骤失败。
 
 如果 npm run fetch:runtime 需要的 loopback 组件 ZIP 还没有发布，可以：
 
@@ -45,13 +47,15 @@ npm run fetch:runtime
 ## 本地构建与打包
 
 ```powershell
-npm run prepare:obs:release
+npm run prepare:release   # fetch:runtime + fetch:web-invite + prepare:obs:release
 npm run release:build
 npm run package:source
 npm run package:runtime
 node scripts/generate-checksums.mjs --strict
 npm run verify:release
 ```
+
+`npm run fetch:web-invite` 会下载并校验内置 cloudflared（固定版本 + 官方 SHA256）；`electron-builder` 的 `beforePack` 也会自动执行一次，本地无需手动重复。
 
 产物：
 
@@ -62,7 +66,7 @@ npm run verify:release
 - release/SHA256.txt
 - runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz
 
-发布前应在干净 Windows 10/11 x64 机器上完成 docs/RELEASE_CHECKLIST-0.14.2-beta.1.md 中的验收项。
+发布前应在干净 Windows 10/11 x64 机器上完成当前版本对应的 `docs/RELEASE_CHECKLIST-<version>.md` 验收项。若该版本还没有检查表，先按 `docs/RELEASE_CHECKLIST-0.14.2-beta.6.md` 复制一份再执行，不要沿用上一版结论。
 
 ## GitHub Actions
 
@@ -100,9 +104,9 @@ Beta 发布说明应包含：
 
 ```powershell
 git add -A
-git commit -m "Release Roomcast 0.14.2-beta.1 Beta"
-git tag v0.14.2-beta.1
-git push origin main v0.14.2-beta.1
+git commit -m "Release Roomcast <version> Beta"
+git tag v<version>
+git push origin main v<version>
 ```
 
 `npm run package:source` 会检查工作区是否干净，避免把未提交内容错误地排除在源码包之外。

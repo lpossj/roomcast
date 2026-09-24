@@ -39,6 +39,7 @@ export function openFloatingPlayer(source, {
   const observedTracks = new Set();
   let unsubscribe;
   let fullscreen = false;
+  let alwaysOnTop = false;
   let uiTimer = null;
 
   const doc = popup.document;
@@ -155,6 +156,7 @@ export function openFloatingPlayer(source, {
     muted: icon('<path d="M11 5 6 9H2v6h4l5 4z"></path><path d="m22 9-6 6"></path><path d="m16 9 6 6"></path>'),
     fullscreen: icon('<path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M16 3h3a2 2 0 0 1 2 2v3"></path><path d="M8 21H5a2 2 0 0 1-2-2v-3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path>'),
     exitFullscreen: icon('<path d="M8 3v3a2 2 0 0 1-2 2H3"></path><path d="M16 3v3a2 2 0 0 0 2 2h3"></path><path d="M8 21v-3a2 2 0 0 0-2-2H3"></path><path d="M16 21v-3a2 2 0 0 1 2-2h3"></path>'),
+    pin: icon('<path d="m16 3 5 5-4 1-3 4-1 4-2 2-2-2-4-4-2-2 2-2 4-1 4-3z"></path><path d="m9 15-5 5"></path>'),
     exitWindow: icon('<path d="M9 18H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"></path><path d="m16 15 3-3-3-3"></path><path d="M19 12H9"></path>'),
   };
 
@@ -248,6 +250,12 @@ export function openFloatingPlayer(source, {
   volumeWrap.append(volume, volumeText);
   controlsInner.append(volumeWrap);
 
+  const topButton = makeButton({
+    label: '置顶小窗',
+    html: icons.pin,
+    action: () => bridge.floatingAction({ id, action: 'top' }).catch(() => { }),
+  });
+
   const fullscreenButton = makeButton({
     label: '全屏',
     html: icons.fullscreen,
@@ -320,8 +328,13 @@ export function openFloatingPlayer(source, {
     uiTimer = setTimeout(hideUi, 2000);
   };
 
-  const applyWindowState = state => {
+  const applyWindowState = (state, top) => {
     fullscreen = state === 'FLOATING_FULLSCREEN';
+    alwaysOnTop = top === true;
+    topButton.title = alwaysOnTop ? '取消置顶' : '置顶小窗';
+    topButton.setAttribute('aria-label', topButton.title);
+    topButton.setAttribute('aria-pressed', String(alwaysOnTop));
+    topButton.style.color = alwaysOnTop ? 'var(--green)' : '';
     doc.documentElement.classList.toggle('is-fullscreen', fullscreen);
     fullscreenButton.title = fullscreen ? '取消全屏' : '全屏';
     fullscreenButton.setAttribute('aria-label', fullscreenButton.title);
@@ -427,11 +440,11 @@ export function openFloatingPlayer(source, {
     onState?.('MAIN');
   };
 
-  unsubscribe = bridge.onFloatingState(({ id: changedId, state }) => {
+  unsubscribe = bridge.onFloatingState(({ id: changedId, state, alwaysOnTop: top }) => {
     if (changedId !== id) return;
     if (state === 'MAIN') dispose();
     else {
-      applyWindowState(state);
+      applyWindowState(state, top);
       onState?.(state);
     }
   });
@@ -441,6 +454,7 @@ export function openFloatingPlayer(source, {
   source.addEventListener('volumechange', syncAudioFromSource);
   renderAudio();
   renderInfo();
+  applyWindowState('FLOATING', false);
   showUi();
 
   try {

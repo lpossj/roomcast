@@ -34,6 +34,10 @@
 - 图片接收端校验 magic bytes、尺寸上限与总缓存上限，并回收 ObjectURL。
 - Electron 正式包启用最小 fuses：禁用 RunAsNode、NODE_OPTIONS、Node CLI inspect，启用 Cookie 加密、ASAR 完整性校验和 only-load-app-from-asar。
 - 本地服务已设置 CSP、`X-Content-Type-Options`、`Referrer-Policy` 等响应头。
+- 临时网页入口（"分享房间"里的 Cloudflare Quick Tunnel）只提供打包后的静态页面，只接受 `GET`/`HEAD`，并只服务构建产物白名单；桌面本地 API、Socket.IO、音频捕获和管理接口都不对外开放。
+- 邀请密钥保存在网页链接的 URL 片段（`#…`）中，片段不会随 HTTP 请求发送，因此 Cloudflare 与静态入口都拿不到它。该地址本身等同于入房凭据，只应发给预期成员。
+- 任何拿到网页入口地址的人都能加载应用界面。入口在离开房间或退出应用时关闭，也可以在"分享房间"之外通过离开房间触发关闭。
+- 浏览器房主在页面内运行与桌面端相同的房间规则（`server/rooms.mjs`）。远端访客只能通过 P2P 事件白名单访问房间服务，`room:migration-create`、`room:migration-commit`、`room:migration-abort` 等本机特权事件不在白名单内，不会被远端触达。
 
 ## GitHub 私密漏洞报告
 

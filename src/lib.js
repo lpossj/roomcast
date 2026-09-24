@@ -2,6 +2,7 @@ let tokenPromise;
 
 export async function localAction(action, payload = {}) {
   if (window.roomcast?.localAction) return window.roomcast.localAction(action, payload);
+  if (!window.roomcast?.desktop) throw new Error('本地媒体操作仅在桌面应用中可用。');
   if (!tokenPromise) tokenPromise = fetch('/api/local/token').then(async response => {
     const value = await response.json();
     if (!response.ok || !value.token) throw new Error(value.error || '请使用桌面客户端或本机地址执行本地媒体操作');

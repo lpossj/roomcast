@@ -2,7 +2,7 @@ import { extractFile } from '@electron/asar';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
@@ -12,6 +12,7 @@ const version = packageInfo.version;
 const output = path.join(root, `.test/release-${version}`);
 const profile = path.join(output, 'portable-profile');
 await mkdir(profile, { recursive: true });
+await rm(path.join(profile, 'DevToolsActivePort'), { force: true });
 
 const executablePath = path.join(root, `release/Roomcast-${version}-Windows.exe`);
 const resourcesDir = path.join(root, 'release/win-unpacked/resources');
@@ -36,6 +37,9 @@ const expectedHashes = new Map([
   ['loopback-capture/loopback_capture_addon.node', '23acf5f229c8e1fc5a70e4519def9d39e8ccd43b47912f364d8b81d93be5a50c'],
   ['loopback-capture/LICENSE', '30085cfcb641f0712d2453402257cfa4d9badef164933954c35e4f6675801e1a'],
   ['obs-source/OBS-Studio-32.1.2-Sources.tar.gz', 'c6532380c68a75327fe8b551461adeca8f184dcbe4015096251a6de76362a554'],
+  // The integrated web entry shells out to this binary, so a tampered or missing copy
+  // must fail release verification instead of only failing when a user opens 分享房间.
+  ['web-invite/cloudflared.exe', '214f5d74f66941d147d054f6cc9d821c60ff6a9b2d5355f6c854c6bee217c548'],
 ]);
 
 async function sha256(file) {

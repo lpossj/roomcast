@@ -472,20 +472,13 @@ export default function useRoom(onError) {
     try {
       setServer(base);
 
-      const response = await fetch(
-        `${base}/api/config`,
-        {
-          signal: AbortSignal.timeout(10000),
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          '无法读取服务配置，请检查服务器地址',
-        );
+      // Browser rooms run the same room rules locally and have no /api/config endpoint.
+      let remoteConfig = { peerServer: '' };
+      if (!isP2P || (mode === 'create' && window.roomcast?.desktop)) {
+        const response = await fetch(`${base}/api/config`, { signal: AbortSignal.timeout(10000) });
+        if (!response.ok) throw new Error('无法读取服务配置，请检查服务器地址');
+        remoteConfig = await response.json();
       }
-
-      const remoteConfig = await response.json();
 
       setConfig(remoteConfig);
 
@@ -625,6 +618,8 @@ export default function useRoom(onError) {
             || mediaIceServers(controlIceServers),
           relayInvite: result.relayInvite || '',
           inviteSecret: result.inviteSecret || '',
+          // Carried on the invite as &signal=; kept in config so every member re-shares it.
+          peerServer: result.peerServer || remoteConfig.peerServer || '',
           relayEnabled: containsTurn(controlIceServers),
           p2p: true,
           mediaP2P: true,

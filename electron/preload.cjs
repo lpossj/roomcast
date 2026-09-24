@@ -21,6 +21,15 @@ contextBridge.exposeInMainWorld('roomcast', {
 
   copyText: value =>
     ipcRenderer.invoke('roomcast:copy-text', value),
+  startWebInvite: () =>
+    ipcRenderer.invoke('roomcast:web-invite-start'),
+  stopWebInvite: () =>
+    ipcRenderer.invoke('roomcast:web-invite-stop'),
+  onWebInviteState: callback => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('roomcast:web-invite-state', listener);
+    return () => ipcRenderer.removeListener('roomcast:web-invite-state', listener);
+  },
   copyImage: bytes =>
     ipcRenderer.invoke('roomcast:copy-image', bytes),
   saveImage: (bytes, fileName) =>

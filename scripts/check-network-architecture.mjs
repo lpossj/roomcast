@@ -31,6 +31,9 @@ const files = {
   publisher: read('src/transports/vdo-screen-publisher.js'),
   viewer: read('src/transports/vdo-screen-viewer.js'),
   fallback: read('src/fallback-policy.js'),
+  webInvite: read('electron/web-invite.cjs'),
+  fetchWebInvite: read('scripts/fetch-web-invite.mjs'),
+  licenseCheck: read('scripts/check-licenses.mjs'),
 };
 
 const packageJson = JSON.parse(files.pkg);
@@ -113,9 +116,6 @@ for (const residue of [
   '__roomcastVdoViewerProbe',
   'VDO Publisher 测试',
   'VDO Viewer 解码测试',
-  'Quick Tunnel',
-  'trycloudflare',
-  'cloudflared',
   'DirectRoom',
   'connectMediaRelay',
   'tunnel-playback',
@@ -133,6 +133,44 @@ for (const residue of [
     `正式运行时代码残留: ${residue}`,
   );
 }
+
+// The retired Quick Tunnel / MediaMTX MEDIA chain must never come back. cloudflared itself
+// is a supported component since 0.14.2-beta.4 (the temporary web entry), so the media
+// path is checked on its own instead of by a repository-wide token ban.
+mustNotContain(
+  [files.p2p, files.screen, files.vdo, files.publisher, files.viewer, files.race].join('\n'),
+  'trycloudflare',
+  '媒体路径不得引用临时网页入口地址',
+);
+
+mustNotContain(
+  [files.p2p, files.screen, files.vdo, files.publisher, files.viewer, files.race].join('\n'),
+  'cloudflared',
+  '媒体路径不得依赖 cloudflared',
+);
+
+// The temporary web entry is intentional and must stay explicit, pinned and read-only.
+mustContain(
+  JSON.stringify(packageJson.build?.extraResources || []),
+  'runtime/web-invite/cloudflared.exe',
+  '打包资源必须显式包含 web-invite 的 cloudflared',
+);
+
+mustContain(files.fetchWebInvite, "const version = '2026.9.2'", 'web-invite 必须固定 cloudflared 版本');
+mustContain(files.webInvite, 'const PUBLIC_FILE =', 'web-invite 必须使用显式文件白名单');
+mustContain(files.webInvite, "['GET', 'HEAD']", 'web-invite 只允许只读请求');
+mustContain(files.webInvite, "frame-ancestors 'none'", 'web-invite 必须禁止被嵌入');
+
+const pinnedCloudflared = files.fetchWebInvite.match(/const expected = '([0-9a-f]{64})'/)?.[1] || '';
+const checkedCloudflared = files.licenseCheck.match(/\['runtime\/web-invite\/cloudflared\.exe', '([0-9a-f]{64})'\]/)?.[1] || '';
+
+assert.ok(pinnedCloudflared.length === 64, 'web-invite 缺少 cloudflared SHA256 固定值');
+
+assert.equal(
+  pinnedCloudflared,
+  checkedCloudflared,
+  'fetch-web-invite 与 check-licenses 的 cloudflared SHA256 必须一致',
+);
 
 // VDO direct lane must never silently become relay.
 mustContain(files.vdo, 'turnServers: false', 'VDO TURN 未明确关闭');
@@ -225,7 +263,8 @@ console.log('  VDO TURN disabled');
 console.log('  TURN gated after direct race exhaustion');
 console.log('  TURN media relay-only');
 console.log('  temporary VDO probes removed');
-console.log('  Quick Tunnel runtime residue absent');
+console.log('  legacy Quick Tunnel / MediaMTX media chain residue absent');
 console.log('  MediaMTX runtime/package residue absent');
 console.log('  legacy MediaMTX room authorization/cleanup residue absent');
 console.log('  legacy Quick Tunnel maintenance artifacts absent');
+console.log('  temporary web entry is explicit, pinned and read-only');

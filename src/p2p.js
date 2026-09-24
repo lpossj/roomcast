@@ -375,6 +375,13 @@ export class P2PRoom {
   }
 
   async localSocket() {
+    if (typeof document !== 'undefined' && !window.roomcast?.desktop) {
+      if (!this.browserService) {
+        const { createBrowserRoomService } = await import('./browser-room-service.js');
+        this.browserService = createBrowserRoomService();
+      }
+      return this.browserService.connect();
+    }
     const socket = io(
       window.location.origin,
       {
@@ -622,6 +629,11 @@ export class P2PRoom {
           this.relayInvite,
         inviteSecret:
           this.inviteSecret,
+        // Non-owner members must re-share the same signaling server they joined through,
+        // otherwise a web link built from their invite silently falls back to public PeerJS.
+        peerServer:
+          this.peerServer
+          || '',
         turnUnavailable:
           relayResult.unavailable,
       };
@@ -633,6 +645,7 @@ export class P2PRoom {
     let roomId = raw;
     let relayValue = '';
     let inviteSecret = '';
+    let signalServer = '';
 
     if (/^roomcast:\/\//i.test(raw)) {
       let parsed;
@@ -672,6 +685,8 @@ export class P2PRoom {
           .get('secret')
         || '';
 
+      signalServer = parsed.searchParams.get('signal') || '';
+
       if (
         !INVITE_SECRET.test(
           inviteSecret,
@@ -682,6 +697,7 @@ export class P2PRoom {
             relayValue,
           )
         )
+        || (signalServer && !/^https:\/\/[^\s]+$/i.test(signalServer))
       ) {
         throw new Error(
           'P2P 邀请缺少有效的安全密钥。',
@@ -708,6 +724,7 @@ export class P2PRoom {
 
     this.inviteSecret =
       inviteSecret;
+    this.peerServer = signalServer || config.peerServer;
 
     const relayResult =
       await optionalRelayIce({
@@ -744,7 +761,7 @@ export class P2PRoom {
 
     await this.openPeer(
       undefined,
-      config.peerServer,
+      this.peerServer,
     );
 
     this.peer.on(
@@ -793,6 +810,9 @@ export class P2PRoom {
         this.relayInvite,
       inviteSecret:
         this.inviteSecret,
+      peerServer:
+        this.peerServer
+        || '',
       turnUnavailable:
         relayResult.unavailable,
     };
@@ -3520,6 +3540,8 @@ export class P2PRoom {
 
     this.local
       ?.disconnect();
+    void this.browserService?.close();
+    this.browserService = null;
 
     for (
       const guest

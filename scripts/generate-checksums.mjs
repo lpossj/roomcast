@@ -16,6 +16,7 @@ const candidates = [
   path.join(rootDir, 'runtime', 'obs-source', 'OBS-Studio-32.1.2-Sources.tar.gz'),
   path.join(rootDir, 'runtime', 'loopback-capture', 'loopback_capture_addon.node'),
   path.join(rootDir, 'runtime', 'loopback-capture', 'LICENSE'),
+  path.join(rootDir, 'runtime', 'web-invite', 'cloudflared.exe'),
 ];
 
 const records = [];

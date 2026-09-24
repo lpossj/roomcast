@@ -15,10 +15,12 @@ const { createChromiumSessionFetch, workerRequest } = require('./worker-client.c
 const { resolveRuntimePaths } = require('./runtime-paths.cjs');
 const { migratePreferences } = require('./preferences-migration.cjs');
 const { installFloatingWindows } = require('./floating-window.cjs');
+const { createWebInvite } = require('./web-invite.cjs');
 const { ObsFixedFpsEngine, validateVideoSettings, waitForObsVirtualCameraAvailable } = require('./obs-fixed-fps.cjs');
 const { ensureObsVirtualCameraRegistration, registrationStatus } = require('./obs-virtualcam-registration.cjs');
 const { cleanText: cleanAudioText, normalizeCaptureSources, windowsAudioSources } = require('./windows-sources.cjs');
 let service;
+let webInvite;
 let window;
 let captureSources = new Map();
 let captureSelection = null;
@@ -429,6 +431,11 @@ else {
       startupMark('service-ready');
       // No persist: prefix: chat DOM, browser storage and network cache stay in memory.
       const trusted = url => { try { return new URL(url).origin === service.url; } catch { return false; } };
+      webInvite = createWebInvite({
+        distDir: path.join(__dirname, '..', 'dist'),
+        executablePath: path.join(app.isPackaged ? process.resourcesPath : path.join(__dirname, '..'), 'runtime', 'web-invite', 'cloudflared.exe'),
+        onState: state => { if (window && !window.isDestroyed()) window.webContents.send('roomcast:web-invite-state', state); },
+      });
       let playerWindowBounds = null;
       const defaultPlayerBounds = () => {
         const workArea = screen.getDisplayMatching(window.getBounds()).workArea;
@@ -548,6 +555,14 @@ else {
         if (typeof value !== 'string' || value.length < 1 || value.length > 20_000) throw new Error('复制内容格式错误。');
         clipboard.writeText(value);
         return { ok: true };
+      });
+      ipcMain.handle('roomcast:web-invite-start', event => {
+        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口开启网页入口。');
+        return webInvite.start();
+      });
+      ipcMain.handle('roomcast:web-invite-stop', event => {
+        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口关闭网页入口。');
+        return webInvite.stop();
       });
       ipcMain.handle('roomcast:copy-image', async (event, value) => {
         if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口写入图片剪贴板。');
@@ -946,7 +961,7 @@ else {
       });
     } catch (e) {
       dialog.showErrorBox('同屏启动失败', `${e.message}\n\n请关闭其他正在运行的 Roomcast 后重试；若仍失败，请查看使用说明。`);
-      stopAllAudioCaptures(); await service?.close(); app.quit();
+      stopAllAudioCaptures(); await webInvite?.stop(); await service?.close(); app.quit();
     }
   });
   app.on('window-all-closed', () => app.quit());
@@ -954,6 +969,6 @@ else {
     if (quitting || !service) return;
     event.preventDefault(); quitting = true;
     stopAllAudioCaptures();
-    void Promise.allSettled([service.close(), runObsCaptureOperation(() => closeObsCaptureEngine())]).finally(async () => { await clearChatSession(); app.quit(); });
+    void Promise.allSettled([service.close(), webInvite?.stop(), runObsCaptureOperation(() => closeObsCaptureEngine())]).finally(async () => { await clearChatSession(); app.quit(); });
   });
 }

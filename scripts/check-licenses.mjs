@@ -34,6 +34,7 @@ for (const needle of [
   'Chromium',
   'Socket.IO',
   'React',
+  'cloudflared',
 ]) {
   if (!notices.toLowerCase().includes(needle.toLowerCase())) throw new Error(`THIRD-PARTY-NOTICES.txt 缺少：${needle}`);
 }
@@ -42,6 +43,7 @@ const expectedHashes = new Map([
   ['runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz', 'c6532380c68a75327fe8b551461adeca8f184dcbe4015096251a6de76362a554'],
   ['runtime/loopback-capture/loopback_capture_addon.node', '23acf5f229c8e1fc5a70e4519def9d39e8ccd43b47912f364d8b81d93be5a50c'],
   ['runtime/loopback-capture/LICENSE', '30085cfcb641f0712d2453402257cfa4d9badef164933954c35e4f6675801e1a'],
+  ['runtime/web-invite/cloudflared.exe', '214f5d74f66941d147d054f6cc9d821c60ff6a9b2d5355f6c854c6bee217c548'],
 ]);
 
 for (const [relative, expected] of expectedHashes) {

@@ -4,9 +4,9 @@ Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间�
 
 Roomcast 只面向合法、知情同意的屏幕共享与聊天。使用前请阅读 [ACCEPTABLE_USE.md](ACCEPTABLE_USE.md)。
 
-> 当前版本是公开测试版（Beta），仅面向 Windows 10/11 x64。观看者和房主都需要安装 Roomcast。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
+> 当前版本是公开测试版（Beta）。Windows 桌面应用可自动生成电脑／手机网页入口，网页也可创建和加入 P2P 房间；网页建房者需要保持浏览器页面运行。手机浏览器通常不实现 `getDisplayMedia`，因此手机网页以观看和聊天为主，共享按钮会显示为"仅支持观看"。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
 
-[下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.2-beta.2.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
+[下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.2-beta.6.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
 
 Roomcast 0.14.2 Beta 的媒体架构是：
 
@@ -27,9 +27,9 @@ OBS Studio 32.1.2 只作为可选的 **固定帧率 Capture Layer**。OBS 负责
 ## 使用
 
 1. 启动 `Roomcast.exe`。
-2. 房主点击“创建房间”，填写昵称和房名。
+2. 在桌面应用或网页点击“创建房间”，填写昵称和房名。网页房主需保持该页面运行。
 3. 点击“邀请朋友”，复制 `roomcast://join/...` 邀请。
-4. 好友先运行 Roomcast，再打开邀请链接；也可以把邀请粘贴到“加入房间”。
+4. 好友可运行 Roomcast 并打开 `roomcast://` 邀请，也可以直接打开房间的 HTTPS 网页链接。
 5. 点击“共享屏幕”，选择 OBS 或原生采集、显示器/窗口、分辨率、FPS、目标码率以及音频选项。
 
 Cloudflare TURN 是可选的最终媒体兜底。配置 TURN 后，Roomcast 会先在 t=0 立即尝试原生 P2P；VDO.Ninja direct-only viewer 默认延迟 3 秒启动，P2P 提前明确失败则立即启动 VDO。只有两条直连都没有建立可播放画面时，才允许进入 TURN relay-only。TURN Worker 配置见 `docs/Cloudflare-TURN部署.md`。
