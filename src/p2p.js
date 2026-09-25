@@ -1598,7 +1598,7 @@ export class P2PRoom {
     await Promise.all(candidateIds.map(async memberId => {
       const started = performance.now();
       try {
-        const result = await this.sendControl(this.guestMembers.get(memberId), 'migration:probe', {}, 1000);
+        const result = await this.sendControl(this.guestMembers.get(memberId), 'migration:probe', {}, 3000);
         if (result?.ok) healthy.push({ memberId, elapsed: performance.now() - started });
       } catch { /* A non-responsive member must not block a healthy successor. */ }
     }));

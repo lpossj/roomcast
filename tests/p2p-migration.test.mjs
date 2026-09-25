@@ -30,6 +30,8 @@ class Channel extends EventEmitter {
 }
 
 for (const scenario of [
+  { name: 'browser successor', count: 3, browserSuccessor: true },
+  { name: 'browser successor with delayed probe', count: 3, browserSuccessor: true, browserProbeDelay: 1500 },
   { name: 'three members', count: 3 },
   { name: 'successor rejects arm without moving other members', count: 3, commitFailure: 'reject' },
   { name: 'lost arm acknowledgement can be aborted without moving members', count: 3, commitFailure: 'timeout' },
@@ -42,6 +44,13 @@ for (const scenario of [
   class TestRoom extends P2PRoom {
     async handleControl(message, connection) {
       if (message.control === 'migration:probe') {
+        if (scenario.browserSuccessor && this.index !== 1) {
+          connection.send({ controlReply: message.controlId, result: { ok: false } });
+          return;
+        }
+        if (scenario.browserProbeDelay && this.index === 1) {
+          await new Promise(resolve => setTimeout(resolve, scenario.browserProbeDelay));
+        }
         if (scenario.commitFailure && this.index !== 1) {
           connection.send({ controlReply: message.controlId, result: { ok: false } });
           return;
@@ -66,6 +75,11 @@ for (const scenario of [
       return super.handleControl(message, connection);
     }
     async localSocket() {
+      if (scenario.browserSuccessor && this.index === 1) {
+        const { createBrowserRoomService } = await import('../src/browser-room-service.js');
+        this.browserService ||= createBrowserRoomService();
+        return this.browserService.connect();
+      }
       const socket = io(this.url, { transports: ['websocket'], reconnection: false });
       await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
       return socket;
@@ -147,7 +161,9 @@ for (const scenario of [
     return;
   }
   const waiting = Promise.all(active.map(resumed));
+  void waiting.catch(() => {});
   const left = await a.leave();
+  if (scenario.browserSuccessor) assert.equal(left.closed, undefined, 'responsive browser successor must keep the room alive');
   await waiting;
   b = active.find(peer => peer.id === left.migratedTo);
   c = active.find(peer => peer !== b);
