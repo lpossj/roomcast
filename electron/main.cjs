@@ -1,5 +1,5 @@
 const mainStartedAt = Date.now();
-const { app, BrowserWindow, ipcMain, session, dialog, desktopCapturer, safeStorage, clipboard, ClipboardItem, screen, nativeImage, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, session, dialog, desktopCapturer, safeStorage, clipboard, ClipboardItem, screen, nativeImage, systemPreferences, net, shell } = require('electron');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -563,6 +563,56 @@ else {
       ipcMain.handle('roomcast:web-invite-stop', event => {
         if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口关闭网页入口。');
         return webInvite.stop();
+      });
+      // Update check. Chromium's network stack is used instead of Node's fetch so the
+      // request follows the Windows proxy and certificate configuration; the renderer
+      // never supplies a URL, it only names an asset from the result main already holds.
+      const requireOwner = (event, reason) => {
+        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error(reason);
+      };
+      let updateChecker = null;
+      let lastUpdateCheck = null;
+      const ensureUpdateChecker = async () => {
+        if (!updateChecker) {
+          const { createUpdateChecker } = await import(pathToFileURL(path.join(__dirname, 'update-check.mjs')).href);
+          updateChecker = createUpdateChecker({
+            currentVersion: app.getVersion(),
+            fetchImpl: (url, options) => net.fetch(url, options),
+          });
+        }
+        return updateChecker;
+      };
+      ipcMain.handle('roomcast:update-check', async event => {
+        requireOwner(event, '不允许此窗口检查更新。');
+        lastUpdateCheck = await (await ensureUpdateChecker()).check();
+        return lastUpdateCheck;
+      });
+      ipcMain.handle('roomcast:update-download', async (event, name) => {
+        requireOwner(event, '不允许此窗口下载更新。');
+        if (!lastUpdateCheck?.available) throw new Error('请先检查更新。');
+        const asset = lastUpdateCheck.assets.find(item => item.name === name);
+        if (!asset) throw new Error('未在发布页找到该下载项。');
+        const destination = path.join(app.getPath('downloads'), path.basename(asset.name));
+        const result = await (await ensureUpdateChecker()).download(asset, destination, lastUpdateCheck.checksumUrl);
+        return { ...result, name: asset.name };
+      });
+      ipcMain.handle('roomcast:update-open-page', async event => {
+        requireOwner(event, '不允许此窗口打开发布页。');
+        const { RELEASES_PAGE } = await import(pathToFileURL(path.join(__dirname, 'update-check.mjs')).href);
+        const page = String(lastUpdateCheck?.pageUrl || '');
+        // Fall back to the repository releases page so a failed check or a timed-out
+        // download still leaves the user a manual route to the artifacts.
+        const target = /^https:\/\/github\.com\/lpossj\/roomcast\/releases\//.test(page) ? page : RELEASES_PAGE;
+        await shell.openExternal(target);
+        return { ok: true, url: target };
+      });
+      ipcMain.handle('roomcast:update-reveal', (event, filePath) => {
+        requireOwner(event, '不允许此窗口打开文件位置。');
+        const downloads = path.resolve(app.getPath('downloads'));
+        const target = path.resolve(String(filePath || ''));
+        if (target !== downloads && !target.startsWith(downloads + path.sep)) throw new Error('只能打开下载目录中的文件。');
+        shell.showItemInFolder(target);
+        return { ok: true };
       });
       ipcMain.handle('roomcast:copy-image', async (event, value) => {
         if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口写入图片剪贴板。');

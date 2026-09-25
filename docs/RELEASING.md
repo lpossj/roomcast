@@ -66,7 +66,7 @@ npm run verify:release
 - release/SHA256.txt
 - runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz
 
-发布前应在干净 Windows 10/11 x64 机器上完成当前版本对应的 `docs/RELEASE_CHECKLIST-<version>.md` 验收项。若该版本还没有检查表，先按 `docs/RELEASE_CHECKLIST-0.14.2-beta.8.md` 复制一份再执行，不要沿用上一版结论。
+发布前应在干净 Windows 10/11 x64 机器上完成当前版本对应的 `docs/RELEASE_CHECKLIST-<version>.md` 验收项。若该版本还没有检查表，先按 `docs/RELEASE_CHECKLIST-0.14.2-beta.9.md` 复制一份再执行，不要沿用上一版结论。
 
 ## 构建机卫生
 

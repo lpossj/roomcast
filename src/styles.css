@@ -3342,6 +3342,92 @@ select {
     color: inherit
 }
 
+/* Update check: version status, verified download and the rail hint. */
+.rail-button.has-update {
+    position: relative
+}
+
+.rail-update-dot {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--rail-bg, #0d1216)
+}
+
+.update-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0;
+    font-size: 12px;
+    color: var(--muted);
+    min-height: 18px
+}
+
+.update-status strong {
+    color: var(--accent)
+}
+
+.inline-error-text {
+    color: #ff9a9a
+}
+
+.update-notes {
+    margin: 0 0 9px;
+    padding: 9px 10px;
+    border: 1px solid #ffffff12;
+    border-radius: 8px;
+    background: #ffffff05;
+    max-height: 132px;
+    overflow-y: auto;
+    white-space: pre-wrap
+}
+
+.update-assets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-bottom: 8px
+}
+
+.update-assets .button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px
+}
+
+.update-assets small {
+    color: var(--muted)
+}
+
+.update-downloaded {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: var(--muted)
+}
+
+.update-manual {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid #ff9a9a33;
+    border-radius: 8px;
+    background: #ff9a9a0f;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #ffc9c9
+}
+
 @media(max-width:650px) {
     .settings-layout {
         flex-direction: column;

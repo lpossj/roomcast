@@ -53,6 +53,10 @@ const BACKGROUND_LEAVE_DELAY_MS = 30000;
 // small thumbnail, so oversized photos are downscaled once before being staged.
 const MAX_SHARED_IMAGE_EDGE = 2000;
 const APP_VERSION = typeof __ROOMCAST_VERSION__ === 'string' ? __ROOMCAST_VERSION__ : '';
+// Electron wraps IPC rejections as "Error invoking remote method 'x': Error: <message>".
+const cleanIpcError = error => String(error?.message || '操作失败')
+  .replace(/^Error invoking remote method '[^']*':\s*/, '')
+  .replace(/^Error:\s*/, '');
 
 async function shrinkForSharing(file) {
   // GIF keeps its animation; re-encoding would flatten it.
@@ -393,7 +397,41 @@ function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
   </Modal>;
 }
 
-function AboutPanel({ version = '' }) {
+function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, onDownload, onReveal }) {
+  const { status, result, error, downloading, downloaded } = update;
+  const [pageError, setPageError] = useState('');
+  const available = Boolean(result?.available);
+  const notes = String(result?.notes || '').replace(/\s+/g, ' ').slice(0, 320);
+  const failure = error || pageError;
+  return <section className="settings-section"><h3><Download size={17} />软件更新</h3>
+    <div className="diagnostic-row"><span>当前版本</span><span className="muted-text">{version || '未知'}</span></div>
+    <label className="switch-row"><span><ShieldCheck size={18} /><span>启动时自动检查更新</span></span><input type="checkbox" checked={autoCheck} onChange={event => { setAutoCheck(event.target.checked); savePreference('autoCheckUpdates', event.target.checked); }} /><span className="switch" aria-hidden="true" /></label>
+    <div className="update-status">
+      {status === 'checking' && <><LoaderCircle size={14} className="spin" />正在检查…</>}
+      {status === 'done' && !error && !available && <><Check size={14} />已是最新版本</>}
+      {available && <><Info size={14} />发现新版本 <strong>{result.version}</strong>{result.prerelease ? '（测试版）' : ''}</>}
+      {error && <span className="inline-error-text">{error}</span>}
+    </div>
+    {available && notes && <p className="about-note update-notes">{notes}{String(result.notes || '').length > 320 ? '…' : ''}</p>}
+    {available && <div className="update-assets">
+      {result.assets.map(asset => <button key={asset.name} type="button" className="button secondary small" disabled={Boolean(downloading)} onClick={() => onDownload(asset.name)}>
+        {downloading === asset.name ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
+        {/\.exe$/i.test(asset.name) ? '下载便携版 EXE' : /\.zip$/i.test(asset.name) ? '下载 ZIP' : asset.name}
+        <small>{asset.size ? `${(asset.size / 1024 / 1024).toFixed(0)} MB` : ''}</small>
+      </button>)}
+    </div>}
+    {downloaded && <div className="update-downloaded"><Check size={14} />已保存 {downloaded.name}{downloaded.verified ? '（SHA256 校验通过）' : '（发布页未提供校验值）'}<button type="button" className="button subtle small" onClick={() => onReveal(downloaded.path)}>打开文件位置</button></div>}
+    {failure && <div className="update-manual" role="alert"><Info size={15} /><span>{failure}</span></div>}
+    <div className="settings-buttons">
+      <button className="button subtle small" onClick={onCheck} disabled={status === 'checking'}>{status === 'checking' ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}检查更新</button>
+      {/* Always available: the API check or the download can time out behind a proxy. */}
+      <button className={`button ${failure ? 'secondary' : 'subtle'} small`} onClick={() => { setPageError(''); window.roomcast?.openReleasePage?.().catch(failure => setPageError(cleanIpcError(failure))); }}><Link size={15} />打开发布页（手动下载）</button>
+    </div>
+    <p className="about-note">更新检查只向 GitHub 公开发布接口请求版本信息（不发送任何标识），下载的安装包会用发布页的 SHA256.txt 校验；本版不会自动替换正在运行的程序。网络受限时可直接用上面的"打开发布页"在浏览器里下载。</p>
+  </section>;
+}
+
+function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck, onDownload, onReveal }) {
   return <>
     <section className="settings-section"><h3><Info size={17} />关于</h3>
       <div className="about-card">
@@ -416,7 +454,7 @@ function AboutPanel({ version = '' }) {
   </>;
 }
 
-function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor }) {
+function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor, update, autoCheckUpdates, setAutoCheckUpdates, onCheckUpdates, onDownloadUpdate }) {
   const [working, setWorking] = useState('');
   const [error, setError] = useState('');
   const [section, setSection] = useState('general');
@@ -446,7 +484,10 @@ function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refres
           {isDesktop && <section className="settings-section"><h3><MonitorUp size={17} />屏幕采集</h3><div className="diagnostic-row"><span>原生屏幕 / 窗口采集</span><span className="good-text"><Check size={14} />WebRTC P2P</span></div><div className="diagnostic-row"><span>采集引擎</span><span className="muted-text">OBS 固定帧率 / 原生采集</span></div></section>}</>}
         {active === 'network' && <section className="settings-section"><h3><Wifi size={17} />Cloudflare TURN 中继</h3><label className="switch-row"><span><ShieldCheck size={18} /><span>启用 TURN</span></span><input type="checkbox" checked={relaySettings.enabled} onChange={event => setRelaySettings({ ...relaySettings, enabled: event.target.checked })} /><span className="switch" aria-hidden="true" /></label><label className="standalone-label">Worker 地址<input value={relaySettings.endpoint} onChange={event => setRelaySettings({ ...relaySettings, endpoint: event.target.value })} placeholder="https://roomcast.example.com" spellCheck={false} /></label><label className="standalone-label">Worker 访问密钥<input type="password" value={relaySettings.accessKey} onChange={event => setRelaySettings({ ...relaySettings, accessKey: event.target.value })} placeholder="部署 Worker 时自己设置的随机密钥" autoComplete="off" /></label><div className="settings-buttons"><button className="button secondary small" onClick={testRelay} disabled={!relaySettings.enabled || !!working}>{working === 'relay' ? <LoaderCircle size={15} className="spin" /> : <Wifi size={15} />}保存并测试 TURN</button></div></section>}
         {active === 'service' && isDesktop && <section className="settings-section"><h3><Server size={17} />本地服务</h3><div className="diagnostic-row"><span>房间控制服务</span><span className={localConfig ? 'good-text' : 'muted-text'}>{localConfig ? <><Check size={14} />正在运行 · :{localConfig.port}</> : '无法连接'}</span></div><div className="settings-buttons"><button className="button subtle small" onClick={refresh}><RefreshCw size={15} />刷新状态</button></div></section>}
-        {active === 'about' && <AboutPanel version={localConfig?.version || APP_VERSION} />}
+        {active === 'about' && <>
+          <AboutPanel version={localConfig?.version || APP_VERSION} />
+          {isDesktop && <UpdateSection version={localConfig?.version || APP_VERSION} update={update} autoCheck={autoCheckUpdates} setAutoCheck={setAutoCheckUpdates} onCheck={onCheckUpdates} onDownload={onDownloadUpdate} onReveal={filePath => window.roomcast?.revealUpdate?.(filePath).catch(() => { })} />}
+        </>}
         {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
       </div>
     </div>
@@ -1061,6 +1102,39 @@ export default function App() {
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', onVisibilityChange); };
   }, [desktopChrome, notify]);
+
+  // Desktop-only update check. The web client is served from the host's own bundle, so it
+  // has nothing to update; the main process owns the request, the asset URLs and hashing.
+  const [update, setUpdate] = useState({ status: 'idle', result: null, error: '', downloading: '', downloaded: null });
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState(() => loadPreference('autoCheckUpdates', true));
+  const updateAvailable = Boolean(update.result?.available);
+  const checkUpdates = useCallback(async () => {
+    if (!window.roomcast?.checkForUpdates) return;
+    setUpdate(current => ({ ...current, status: 'checking', error: '' }));
+    try {
+      const result = await window.roomcast.checkForUpdates();
+      setUpdate(current => ({ ...current, status: 'done', result: result || null, downloaded: null }));
+    } catch (error) {
+      setUpdate(current => ({ ...current, status: 'done', error: cleanIpcError(error) }));
+    }
+  }, []);
+  useEffect(() => {
+    if (!desktopChrome || !autoCheckUpdates) return undefined;
+    // A check is a plain GitHub API request; keep it off the startup path.
+    const timer = setTimeout(() => { void checkUpdates(); }, 4000);
+    return () => clearTimeout(timer);
+  }, [desktopChrome, autoCheckUpdates, checkUpdates]);
+  const downloadUpdate = async name => {
+    if (!window.roomcast?.downloadUpdate) return;
+    setUpdate(current => ({ ...current, downloading: name, error: '' }));
+    try {
+      const result = await window.roomcast.downloadUpdate(name);
+      setUpdate(current => ({ ...current, downloading: '', downloaded: result || null }));
+      notify(result?.verified ? `已下载并校验通过：${result.name}` : `已下载（发布页未提供校验值）：${result?.name || name}`);
+    } catch (error) {
+      setUpdate(current => ({ ...current, downloading: '', error: cleanIpcError(error) }));
+    }
+  };
   const startShare = async options => {
     if (!room || shareBusy) return;
     const screenSocket = socketRef.current;
@@ -1356,7 +1430,7 @@ export default function App() {
 
   return <div className={`app-shell ${showChat ? '' : 'chat-hidden'} ${showMembers ? 'members-open' : ''} ${desktopChrome ? 'desktop-chrome' : ''}`}>
     {desktopChrome && <div className="roomcast-titlebar" aria-hidden="true"><span className="roomcast-titlebar-logo"><span className="roomcast-titlebar-mark"><i /><i /></span></span><span className="roomcast-titlebar-name">同屏 Roomcast</span></div>}
-    <aside className="icon-rail"><button className="brand-icon" title="同屏 Roomcast" aria-label="同屏首页" onClick={() => { if (!room) setModal(null); }}><span className="brand-mark"><span /><span /></span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => !room && setModal('create')}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : '创建房间'} aria-label={room ? '邀请朋友' : '创建房间'} onClick={() => setModal(room ? 'invite' : 'create')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title="离开房间" aria-label="离开房间" onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className="rail-button" title="设置" aria-label="设置" onClick={() => setModal('settings')}><Settings size={21} /></button><div className={`rail-avatar ${avatarClass(self?.avatarColor)}`} title={self?.name || '尚未加入'}>{initials(self?.name || loadPreference('nickname', '') || '你')}</div></aside>
+    <aside className="icon-rail"><button className="brand-icon" title="同屏 Roomcast" aria-label="同屏首页" onClick={() => { if (!room) setModal(null); }}><span className="brand-mark"><span /><span /></span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => !room && setModal('create')}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : '创建房间'} aria-label={room ? '邀请朋友' : '创建房间'} onClick={() => setModal(room ? 'invite' : 'create')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title="离开房间" aria-label="离开房间" onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className={`rail-button ${updateAvailable ? 'has-update' : ''}`} title={updateAvailable ? `设置 · 有可用更新 ${update.result.version}` : '设置'} aria-label={updateAvailable ? `设置，有可用更新 ${update.result.version}` : '设置'} onClick={() => setModal('settings')}><Settings size={21} />{updateAvailable && <span className="rail-update-dot" aria-hidden="true" />}</button><div className={`rail-avatar ${avatarClass(self?.avatarColor)}`} title={self?.name || '尚未加入'}>{initials(self?.name || loadPreference('nickname', '') || '你')}</div></aside>
 
     <aside className="channel-sidebar"><header className="brand-header"><div><strong>同屏<span>Roomcast</span></strong><small>A SPACE FOR YOUR PEOPLE</small></div><span className="version-pill">BETA</span>{!desktopChrome && <button className="icon-button mobile-members-close" aria-label="关闭成员栏" onClick={() => setShowMembers(false)}><X size={18} /></button>}</header><div className="sidebar-section-heading"><span>房间</span></div><button className="channel-item selected" onClick={() => !room && setModal('create')}><Volume2 size={19} /><span>{room?.name || '开始你的房间'}</span>{room ? <span className="channel-count">{room.members.length}</span> : <ChevronRight size={16} />}</button><div className="channel-subtitle"><span className={`status-dot ${room ? 'online' : ''}`} />{room ? `${room.members.length} 人在线 · 最多 10 人` : '房间准备好了，只差你们'}</div>
       <div className="sidebar-section-heading members-heading"><span>成员 <small>{room ? String(room.members.length).padStart(2, '0') : '00'}</small></span><Users size={14} /></div>
@@ -1390,7 +1464,7 @@ export default function App() {
     </main>
     {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} onClose={() => setModal(null)} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
     {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} />}
-    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
+    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
     {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
     {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}
     {previewImage && <ImagePreviewOverlay key={previewImage.src} image={previewImage} onClose={() => setPreviewImage(null)} onImageContextMenu={handleImageContextMenu} onCopy={copyPreviewImage} onDownload={downloadPreviewImage} />}

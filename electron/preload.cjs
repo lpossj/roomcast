@@ -35,6 +35,16 @@ contextBridge.exposeInMainWorld('roomcast', {
   saveImage: (bytes, fileName) =>
     ipcRenderer.invoke('roomcast:save-image', bytes, fileName),
 
+  checkForUpdates: () =>
+    ipcRenderer.invoke('roomcast:update-check'),
+  // The renderer only names an asset from the last check; the main process owns the URL.
+  downloadUpdate: name =>
+    ipcRenderer.invoke('roomcast:update-download', name),
+  openReleasePage: () =>
+    ipcRenderer.invoke('roomcast:update-open-page'),
+  revealUpdate: filePath =>
+    ipcRenderer.invoke('roomcast:update-reveal', filePath),
+
   audioSources: () =>
     ipcRenderer.invoke('roomcast:audio-sources'),
 

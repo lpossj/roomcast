@@ -28,6 +28,7 @@ Roomcast 是本地运行的 Windows Electron 屏幕共享与文字聊天程序�
 Roomcast 自身不运营中心化聊天或媒体存储服务，但默认可能使用以下第三方网络服务：
 
 - Cloudflare Quick Tunnel（`trycloudflare.com`，由随包内置的 `cloudflared` 2026.9.2 建立）：只用于桌面端"分享房间"时临时发布静态网页入口。Cloudflare 会终结这段 TLS，能看到页面请求、请求时间与访问者 IP，并可能按其自身策略记录这些元数据；它不会收到邀请密钥（保存在 URL 片段中）。房间结束或退出应用后该入口关闭，地址也会失效。
+- GitHub 公开发布接口（`api.github.com`）：桌面端"设置 → 关于"的更新检查会请求该接口获取版本号、更新说明与产物列表。请求不携带任何设备标识、房间信息或使用数据，但 GitHub 能看到发起请求的 IP 与时间。该检查默认开启，可在"设置 → 关于 → 启动时自动检查更新"关闭；关闭后不会发起任何更新相关请求。更新包只从发布页提供的地址下载，并用发布页的 `SHA256.txt` 校验。
 - PeerJS 公共信令服务：未配置 PEER_SERVER_URL 时，P2P 连接控制元数据和 ICE 信息可能经过 PeerJS 公共云。
 - VDO.Ninja：VDO direct fallback 可能连接 wss://wss.vdo.ninja。
 - Cloudflare TURN 或你自行配置的 TURN 服务：只有 direct race exhausted 后才可能使用；TURN 服务商可能看到连接元数据、IP 和加密媒体流量，但不应看到聊天文字或本地文件。
