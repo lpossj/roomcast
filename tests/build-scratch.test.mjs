@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { cleanBuildScratch, inspectBuildScratch } from '../scripts/clean-build-scratch.mjs';
@@ -72,13 +72,17 @@ test('build scratch inspection only matches abandoned electron-builder temp dire
 test('build scratch cleanup is a dry run without apply and keeps fresh directories', () => {
   const root = fixture();
   try {
+    const mtimeBefore = statSync(path.join(root, 'nsAAAA11.tmp')).mtimeMs;
     const preview = cleanBuildScratch({ tempDir: root });
     assert.equal(preview.applied, false);
     assert.deepEqual(preview.removed.map(item => item.name).sort(), ['nsAAAA11.tmp', 'nsBBBB22.tmp']);
     assert.deepEqual(preview.recent.map(item => item.name), ['nsDDDD44.tmp']);
     assert.equal(preview.bytes, 1024 + 2048);
-    // A dry run must not have removed or renamed anything.
+    // A dry run must not have removed or renamed anything, including the directory mtimes
+    // the age guard depends on.
     assert.deepEqual(inspectBuildScratch({ tempDir: root }).map(item => item.name).sort(), ['nsAAAA11.tmp', 'nsBBBB22.tmp', 'nsDDDD44.tmp']);
+    assert.equal(statSync(path.join(root, 'nsAAAA11.tmp')).mtimeMs, mtimeBefore);
+    assert.equal(statSync(path.join(root, 'nsBBBB22.tmp')).mtimeMs, mtimeBefore);
 
     const applied = cleanBuildScratch({ tempDir: root, apply: true });
     assert.equal(applied.applied, true);

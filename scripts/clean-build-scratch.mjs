@@ -99,15 +99,17 @@ export function cleanBuildScratch({ tempDir = os.tmpdir(), minAgeMs = DEFAULT_MI
   let bytes = 0;
 
   for (const item of stale) {
+    // Only probe when actually deleting. Renaming a directory refreshes its mtime, so
+    // probing during a dry run would make the directory look freshly written and the age
+    // guard would then refuse to ever clean it.
+    if (!apply) {
+      removed.push(item);
+      bytes += item.bytes;
+      continue;
+    }
     const claimed = claim(item.dir);
     if (!claimed) {
       inUse.push(item);
-      continue;
-    }
-    if (!apply) {
-      try { renameSync(claimed, item.dir); } catch (error) { onLog(`未能还原 ${item.name}：${error.message}`); }
-      removed.push(item);
-      bytes += item.bytes;
       continue;
     }
     try {
