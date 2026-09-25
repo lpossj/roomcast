@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+
+// package.json stays the single version source; the renderer only receives it read-only.
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 
 // Keep the desktop server implementation intact while sharing its room rules with web hosts.
 // The rewrite is textual, so it must fail the build instead of silently shipping node:crypto
@@ -19,6 +23,7 @@ const browserRoomCrypto = {
 };
 export default defineConfig({
   plugins: [react(), browserRoomCrypto],
+  define: { __ROOMCAST_VERSION__: JSON.stringify(version) },
   server: { proxy: { '/api': 'http://127.0.0.1:3210', '/socket.io': { target: 'http://127.0.0.1:3210', ws: true }, '/media': 'http://127.0.0.1:3210' } },
   build: { outDir: 'dist', sourcemap: false },
 });

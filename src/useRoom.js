@@ -418,6 +418,7 @@ export default function useRoom(onError) {
 
   const leave = useCallback(async (shutdown = false) => {
     const socket = socketRef.current;
+    let outcome = null;
 
     if (socket) {
       if (!shutdown && socket.connected) {
@@ -429,7 +430,7 @@ export default function useRoom(onError) {
         && socket.p2p
         && typeof socket.leave === 'function'
       ) {
-        await socket.leave();
+        outcome = await socket.leave();
       } else if (!shutdown && socket.connected) {
         await ack(socket, 'room:leave').catch(() => { });
       }
@@ -448,6 +449,8 @@ export default function useRoom(onError) {
     setOwnerToken('');
     setConfig(null);
     setConnection('idle');
+
+    return outcome;
   }, [clearMessages]);
 
   const enter = useCallback(async (mode, details) => {

@@ -2,6 +2,7 @@ import { AppWindow, ArrowRight, AudioLines, Check, ChevronDown, ChevronRight, Co
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ScreenPlayer from './ScreenPlayer.jsx';
 import { ack, attachNativeAudio, initials, integratedSources, nativeAudioSources, startIntegratedCapture, startObsFixedFpsCapture, timeLabel } from './lib.js';
+import { readImageDimensions } from './image-policy.js';
 import { loadPreference, savePreference } from './preferences.js';
 import { fetchRelayIce, loadRelaySettings, saveRelaySettings } from './relay.js';
 import useDevices from './useDevices.js';
@@ -45,6 +46,43 @@ try {
 } catch { rememberedInvite = ''; }
 const initialInvite = fragmentInvite || rememberedInvite || params.get('room') || '';
 const MAX_CHAT_IMAGES = 4;
+// A backgrounded page cannot answer the room handover probe, so web clients leave the
+// room after this long hidden instead of blocking the desktop owner from exiting.
+const BACKGROUND_LEAVE_DELAY_MS = 30000;
+// Phone photos decode to tens of MB at full resolution while the chat only ever shows a
+// small thumbnail, so oversized photos are downscaled once before being staged.
+const MAX_SHARED_IMAGE_EDGE = 2000;
+const APP_VERSION = typeof __ROOMCAST_VERSION__ === 'string' ? __ROOMCAST_VERSION__ : '';
+
+async function shrinkForSharing(file) {
+  // GIF keeps its animation; re-encoding would flatten it.
+  if (String(file.type || '').toLowerCase() === 'image/gif') return file;
+  if (typeof createImageBitmap !== 'function') return file;
+  // Read the header instead of decoding first: a 12 megapixel JPEG can be well under
+  // 1 MB, so file size says nothing about the decoded bitmap.
+  let declared;
+  try { declared = readImageDimensions(file.type, new Uint8Array(await file.slice(0, 64 * 1024).arrayBuffer())); } catch { declared = null; }
+  if (declared && Math.max(declared.width, declared.height) <= MAX_SHARED_IMAGE_EDGE) return file;
+  let bitmap;
+  try { bitmap = await createImageBitmap(file); } catch { return file; }
+  try {
+    const longest = Math.max(bitmap.width, bitmap.height);
+    if (!longest || longest <= MAX_SHARED_IMAGE_EDGE) return file;
+    const scale = MAX_SHARED_IMAGE_EDGE / longest;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) return file;
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.9));
+    // Browsers without WebP encoding would silently fall back to another format; keeping
+    // the original is safer than changing the user's image behind their back.
+    if (!blob || blob.type !== 'image/webp' || blob.size > 10 * 1024 * 1024) return file;
+    const stem = String(file.name || 'image').replace(/\.[^.]+$/, '') || 'image';
+    return new File([blob], `${stem}.webp`, { type: 'image/webp', lastModified: file.lastModified || Date.now() });
+  } finally { bitmap.close?.(); }
+}
 const DEFAULT_THEME_COLOR = '#78ddbd';
 const THEME_MODE_CUSTOM = 'custom';
 const THEME_MODE_WINDOWS = 'windows';
@@ -355,20 +393,64 @@ function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
   </Modal>;
 }
 
-function SettingsModal({ onClose, isDesktop, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor }) {
+function AboutPanel({ version = '' }) {
+  return <>
+    <section className="settings-section"><h3><Info size={17} />关于</h3>
+      <div className="about-card">
+        <div className="about-brand"><span className="brand-mark"><span /><span /></span><div><strong>同屏 Roomcast</strong><span>{version ? `版本 ${version}` : '本地开发版'} · 公开测试版（Beta）</span></div></div>
+        <p className="about-line">作者与维护：D4Y0 / Roomcast</p>
+        <p className="about-line">问题反馈：<a href="https://github.com/lpossj/roomcast/issues" target="_blank" rel="noreferrer noopener">GitHub Issues</a> · 2106841308@qq.com · z2106841308@163.com</p>
+        <p className="about-line">源码仓库：<a href="https://github.com/lpossj/roomcast" target="_blank" rel="noreferrer noopener">github.com/lpossj/roomcast</a></p>
+      </div>
+    </section>
+    <section className="settings-section"><h3><ShieldCheck size={17} />使用声明</h3>
+      <p className="about-note">仅用于合法、知情同意的屏幕共享与聊天。禁止用于未经同意的监控、偷拍、监听、跟踪、骚扰或其他违法用途；使用者应自行遵守当地法律与平台规则。</p>
+      <p className="about-note">房间状态与聊天是内存态，房间结束后释放，不写入数据库。屏幕媒体通过 WebRTC DTLS-SRTP 在成员之间传输。</p>
+      <p className="about-note">网页观看入口基于 Cloudflare Quick Tunnel（临时地址、可能变化且不保证可用性，有并发限制），仅由"分享房间"按需创建；邀请链接等同于入房凭据，请只发给预期成员。</p>
+      <p className="about-note">未使用商业代码签名，Windows SmartScreen 可能提示未知发布者；下载后请核对发布页提供的 SHA-256。</p>
+    </section>
+    <section className="settings-section"><h3><Palette size={17} />许可与第三方组件</h3>
+      <p className="about-note">Roomcast 主体源码采用 Apache License 2.0。</p>
+      <p className="about-note">随包组件：OBS Studio 32.1.2（GPL-2.0-or-later，附对应源码归档）、cloudflared 2026.9.2（Apache-2.0）、Windows 系统音频 loopback 采集组件（第三方 MIT 预编译二进制）。完整清单见安装目录下的 <code>NOTICE</code> 与 <code>THIRD-PARTY-NOTICES.txt</code>，隐私与安全边界见 <code>PRIVACY.md</code> 与 <code>SECURITY.md</code>。</p>
+    </section>
+  </>;
+}
+
+function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor }) {
   const [working, setWorking] = useState('');
   const [error, setError] = useState('');
+  const [section, setSection] = useState('general');
   const testRelay = async () => { setWorking('relay'); setError(''); try { const servers = await fetchRelayIce(relaySettings); setRelaySettings(relaySettings); alert(`TURN 可用，已获取 ${servers.length} 组临时 ICE 地址。`); } catch (failure) { setError(failure.message); } finally { setWorking(''); } };
   const themePresets = ['#78ddbd', '#6aa9ff', '#a98bff', '#ff8fb8', '#f0b35f', '#8bd36e'];
-  return <Modal title="本机与连接设置" onClose={onClose} wide busy={!!working}>
-    <section className="settings-section"><h3><Palette size={17} />界面主题</h3><div className="theme-mode-toggle" role="group" aria-label="主题颜色来源"><button type="button" className={themeMode === THEME_MODE_WINDOWS ? 'selected' : ''} onClick={() => setThemeMode(THEME_MODE_WINDOWS)}>跟随 Windows</button><button type="button" className={themeMode === THEME_MODE_CUSTOM ? 'selected' : ''} onClick={() => setThemeMode(THEME_MODE_CUSTOM)}>自定义</button></div>{themeMode === THEME_MODE_CUSTOM ? <><div className="theme-color-row"><label className="theme-color-picker" title="选择自定义主题色"><input type="color" value={themeColor} onChange={event => setThemeColor(event.target.value)} aria-label="选择主题色" /><span className="theme-color-swatch" style={{ background: themeColor }} /></label><div className="theme-preset-list" aria-label="主题色预设">{themePresets.map(color => <button key={color} type="button" className={`theme-preset ${themeColor === color ? 'selected' : ''}`} style={{ '--swatch': color }} onClick={() => setThemeColor(color)} aria-label={`使用主题色 ${color}`}><span /></button>)}</div><button type="button" className="button subtle small" onClick={() => setThemeColor(DEFAULT_THEME_COLOR)} disabled={themeColor === DEFAULT_THEME_COLOR}>恢复默认</button></div><div className="theme-color-value"><span>当前主题色</span><code>{themeColor.toUpperCase()}</code></div></> : <div className="theme-windows-color"><span className="theme-windows-swatch" style={{ background: effectiveThemeColor }} aria-hidden="true" /><span>使用 Windows 强调色</span><code>{effectiveThemeColor.toUpperCase()}</code></div>}</section>
-    <section className="settings-section"><h3><Headphones size={17} />共享音频设备</h3><div className="device-grid"><label>共享用麦克风<select aria-label="选择麦克风" value={devicePreferences.inputId} onChange={event => setDevicePreferences(value => ({ ...value, inputId: event.target.value }))}><option value="">系统默认麦克风</option>{devices.inputs.filter(item => item.id && item.id !== 'default').map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label>共享声音播放设备<select aria-label="选择扬声器" value={devicePreferences.outputId} onChange={event => setDevicePreferences(value => ({ ...value, outputId: event.target.value }))}><option value="">系统默认扬声器</option>{devices.outputs.filter(item => item.id && item.id !== 'default').map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label></div><div className="settings-buttons"><button className="button subtle small" onClick={() => refreshDevices().catch(failure => setError(failure.message))}><RefreshCw size={15} />刷新设备</button></div></section>
-    <section className="settings-section"><h3><Wifi size={17} />Cloudflare TURN 中继</h3><label className="switch-row"><span><ShieldCheck size={18} /><span>启用 TURN</span></span><input type="checkbox" checked={relaySettings.enabled} onChange={event => setRelaySettings({ ...relaySettings, enabled: event.target.checked })} /><span className="switch" aria-hidden="true" /></label><label className="standalone-label">Worker 地址<input value={relaySettings.endpoint} onChange={event => setRelaySettings({ ...relaySettings, endpoint: event.target.value })} placeholder="https://roomcast.example.com" spellCheck={false} /></label><label className="standalone-label">Worker 访问密钥<input type="password" value={relaySettings.accessKey} onChange={event => setRelaySettings({ ...relaySettings, accessKey: event.target.value })} placeholder="部署 Worker 时自己设置的随机密钥" autoComplete="off" /></label><div className="settings-buttons"><button className="button secondary small" onClick={testRelay} disabled={!relaySettings.enabled || !!working}>{working === 'relay' ? <LoaderCircle size={15} className="spin" /> : <Wifi size={15} />}保存并测试 TURN</button></div></section>
-    {isDesktop && <section className="settings-section"><h3><Server size={17} />本地服务</h3><div className="diagnostic-row"><span>房间控制服务</span><span className={localConfig ? 'good-text' : 'muted-text'}>{localConfig ? <><Check size={14} />正在运行 · :{localConfig.port}</> : '无法连接'}</span></div><div className="settings-buttons"><button className="button subtle small" onClick={refresh}><RefreshCw size={15} />刷新状态</button></div></section>}
-    <section className="settings-section"><h3><MonitorUp size={17} />屏幕采集</h3><div className="diagnostic-row"><span>原生屏幕 / 窗口采集</span><span className="good-text"><Check size={14} />WebRTC P2P</span></div></section>
-
-    {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
-    <footer className="settings-footer"><span><ShieldCheck size={14} />P2P 房间 · 最多 10 人</span><span>{localConfig?.version ? `Roomcast ${localConfig.version}` : 'Roomcast'}</span></footer>
+  // Web clients cannot capture a screen or enumerate capture devices, so those sections
+  // are not rendered at all instead of being shown disabled.
+  const sections = [
+    { id: 'general', label: '通用', icon: Palette },
+    ...(canShareScreen ? [{ id: 'audio', label: '音频与采集', icon: Headphones }] : []),
+    { id: 'network', label: '网络', icon: Wifi },
+    ...(isDesktop ? [{ id: 'service', label: '本地服务', icon: Server }] : []),
+    { id: 'about', label: '关于', icon: Info },
+  ];
+  const active = sections.some(item => item.id === section) ? section : 'general';
+  return <Modal title="设置" onClose={onClose} wide busy={!!working}>
+    <div className="settings-layout">
+      <nav className="settings-nav" aria-label="设置分类">
+        {sections.map(item => <button key={item.id} type="button" className={active === item.id ? 'selected' : ''} aria-current={active === item.id ? 'true' : undefined} onClick={() => setSection(item.id)}><item.icon size={16} />{item.label}</button>)}
+      </nav>
+      <div className="settings-panel">
+        {active === 'general' && <>
+          <section className="settings-section"><h3><Palette size={17} />界面主题</h3><div className="theme-mode-toggle" role="group" aria-label="主题颜色来源"><button type="button" className={themeMode === THEME_MODE_WINDOWS ? 'selected' : ''} onClick={() => setThemeMode(THEME_MODE_WINDOWS)}>跟随 Windows</button><button type="button" className={themeMode === THEME_MODE_CUSTOM ? 'selected' : ''} onClick={() => setThemeMode(THEME_MODE_CUSTOM)}>自定义</button></div>{themeMode === THEME_MODE_CUSTOM ? <><div className="theme-color-row"><label className="theme-color-picker" title="选择自定义主题色"><input type="color" value={themeColor} onChange={event => setThemeColor(event.target.value)} aria-label="选择主题色" /><span className="theme-color-swatch" style={{ background: themeColor }} /></label><div className="theme-preset-list" aria-label="主题色预设">{themePresets.map(color => <button key={color} type="button" className={`theme-preset ${themeColor === color ? 'selected' : ''}`} style={{ '--swatch': color }} onClick={() => setThemeColor(color)} aria-label={`使用主题色 ${color}`}><span /></button>)}</div><button type="button" className="button subtle small" onClick={() => setThemeColor(DEFAULT_THEME_COLOR)} disabled={themeColor === DEFAULT_THEME_COLOR}>恢复默认</button></div><div className="theme-color-value"><span>当前主题色</span><code>{themeColor.toUpperCase()}</code></div></> : <div className="theme-windows-color"><span className="theme-windows-swatch" style={{ background: effectiveThemeColor }} aria-hidden="true" /><span>使用 Windows 强调色</span><code>{effectiveThemeColor.toUpperCase()}</code></div>}</section>
+          {isDesktop && <section className="settings-section"><h3><MonitorUp size={17} />屏幕采集</h3><div className="diagnostic-row"><span>原生屏幕 / 窗口采集</span><span className="good-text"><Check size={14} />WebRTC P2P</span></div></section>}
+        </>}
+        {active === 'audio' && <><section className="settings-section"><h3><Headphones size={17} />共享音频设备</h3><div className="device-grid"><label>共享用麦克风<select aria-label="选择麦克风" value={devicePreferences.inputId} onChange={event => setDevicePreferences(value => ({ ...value, inputId: event.target.value }))}><option value="">系统默认麦克风</option>{devices.inputs.filter(item => item.id && item.id !== 'default').map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label>共享声音播放设备<select aria-label="选择扬声器" value={devicePreferences.outputId} onChange={event => setDevicePreferences(value => ({ ...value, outputId: event.target.value }))}><option value="">系统默认扬声器</option>{devices.outputs.filter(item => item.id && item.id !== 'default').map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label></div><div className="settings-buttons"><button className="button subtle small" onClick={() => refreshDevices().catch(failure => setError(failure.message))}><RefreshCw size={15} />刷新设备</button></div></section>
+          {isDesktop && <section className="settings-section"><h3><MonitorUp size={17} />屏幕采集</h3><div className="diagnostic-row"><span>原生屏幕 / 窗口采集</span><span className="good-text"><Check size={14} />WebRTC P2P</span></div><div className="diagnostic-row"><span>采集引擎</span><span className="muted-text">OBS 固定帧率 / 原生采集</span></div></section>}</>}
+        {active === 'network' && <section className="settings-section"><h3><Wifi size={17} />Cloudflare TURN 中继</h3><label className="switch-row"><span><ShieldCheck size={18} /><span>启用 TURN</span></span><input type="checkbox" checked={relaySettings.enabled} onChange={event => setRelaySettings({ ...relaySettings, enabled: event.target.checked })} /><span className="switch" aria-hidden="true" /></label><label className="standalone-label">Worker 地址<input value={relaySettings.endpoint} onChange={event => setRelaySettings({ ...relaySettings, endpoint: event.target.value })} placeholder="https://roomcast.example.com" spellCheck={false} /></label><label className="standalone-label">Worker 访问密钥<input type="password" value={relaySettings.accessKey} onChange={event => setRelaySettings({ ...relaySettings, accessKey: event.target.value })} placeholder="部署 Worker 时自己设置的随机密钥" autoComplete="off" /></label><div className="settings-buttons"><button className="button secondary small" onClick={testRelay} disabled={!relaySettings.enabled || !!working}>{working === 'relay' ? <LoaderCircle size={15} className="spin" /> : <Wifi size={15} />}保存并测试 TURN</button></div></section>}
+        {active === 'service' && isDesktop && <section className="settings-section"><h3><Server size={17} />本地服务</h3><div className="diagnostic-row"><span>房间控制服务</span><span className={localConfig ? 'good-text' : 'muted-text'}>{localConfig ? <><Check size={14} />正在运行 · :{localConfig.port}</> : '无法连接'}</span></div><div className="settings-buttons"><button className="button subtle small" onClick={refresh}><RefreshCw size={15} />刷新状态</button></div></section>}
+        {active === 'about' && <AboutPanel version={localConfig?.version || APP_VERSION} />}
+        {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
+      </div>
+    </div>
+    <footer className="settings-footer"><span><ShieldCheck size={14} />P2P 房间 · 最多 10 人</span><span>{localConfig?.version || APP_VERSION ? `Roomcast ${localConfig?.version || APP_VERSION}` : 'Roomcast'}</span></footer>
   </Modal>;
 }
 
@@ -954,9 +1036,31 @@ export default function App() {
   const handleLeave = async () => {
     if (ownsCapture.current) { ownsCapture.current = false; try { await stopLocalShare(); } catch (error) { notify(`停止采集失败：${error.message}`); } }
     try {
-      await leave(); setModal(null); setChat(''); refresh();
+      const outcome = await leave(); setModal(null); setChat(''); refresh();
+      if (outcome?.closed) notify(outcome.reason || '房间已关闭。');
     } catch (error) { notify(error.message); }
   };
+  // A backgrounded web page cannot answer the room handover probe, which used to leave the
+  // desktop owner unable to exit. Web clients therefore leave the room themselves once the
+  // page has been hidden for a while; the remembered invite makes rejoining a single tap.
+  const backgroundLeaveRef = useRef(handleLeave);
+  backgroundLeaveRef.current = handleLeave;
+  useEffect(() => {
+    if (desktopChrome) return undefined;
+    let timer;
+    const onVisibilityChange = () => {
+      clearTimeout(timer);
+      if (document.visibilityState !== 'hidden') return;
+      timer = setTimeout(() => {
+        if (!socketRef.current) return;
+        void backgroundLeaveRef.current();
+        setModal(initialInvite ? 'join' : null);
+        notify('页面在后台停留过久，已退出房间；返回后可直接重新加入。');
+      }, BACKGROUND_LEAVE_DELAY_MS);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', onVisibilityChange); };
+  }, [desktopChrome, notify]);
   const startShare = async options => {
     if (!room || shareBusy) return;
     const screenSocket = socketRef.current;
@@ -1064,10 +1168,17 @@ export default function App() {
         return;
       }
     }
-    const staged = list.map(file => ({ file, objectUrl: URL.createObjectURL(file) }));
-    setPendingImages(current => [...current, ...staged]);
-    stickToChatEnd.current = true;
-    requestAnimationFrame(() => chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+    void (async () => {
+      const prepared = await Promise.all(list.map(async file => {
+        const shrunk = await shrinkForSharing(file).catch(() => file);
+        if (shrunk.size > 10 * 1024 * 1024) return file;
+        return shrunk;
+      }));
+      const staged = prepared.map(file => ({ file, objectUrl: URL.createObjectURL(file) }));
+      setPendingImages(current => [...current, ...staged]);
+      stickToChatEnd.current = true;
+      requestAnimationFrame(() => chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+    })();
   }, [notify, room, sendingImage]);
   const chooseImage = event => {
     stageImages(event.target.files);
@@ -1275,11 +1386,11 @@ export default function App() {
         </form></aside>}
       </div>
 
-      <footer className="voice-dock"><div className="dock-controls"><button className="button share-button" onClick={openShare} disabled={!canShareScreen || shareBusy || (!!room && !self?.canShare && !ownShare)} title={!canShareScreen ? '当前浏览器不支持屏幕采集，可以观看和聊天' : undefined}>{shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={19} />}<span>{!canShareScreen ? '仅支持观看' : ownShare ? '修改共享设置' : '共享屏幕'}</span></button>{ownShare && <button className="control-button leave-button" onClick={stopShare} disabled={shareBusy} title="停止共享" aria-label="停止共享"><Square size={16} /></button>}</div></footer>
+      <footer className="voice-dock">{canShareScreen && <div className="dock-controls"><button className="button share-button" onClick={openShare} disabled={shareBusy || (!!room && !self?.canShare && !ownShare)}>{shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={19} />}<span>{ownShare ? '修改共享设置' : '共享屏幕'}</span></button>{ownShare && <button className="control-button leave-button" onClick={stopShare} disabled={shareBusy} title="停止共享" aria-label="停止共享"><Square size={16} /></button>}</div>}</footer>
     </main>
     {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} onClose={() => setModal(null)} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
     {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} />}
-    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
+    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
     {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
     {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}
     {previewImage && <ImagePreviewOverlay key={previewImage.src} image={previewImage} onClose={() => setPreviewImage(null)} onImageContextMenu={handleImageContextMenu} onCopy={copyPreviewImage} onDownload={downloadPreviewImage} />}

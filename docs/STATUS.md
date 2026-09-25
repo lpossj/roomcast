@@ -24,8 +24,9 @@
 - 浏览器端与桌面端共用同一套房间规则（`server/rooms.mjs`），浏览器加密垫片与 Node `crypto` 结果逐字节一致（含 scrypt 密码房路径）。
 - 非房主成员重新分享邀请时会携带自建信令地址（邀请中的 `signal` 参数）。
 - 打包后的 `runtime/web-invite/cloudflared.exe` 会被 `verify:release` 校验存在与 SHA256。
+- 真实浏览器（0.14.2-beta.8）实测：被挂起的访客页面不再阻止房主退出（房主 1.03 秒退出并提示房间已关闭）；网页端页面后台停留 30 秒后自动退房；4000×3000 照片暂存后缩放为 2000×1500，页面不再出现可滚动溢出；不提供 `getDisplayMedia` 的浏览器不再渲染共享入口。
 
-详细检查表见 docs/RELEASE_CHECKLIST-0.14.2-beta.7.md。
+详细检查表见 docs/RELEASE_CHECKLIST-0.14.2-beta.8.md。
 
 ## 尚未充分验证
 

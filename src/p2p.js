@@ -1627,7 +1627,25 @@ export class P2PRoom {
         await this.sendControl(candidate, 'migration:abort', {}, 500).catch(() => { });
       }
     }
-    if (!exported) throw prepareError;
+    if (!exported) {
+      if (healthy.length) {
+        // Responding members exist, so the handover can still succeed on a retry.
+        throw prepareError;
+      }
+
+      // Nobody answered the handover probe. A backgrounded mobile page cannot respond,
+      // and refusing to leave here used to trap the owner in the room until that member
+      // finally dropped. Disconnecting closes the coordinator instead of handing the
+      // room to a member that is not reachable.
+      this.disconnect();
+
+      return {
+        ok: true,
+        closed: true,
+        reason:
+          '其他成员当前无法接管房间，房间已关闭。',
+      };
+    }
 
     try {
       const armed = await this.sendControl(successor, 'migration:arm', {
