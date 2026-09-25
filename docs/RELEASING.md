@@ -66,7 +66,22 @@ npm run verify:release
 - release/SHA256.txt
 - runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz
 
-发布前应在干净 Windows 10/11 x64 机器上完成当前版本对应的 `docs/RELEASE_CHECKLIST-<version>.md` 验收项。若该版本还没有检查表，先按 `docs/RELEASE_CHECKLIST-0.14.2-beta.6.md` 复制一份再执行，不要沿用上一版结论。
+发布前应在干净 Windows 10/11 x64 机器上完成当前版本对应的 `docs/RELEASE_CHECKLIST-<version>.md` 验收项。若该版本还没有检查表，先按 `docs/RELEASE_CHECKLIST-0.14.2-beta.7.md` 复制一份再执行，不要沿用上一版结论。
+
+## 构建机卫生
+
+electron-builder 的 portable / NSIS 目标会在 `%TEMP%` 下使用一个 `ns<random>.tmp` 工作目录，里面是完整的应用归档（`app-64.7z`，约 0.5–1.2 GB）。构建成功时它会自行清理，但构建被中断时会留下残骸，反复打包会静默占满磁盘。
+
+```powershell
+npm run clean:build-scratch         # 只列出可回收的目录
+npm run clean:build-scratch:apply   # 实际删除
+```
+
+清理器有四重护栏：目录必须位于临时目录根下、名字匹配 `ns*.tmp`、内部存在 `app-64.7z` 或 `7z-out/`、最近 60 分钟内没有写入（默认值，可用 `--min-age-minutes` 调整），并且**把目录改名成功**才算判定为废弃。
+
+最后一条是必须的：Roomcast 便携版的运行时解压目录**和打包暂存目录形状相同**（同样是 `ns*.tmp`，同样含 `app-64.7z` 和 `app\resources\app.asar`），只靠名称与内容无法区分。Windows 不允许重命名装有正在运行的 exe/DLL、或正被某进程作为工作目录的目录，所以改名探测能可靠识别"打包中"与"便携版正在运行"两种情况；探测失败就原样保留。因此该清理器不会误删正在运行的应用数据目录。
+
+`beforePack` 会在每次打包前自动执行一次。
 
 ## GitHub Actions
 

@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.2-beta.6",
+  "version": "0.14.2-beta.7",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -17,6 +17,8 @@
     "setup": "node scripts/setup.mjs",
     "fetch:runtime": "node scripts/fetch-runtime.mjs",
     "fetch:web-invite": "node scripts/fetch-web-invite.mjs",
+    "clean:build-scratch": "node scripts/clean-build-scratch.mjs",
+    "clean:build-scratch:apply": "node scripts/clean-build-scratch.mjs --apply",
     "check": "npm run check:licenses && npm test && npm run build && npm run check:network",
     "check:licenses": "node scripts/check-licenses.mjs",
     "test": "node --test tests/*.test.mjs",
