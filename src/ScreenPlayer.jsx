@@ -2,6 +2,7 @@ import { AppWindow, Expand, LoaderCircle, Minimize, Radio, RefreshCw, Volume2, V
 import { useEffect, useRef, useState } from 'react';
 import { P2P_CONNECT_TIMEOUT_MS, watchPlayableFrame } from './fallback-policy.js';
 import { createMediaRaceCoordinator } from './media-race-manager.js';
+import { FULLSCREEN_ELEMENT, FULLSCREEN_VIDEO, pickFullscreenMode } from './fullscreen-policy.js';
 import { createVdoScreenViewer } from './transports/vdo-screen-viewer.js';
 import { createRoomcastPeerConnection, mediaIceServers } from './ice-policy.js';
 import { selectScreenPlayback } from './local-preview.js';
@@ -139,7 +140,9 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         const now = performance.now();
         const bitrate = lastSample && now > lastSample.at ? Math.max(0, (bytes - lastSample.bytes) * 8 / (now - lastSample.at)) : 0;
         lastSample = { at: now, bytes };
-        setMetrics({ ...emptyMetrics, width: outbound?.frameWidth || videoRef.current?.videoWidth || value.width || 0, height: outbound?.frameHeight || videoRef.current?.videoHeight || value.height || 0, fps: outbound?.framesPerSecond || value.frameRate || 0, bitrate, codec: codec?.mimeType?.split('/')[1] || 'H.264 优先', route: 'P2P直连', encoder: outbound?.encoderImplementation || '' });
+        // Without a viewer there is no outbound-rtp report, so the numbers fall back to the
+        // capture settings. `source` keeps those two meanings from being confused.
+        setMetrics({ ...emptyMetrics, source: outbound ? 'outbound' : 'capture', viewers: sessions.length, width: outbound?.frameWidth || videoRef.current?.videoWidth || value.width || 0, height: outbound?.frameHeight || videoRef.current?.videoHeight || value.height || 0, fps: outbound?.framesPerSecond || value.frameRate || 0, bitrate, codec: codec?.mimeType?.split('/')[1] || 'H.264 优先', route: 'P2P直连', encoder: outbound?.encoderImplementation || '' });
       };
       setSound(false); setState('live'); setError('');
       if (videoRef.current) { videoRef.current.srcObject = local; videoRef.current.play().catch(() => { }); }
@@ -1683,9 +1686,45 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
   useEffect(() => {
     if (floating) floatingPlayer.current?.updateInfo?.(floatingInfo());
   }, [floating, stream.name, avatarColor, metrics.width, metrics.height, metrics.fps, metrics.bitrate, metrics.route, metrics.lost, metrics.decoder, metrics.encoder, requested.width, requested.height, requested.fps, requested.bitrate, requested.performanceMode, own]);
+  // Sharing your own screen renders the local MediaStream directly: no second P2P
+  // connection and no extra bandwidth. The numbers therefore mean two different things
+  // and say which one they are.
+  const ownShareSummary = (() => {
+    const size = metrics.width && metrics.height ? `${metrics.width}×${metrics.height}` : '检测中';
+    const rate = metrics.fps ? `${Math.round(metrics.fps)} FPS` : '— FPS';
+    if (metrics.source === 'outbound') {
+      return `实际输出 ${size} · ${rate} · ${metrics.bitrate ? `${metrics.bitrate.toFixed(0)} Kbps` : '测量中'} · ${metrics.viewers} 人观看`;
+    }
+    return `本机采集 ${size} · ${rate} · 暂无观看者`;
+  })();
   const toggleFullscreen = async () => {
-    try { if (document.fullscreenElement) await document.exitFullscreen(); else { floatingPlayer.current?.close(); clearUiTimer(); setControlsVisible(true); await window.roomcast?.prepareFullscreen?.(); await containerRef.current?.requestFullscreen(); } }
-    catch (failure) { setError(`无法切换全屏：${failure.message}`); }
+    try {
+      if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+      floatingPlayer.current?.close();
+      clearUiTimer();
+      setControlsVisible(true);
+      const container = containerRef.current;
+      const video = videoRef.current;
+      const mode = pickFullscreenMode({
+        elementFullscreen: typeof container?.requestFullscreen === 'function',
+        videoFullscreen: typeof video?.webkitEnterFullscreen === 'function',
+      });
+      if (mode === FULLSCREEN_ELEMENT) {
+        await window.roomcast?.prepareFullscreen?.();
+        await container.requestFullscreen();
+        return;
+      }
+      // iPhone Safari implements no element fullscreen API; the native video player is the
+      // only route, and it reports through webkit events instead of fullscreenchange.
+      if (mode === FULLSCREEN_VIDEO) {
+        const left = () => { video.removeEventListener('webkitendfullscreen', left); setFullscreen(false); setControlsVisible(true); };
+        video.addEventListener('webkitbeginfullscreen', () => { setFullscreen(true); setControlsVisible(true); }, { once: true });
+        video.addEventListener('webkitendfullscreen', left);
+        video.webkitEnterFullscreen();
+        return;
+      }
+      throw new Error('当前浏览器不支持全屏播放。');
+    } catch (failure) { setError(`无法切换全屏：${failure.message}`); }
   };
   const toggleWindowMode = async () => {
     if (floatingPlayer.current) { floatingPlayer.current.close(); return; }
@@ -1743,10 +1782,12 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
     >
       {!floating && <div className={`stream-parameter-bar player-info-overlay avatar-color-${avatarColor}`}>
         <strong>{stream.name}</strong>
-        <span>{metrics.width && metrics.height ? `${metrics.width}×${metrics.height}` : '检测中'} · {metrics.fps ? `${Math.round(metrics.fps)} FPS` : '— FPS'} · {metrics.bitrate ? `${metrics.bitrate.toFixed(0)} Kbps` : '测量中'}</span>
-        <span>媒体连接：{metrics.route}</span>
+        {own
+          ? <span>{ownShareSummary}</span>
+          : <span>{metrics.width && metrics.height ? `${metrics.width}×${metrics.height}` : '检测中'} · {metrics.fps ? `${Math.round(metrics.fps)} FPS` : '— FPS'} · {metrics.bitrate ? `${metrics.bitrate.toFixed(0)} Kbps` : '测量中'}</span>}
+        <span>{own && metrics.source !== 'outbound' ? '本机预览 · 不占用网络' : `媒体连接：${metrics.route}`}</span>
         <span>目标 {requested.width || '—'}×{requested.height || '—'} / {requested.fps || '—'} FPS / {requested.bitrate || '自动'} Kbps</span>
-        <span>{own ? metrics.encoder || '等待编码器' : `累计丢包 ${metrics.lost} · ${metrics.decoder || '检测解码器'}`}</span>
+        <span>{own ? (metrics.encoder || (metrics.source === 'outbound' ? '等待编码器' : '本机直显，未经编码上行')) : `累计丢包 ${metrics.lost} · ${metrics.decoder || '检测解码器'}`}</span>
       </div>}
 
       <div className="player-stage">
