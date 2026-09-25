@@ -25,10 +25,10 @@ npm run check
 ```
 
 - [x] 全量单元测试通过（154/154）
-- [x] **干净检出（无 dist/）下的测试步骤通过**（`check` 顺序是先测试后构建，测试不得依赖 `dist/`）
+- [x] **干净检出（无 dist/）下的测试步骤通过**（152 通过 / 0 失败 / 1 跳过；`check` 顺序是先测试后构建，测试不得依赖 `dist/`）
 - [x] Vite build 通过
 - [x] check:network 通过
-- [x] check:licenses 通过
+- [x] check:licenses 通过（含 `--release` 模式）
 - [x] 新增 `tests/browser-room-runtime.test.mjs` 与 `tests/build-scratch.test.mjs`
 - [x] 真实 Chrome 验证桌面/手机成员控件显示范围与共享按钮降级
 - [x] OBS 相关检查脚本通过：check-obs-bundle-resolution / check-obs-graceful-shutdown / check-obs-managed-termination
@@ -44,36 +44,38 @@ node scripts/generate-checksums.mjs --strict
 npm run verify:release
 ```
 
-- [x] release/Roomcast-0.14.2-beta.7-Windows.exe 存在（142.9 MB）
-- [x] release/Roomcast-0.14.2-beta.7-Windows.zip 存在（211.4 MB）
-- [ ] release/Roomcast-0.14.2-beta.7-source.zip 存在
-- [ ] release/Roomcast-0.14.2-beta.7-loopback-capture.zip 存在
-- [ ] release/SHA256.txt 存在
+- [x] release/Roomcast-0.14.2-beta.7-Windows.exe 存在（142.94 MB）
+- [x] release/Roomcast-0.14.2-beta.7-Windows.zip 存在（211.42 MB）
+- [x] release/Roomcast-0.14.2-beta.7-source.zip 存在（0.68 MB，202 个条目）
+- [x] release/Roomcast-0.14.2-beta.7-loopback-capture.zip 存在（0.16 MB）
+- [x] release/SHA256.txt 存在（8 条记录）
 - [x] check-packaged-obs-step5d.cjs 通过（Step5D PASS，含便携版运行时 preflight 与中文字路径）
 - [x] check-portable-lifetime.cjs 通过（第二次启动不会删除运行中实例的 OBS 资源）
-- [x] verify:release 通过（欢迎界面、asar 版本、四个运行时组件哈希，含 `runtime/web-invite/cloudflared.exe`）
-- [ ] 源码 ZIP 内容与 package.json 版本一致，且包含 `src/browser-room-service.js`、`src/browser-node-crypto.js`、`electron/web-invite.cjs`、`scripts/fetch-web-invite.mjs`、`scripts/clean-build-scratch.mjs`
+- [x] verify:release 通过（欢迎界面、asar 版本 0.14.2-beta.7、四个运行时组件哈希）
+- [x] 源码 ZIP 内容与 package.json 版本一致（包内 0.14.2-beta.7），且包含 `src/browser-room-service.js`、`src/browser-node-crypto.js`、`electron/web-invite.cjs`、`scripts/fetch-web-invite.mjs`、`scripts/clean-build-scratch.mjs`
 
-> 顺序说明：`package:source` 要求工作区干净，因此源码包、loopback 资产包与 `SHA256.txt` 在本版发布提交之后生成；`release:build` 与全部打包后验证在提交之前完成。
+> 顺序说明：`package:source` 要求工作区干净，因此源码包、loopback 资产包与 `SHA256.txt` 在发布提交之后生成；`release:build` 与全部打包后验证在提交之前完成。docs/scripts/tests 不进入应用包（`files` 仅含 dist/server/electron/package.json），所以文档提交不会改变 EXE/ZIP 的哈希。
 
 ## 4. 包内容检查
 
-- [ ] resources/LICENSE 存在
-- [ ] resources/NOTICE 存在
-- [ ] resources/THIRD-PARTY-NOTICES.txt 存在
-- [ ] resources/ACCEPTABLE_USE.md / PRIVACY.md / SECURITY.md / TRADEMARKS.md 存在
-- [ ] resources/runtime/obs-bundle 存在且无 config/
-- [ ] resources/runtime/obs-source 存在
-- [ ] resources/runtime/loopback-capture 存在
-- [ ] resources/runtime/web-invite/cloudflared.exe 存在且 SHA256 = 214f5d74f66941d147d054f6cc9d821c60ff6a9b2d5355f6c854c6bee217c548
-- [ ] 没有 MediaMTX 残留；媒体路径不引用 trycloudflare / cloudflared
-- [ ] 包内 `electron/obs-fixed-fps.cjs` 已包含 `removeOwnedInput`
+- [x] resources/LICENSE 存在（verify:release 断言）
+- [x] resources/NOTICE 存在（verify:release 断言）
+- [x] resources/THIRD-PARTY-NOTICES.txt 存在（verify:release 断言）
+- [x] resources/ACCEPTABLE_USE.md / PRIVACY.md / SECURITY.md / TRADEMARKS.md 存在（verify:release 断言）
+- [x] resources/runtime/obs-bundle 存在且无 config/（step5d：`packagedObsConfigPresent: false`，无 pdb）
+- [x] resources/runtime/obs-source 存在（OBS-Studio-32.1.2-Sources.tar.gz，16606155 字节）
+- [x] resources/runtime/loopback-capture 存在（loopback_capture_addon.node，338944 字节）
+- [x] resources/runtime/web-invite/cloudflared.exe 存在且 SHA256 = 214f5d74f66941d147d054f6cc9d821c60ff6a9b2d5355f6c854c6bee217c548
+- [x] 没有 MediaMTX 残留；媒体路径不引用 trycloudflare / cloudflared（verify:release + check:network）
+- [x] 包内 `electron/obs-fixed-fps.cjs` 已包含 `removeOwnedInput`（从打包后的 app.asar 解出确认，7 处）
 
 ## 5. 干净 Windows 机器验收
 
+以下项目需要真实多机/真实音频环境，本轮**未执行**，发布前必须在本机以外复核。
+
 - [ ] 无系统安装 OBS 时可启动
-- [ ] OBS 来源首次枚举成功
-- [ ] OBS → 原生 → OBS 切换后仍能开始共享
+- [x] OBS 来源首次枚举成功（step5d 在打包运行时枚举到 2 个显示器 / 3 个窗口）
+- [ ] OBS → 原生 → OBS 切换后仍能开始共享（`check-capture-backend-switch.cjs` 未在本轮执行）
 - [ ] 正常停止采集；退出后无 OBS / Electron / Roomcast 残留
 - [ ] 原生采集正常
 - [ ] 虚拟摄像头首次注册（需要 UAC 时单独确认，不擅自改全局注册）
@@ -98,29 +100,31 @@ npm run verify:release
 ## 7. 构建机卫生
 
 - [x] `npm run clean:build-scratch` 能列出被中断打包遗留的 `%TEMP%\ns*.tmp` 目录
-- [x] `npm run clean:build-scratch:apply` 能回收空间，且不会删除仍在进行的打包
+- [x] `npm run clean:build-scratch:apply` 能回收空间（本轮实测回收约 9.7 GB），且不会删除仍在进行的打包
 - [x] 单元测试覆盖"被占用目录必须保留"（用一个把工作目录设在候选目录内的子进程验证改名探测）
 - [x] `beforePack` 在打包前自动执行一次清理
 
 ## 8. 安全与合规
 
-- [ ] 无 .env、TURN Worker access key、长期密钥进入仓库
-- [ ] 无旧 .git、backup、PartyLink、临时补丁进入公开源码包
+- [x] 无 .env、TURN Worker access key、长期密钥进入仓库（`git ls-files` 唯一匹配为 `.env.example`，属预期模板）
+- [x] 无旧 .git、backup、PartyLink、临时补丁进入公开源码包（187 个已跟踪文件中无匹配）
 - [x] runtime/、node_modules/、dist/、release/ 不进入公开源码仓库
 - [x] loopback capture 已按第三方 MIT 预编译组件披露
 - [x] cloudflared 已在 THIRD-PARTY-NOTICES.txt 与 NOTICE 中披露，并在 fetch/check-licenses/verify-release 中固定 SHA256
-- [ ] OBS 对应源码归档存在并随 Release 上传
-- [ ] PRIVACY 已说明 PeerJS / VDO.Ninja / TURN / Cloudflare Quick Tunnel 公网服务
-- [ ] 发布说明写明：网页入口地址等同于入房凭据，只发给预期成员
+- [x] OBS 对应源码归档存在（runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz）
+- [ ] OBS 源码归档随 Release 上传
+- [x] License / NOTICE / PRIVACY / SECURITY / TRADEMARKS 齐全
+- [x] PRIVACY 已说明 PeerJS / VDO.Ninja / TURN / Cloudflare Quick Tunnel 公网服务
+- [x] 发布说明写明：网页入口地址等同于入房凭据，只发给预期成员
 
 ## 9. 发布产物
 
 - [ ] 明确本次签名状态；已签名时验证 Get-AuthenticodeSignature 为 Valid
 - [ ] 未签名时在发布帖注明未签名，不得勾选或宣称签名有效
-- [ ] 生成并核对 SHA-256 校验值
+- [x] 生成并核对 SHA-256 校验值（release/SHA256.txt）
 - [ ] Release notes 已发布，定位为 Beta
 - [ ] 上传 EXE / ZIP / 源码 ZIP / loopback ZIP / OBS 源码 / SHA256
-- [ ] 源码 ZIP 按 git archive 生成，不包含本机 theme-preferences.json
+- [x] 源码 ZIP 按 git archive 生成，不包含本机 theme-preferences.json（已解包核对，仅 202 个条目且无 `.env`）
 
 ## 10. 发布措辞
 
