@@ -61,7 +61,45 @@ TURN 建不起来 / 网页端连不上 / 房主移交失败时**程序退不出*
 - **路线一（推荐，零改动）**：就用现在的 Cloudflare TURN 中继（需要你已经部署 `cloudflare-worker/`，见 `docs/Cloudflare-TURN部署.md`）。这是房间自带、凭据可控的正路。
 - **路线二（改架构，需同步改两条门禁）**：允许 VDO 车道在直连失败后升级到它自己的 TURN（`turnServers:null` + `autoRelay:true`）。好处：**完全零配置**，手机也能看上；代价：媒体会经过第三方 TURN（带宽/限速不可控），并要把 `scripts/check-network-architecture.mjs` 与 `scripts/check-vdo-resolution-priority.cjs` 里的"direct-only"不变量改成新策略。
 
-## 7. 时间戳记录
+## 8. 撤回记录（2026-09-26 19:2x，按用户要求）
+
+用户明确要求「**别改我 turn 和提示**」，因此本轮与 TURN/中继提示有关的改动**全部撤回**：
+
+| 撤回内容 | 现在状态 |
+| --- | --- |
+| `src/p2p.js` 的 `refreshRelay()`、`this.relaySettings`、`containsTurn` 导入 | **已删除** |
+| `src/App.jsx` 分享前的凭据刷新、`shareRelay` 状态、"没有可用的中继（TURN）…"提示 | **已删除**，`src/App.jsx` 与 `v0.14.3-beta.5` **零差异**（`git diff v0.14.3-beta.5 -- src/App.jsx` 为空） |
+| 保留 | 仅"退出加固"三处：`electron/main.cjs`（关窗/退出）、`src/useRoom.js`（关窗握手）、`src/p2p.js`（`leave()` 移交失败降级） |
+
+**与 beta.5 的差异现状**（`git diff --stat v0.14.3-beta.5 -- src/ electron/`）：
+
+```
+ electron/main.cjs | 50 ++++++++----   ← 只有关闭/退出
+ src/p2p.js        | 35 +++++++----   ← 只有 leave()
+ src/useRoom.js    | 20 +++++++----   ← 只有关窗握手
+```
+
+即**加入房间、信令、`peerAuthProtocol`、ICE 服务器接线、媒体车道全部与 beta.5 逐字节相同**。
+手机报的 `negotiation_failed`（VDO 侧错误码）与"无法建立 P2P 连接"都发生在**协商/ICE 阶段**，
+说明手机已进房、信令是通的，失败点在打洞/中继，而不是邀请链接或协议被改动。
+
+**待用户给出的判定（A/B）**：用同一部手机、同一网络再跑一次 `beta.5`（`Downloads\Roomcast-0.14.3-beta.5-Windows`）。
+beta.5 也失败 → 与本次改动无关；beta.5 正常 → 按版本逐项回退继续查。
+
+以上第 1–7 节保留原始分析与取证，但**其中第 3 节的 TURN 相关改动已作废**，只作为排查记录留档。
+
+## 9. 时间戳记录（补充）
+
+| 时间（本机） | 做了什么 |
+| --- | --- |
+| 19:20 | 用户要求撤回 TURN 与提示改动，并指出"之前手机可以连" |
+| 19:22 | 撤回 `src/p2p.js` 的 `refreshRelay()`/`relaySettings`/`containsTurn`；撤回 `src/App.jsx` 的刷新与提示 |
+| 19:23 | 对比取证：`src/App.jsx` 与 beta.5 零差异；`src/p2p.js` 仅 `leave()`；`src/useRoom.js`/`main.cjs` 仅关闭逻辑 |
+| 19:24 | `npm test` **191/191 通过**（撤回后无回归） |
+| 19:25 | 重新打包（`npm run release:build`）并重新生成校验和：`Windows.exe A008FFC9…`、`Windows.zip 1144E5BD…` |
+
+
+## 7. 时间戳记录（本轮分析与首次修改）
 
 | 时间（本机） | 做了什么 | 依据/结果 |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
 import { Peer } from 'peerjs';
 import { io } from 'socket.io-client';
-import { containsTurn, createRoomcastPeerConnection, DEFAULT_STUN_ICE, mediaIceServers, turnIceServers } from './ice-policy.js';
+import { createRoomcastPeerConnection, DEFAULT_STUN_ICE, mediaIceServers, turnIceServers } from './ice-policy.js';
 import { ack } from './lib.js';
 import { createPeerAuthProof, MAX_UNAUTHENTICATED_PEERS, PEER_AUTH_PROTOCOL, PEER_AUTH_TIMEOUT_MS, randomPeerAuthNonce, verifyPeerAuthProof } from './p2p-auth.js';
 import { encodeRelayInvite, optionalRelayIce } from './relay.js';
@@ -528,13 +528,6 @@ export class P2PRoom {
             details.relaySettings
             || { enabled: false },
         });
-
-      // Kept so the room owner can fetch fresh TURN credentials before handing out
-      // an invite: the credentials baked into a room are time limited, and a phone
-      // that receives an expired relay cannot connect on a carrier network at all.
-      this.relaySettings =
-        details.relaySettings
-        || { enabled: false };
 
       const relay =
         relayResult.iceServers;
@@ -3192,45 +3185,6 @@ export class P2PRoom {
     return turnIceServers(
       this.controlIceServers,
     );
-  }
-
-  // Cloudflare TURN credentials are time limited, but a room keeps the copy it was
-  // created with. Anyone joining from an older invite therefore had no working relay
-  // left, which is fatal for phones on carrier networks. Refresh right before the
-  // invite is handed out; failures keep whatever the room already had.
-  async refreshRelay() {
-    const current = {
-      relayInvite: this.relayInvite || '',
-      relayEnabled: containsTurn(this.controlIceServers),
-    };
-
-    if (!this.isHost || this.closed) return current;
-
-    let relay = [];
-
-    try {
-      const result = await optionalRelayIce({ settings: this.relaySettings || { enabled: false } });
-      relay = result.iceServers || [];
-    } catch {
-      return current;
-    }
-
-    if (!relay.length) return current;
-
-    try {
-      this.relayInvite = encodeRelayInvite(relay);
-    } catch {
-      return current;
-    }
-
-    this.controlIceServers = [...P2P_ICE, ...relay];
-    this.mediaIceServers = mediaIceServers(this.controlIceServers);
-    this.iceServers = this.controlIceServers;
-
-    return {
-      relayInvite: this.relayInvite,
-      relayEnabled: true,
-    };
   }
 
   async openScreen(

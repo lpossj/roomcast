@@ -542,14 +542,13 @@ function MemberPermissionsModal({ member, self, onClose, command }) {
   </Modal>;
 }
 
-function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInvite, relayEnabled, onRefreshRelay, inviteSecret, peerServer }) {
+function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInvite, inviteSecret, peerServer }) {
   const addresses = (localConfig?.addresses || []).map(value => typeof value === 'string' ? value : value.url).filter(Boolean);
   const loopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(server);
   const [address, setAddress] = useState(loopback ? addresses.find(value => /^https?:\/\/100\./.test(value)) || addresses.find(value => !/localhost|127\.0\.0\.1/.test(value)) || server : server);
   const [webViewerUrl, setWebViewerUrl] = useState(window.roomcast?.desktop ? '' : new URL('.', window.location.href).href);
   const [webViewerError, setWebViewerError] = useState('');
   const [webViewerBusy, setWebViewerBusy] = useState(false);
-  useEffect(() => { if (isP2P && onRefreshRelay) void onRefreshRelay(); }, [isP2P, onRefreshRelay]);
   const startWebViewer = useCallback(() => {
     if (!window.roomcast?.startWebInvite) return;
     setWebViewerBusy(true);
@@ -579,8 +578,7 @@ function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInv
     <button className="button primary full" onClick={() => copy(p2pLink)}><Copy size={17} />复制邀请链接</button>
     <><label className="standalone-label">电脑／手机网页观看链接<input value={webLink} readOnly placeholder={webViewerBusy ? '正在生成网页观看链接…' : '网页入口尚未就绪'} onFocus={event => event.target.select()} /></label>
       <button className="button secondary full" onClick={() => copy(webLink)} disabled={!webLink}><Copy size={17} />复制网页观看链接</button>
-      {webViewerError && <div className="inline-error"><Info size={16} />{webViewerError}<button className="button secondary small" onClick={startWebViewer} disabled={webViewerBusy}>重试</button></div>}
-      {!relayEnabled && <div className="inline-error"><Info size={16} />当前房间没有可用的中继（TURN）：手机在移动网络下通常连不上这台电脑。可在「设置 → 网络」里启用 Cloudflare TURN 中继，然后重新建房。</div>}</>
+      {webViewerError && <div className="inline-error"><Info size={16} />{webViewerError}<button className="button secondary small" onClick={startWebViewer} disabled={webViewerBusy}>重试</button></div>}</>
   </Modal>;
   return <Modal title="分享房间" onClose={onClose}>
     <div className="invite-room"><div className="room-symbol"><AudioLines size={27} /></div><div><strong>{room.name}</strong><span>{room.members.length} / 10 位成员在线</span></div></div>
@@ -861,21 +859,6 @@ export default function App() {
   const { room, selfId, server, config, connection, socketRef, messages, hasOlderMessages, historyLoading, loadOlderMessages, sendMessage, sendImages, recallMessage, enter, leave, command } = session;
   const audioDevices = useDevices();
   const [relaySettings, setRelaySettingsState] = useState(loadRelaySettings);
-  // TURN credentials are time limited while a room keeps the copy it was created with,
-  // so the invite is refreshed on demand. Phones on carrier networks cannot connect at
-  // all without a live relay, and this is also where the UI learns whether one exists.
-  const [shareRelay, setShareRelay] = useState(null);
-  const refreshShareRelay = useCallback(async () => {
-    const socket = socketRef.current;
-    if (!socket?.refreshRelay) return;
-    try {
-      const result = await socket.refreshRelay();
-      if (result) setShareRelay({ relayInvite: result.relayInvite || '', relayEnabled: result.relayEnabled === true });
-    } catch { /* keep whatever the room already had */ }
-  }, [socketRef]);
-  const shareRelayInvite = shareRelay ? shareRelay.relayInvite : config?.relayInvite;
-  const shareRelayEnabled = shareRelay ? shareRelay.relayEnabled : config?.relayEnabled === true;
-  useEffect(() => { setShareRelay(null); }, [room?.id]);
   const [themeColor, setThemeColorState] = useState(INITIAL_CUSTOM_THEME_COLOR);
   const [themeMode, setThemeModeState] = useState(INITIAL_THEME_MODE);
   const [windowsAccentColor, setWindowsAccentColor] = useState(INITIAL_WINDOWS_ACCENT_COLOR);
@@ -1580,7 +1563,7 @@ export default function App() {
     {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} canHost={canHostRoom} onClose={() => setModal(null)} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
     {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} />}
     {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
-    {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={shareRelayInvite} relayEnabled={shareRelayEnabled} onRefreshRelay={refreshShareRelay} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
+    {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
     {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}
     {previewImage && <ImagePreviewOverlay key={previewImage.src} image={previewImage} onClose={() => setPreviewImage(null)} onImageContextMenu={handleImageContextMenu} onCopy={copyPreviewImage} onDownload={downloadPreviewImage} />}
     {imageContextMenu && <div className="image-context-menu" role="menu" style={{ left: imageContextMenu.x, top: imageContextMenu.y }} onPointerDown={event => event.stopPropagation()}>
