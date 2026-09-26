@@ -493,13 +493,24 @@ else {
       window.on('move', saveWindowState);
       window.on('maximize', saveWindowState);
       window.on('unmaximize', saveWindowState);
-      window.on('close', () => {
-        // The native X is an unconditional exit. Do not wait for renderer replies,
-        // room migration, beforeunload, service cleanup or asynchronous capture work.
+      const exitImmediately = () => {
         clearTimeout(saveTimer);
         quitting = true;
-        app.exit(0);
-      });
+        // Electron redirects process.exit to app.exit, which destroys windows and
+        // can still block on Chromium. Use Node's process termination entry instead.
+        // Electron 44 exposes it; the fallback also terminates only this process.
+        if (typeof process.reallyExit === 'function') process.reallyExit(0);
+        else process.kill(process.pid, 'SIGTERM');
+      };
+      // Windows can wait for an unresponsive renderer before emitting `close`.
+      // Handle native close requests directly, including the titlebar X/Alt+F4.
+      if (process.platform === 'win32') {
+        window.hookWindowMessage(0x0010, exitImmediately); // WM_CLOSE
+        window.hookWindowMessage(0x0112, wParam => { // WM_SYSCOMMAND
+          if ((wParam.readUInt32LE(0) & 0xfff0) === 0xf060) exitImmediately(); // SC_CLOSE
+        });
+      }
+      window.on('close', exitImmediately);
       ipcMain.on('roomcast:system-accent-color-get', event => {
         const allowed = event.sender === window?.webContents && event.senderFrame === window.webContents.mainFrame && trusted(event.senderFrame.url);
         event.returnValue = allowed ? currentSystemAccentColor() : DEFAULT_TITLEBAR_COLOR;
@@ -708,6 +719,8 @@ else {
         publishUpdaterState();
         // Destroy only the main window: normal window.close() now exits the process,
         // while the updater must stay alive to finish downloading and installing.
+        stopAllAudioCaptures();
+        void runObsCaptureOperation(() => closeObsCaptureEngine()).catch(() => {});
         if (window && !window.isDestroyed()) window.destroy();
         updatePipeline = runUpdatePipeline({ target, asset, version: lastUpdateCheck.version });
         return { ok: true, version: lastUpdateCheck.version, kind: target.kind, asset: asset.name };
