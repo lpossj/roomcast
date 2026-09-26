@@ -63,7 +63,7 @@
     "esbuild": "0.28.2",
     "playwright": "^1.58.2",
     "vite": "^7.3.0",
-    "lucide-react": "^0.577.0",
+    "lucide-react": "^1.46.0",
     "peerjs": "^1.5.5",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
