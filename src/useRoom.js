@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import { containsTurn, mediaIceServers } from './ice-policy.js';
 import { ack, normalizeServer } from './lib.js';
 import { P2PRoom } from './p2p.js';
+import { waitForRoomOperation } from './room-operation.js';
 import { imageDimensionsAllowed, imageMagicMatches, MAX_IMAGE_CACHE_BYTES, readImageDimensions } from './image-policy.js';
 import { savePreference } from './preferences.js';
 import { playSound } from './sounds.js';
@@ -40,6 +41,7 @@ export default function useRoom(onError) {
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const socketRef = useRef(null);
+  const operationRef = useRef(null);
   const errorRef = useRef(onError);
   const membersRef = useRef(null);
   const messagesRef = useRef([]);
@@ -417,48 +419,56 @@ export default function useRoom(onError) {
   }, []);
 
   const leave = useCallback(async (shutdown = false) => {
+    operationRef.current?.abort();
+    const operation = new AbortController();
+    operationRef.current = operation;
     const socket = socketRef.current;
     let outcome = null;
-
-    if (socket) {
-      if (!shutdown && socket.connected) {
-        playSound('leave');
+    try {
+      if (!shutdown && socket) {
+        setConnection('leaving');
+        if (socket.connected) playSound('leave');
+        if (socket.p2p && typeof socket.leave === 'function') {
+          outcome = await waitForRoomOperation(socket.leave(), operation.signal);
+        } else if (socket.connected) {
+          await waitForRoomOperation(ack(socket, 'room:leave'), operation.signal);
+        }
       }
-
-      if (
-        !shutdown
-        && socket.p2p
-        && typeof socket.leave === 'function'
-      ) {
-        outcome = await socket.leave();
-      } else if (!shutdown && socket.connected) {
-        await ack(socket, 'room:leave').catch(() => { });
+    } catch (error) {
+      if (!operation.signal.aborted) throw error;
+      outcome = { cancelled: true };
+    } finally {
+      // A previous leave must never clear a newer room. Reset the UI even when
+      // migration or transport cleanup throws; forced leave does not await either.
+      if (operationRef.current === operation) {
+        operationRef.current = null;
+        socketRef.current = null;
+        try { socket?.removeAllListeners(); } catch (error) { console.error(error); }
+        try { socket?.disconnect(); } catch (error) { console.error(error); }
+        membersRef.current = null;
+        clearMessages();
+        setRoom(null);
+        setSelfId('');
+        setReadToken('');
+        setOwnerToken('');
+        setConfig(null);
+        setConnection('idle');
       }
-
-      socketRef.current = null;
-      socket.removeAllListeners();
-      socket.disconnect();
     }
-
-    membersRef.current = null;
-    clearMessages();
-
-    setRoom(null);
-    setSelfId('');
-    setReadToken('');
-    setOwnerToken('');
-    setConfig(null);
-    setConnection('idle');
-
     return outcome;
   }, [clearMessages]);
 
   const enter = useCallback(async (mode, details) => {
-    await leave();
+    await leave(true);
+    operationRef.current?.abort();
+    const operation = new AbortController();
+    operationRef.current = operation;
+    const wait = task => waitForRoomOperation(task, operation.signal);
 
     const isP2P = details.networkMode === 'p2p';
 
     if (details.networkMode === 'public') {
+      operationRef.current = null;
       throw new Error(
         '公网邀请已停用，请使用普通 Roomcast 邀请链接加入房间。',
       );
@@ -478,11 +488,12 @@ export default function useRoom(onError) {
       // Browser rooms run the same room rules locally and have no /api/config endpoint.
       let remoteConfig = { peerServer: '' };
       if (!isP2P || (mode === 'create' && window.roomcast?.desktop)) {
-        const response = await fetch(`${base}/api/config`, { signal: AbortSignal.timeout(10000) });
+        const response = await wait(fetch(`${base}/api/config`, { signal: AbortSignal.any([operation.signal, AbortSignal.timeout(10000)]) }));
         if (!response.ok) throw new Error('无法读取服务配置，请检查服务器地址');
-        remoteConfig = await response.json();
+        remoteConfig = await wait(response.json());
       }
 
+      operation.signal.throwIfAborted();
       setConfig(remoteConfig);
 
       if (isP2P) {
@@ -490,6 +501,7 @@ export default function useRoom(onError) {
         socketRef.current = socket;
 
         socket.on('room:state', value => {
+        if (socketRef.current !== socket) return;
           receiveRoom(value);
           void syncMissingMessages(socket);
         });
@@ -507,6 +519,7 @@ export default function useRoom(onError) {
         socket.on('member:left', memberLeft);
 
         socket.on('room:owner-token', value => {
+        if (socketRef.current !== socket) return;
           setOwnerToken(
             typeof value?.ownerToken === 'string'
               ? value.ownerToken
@@ -566,7 +579,7 @@ export default function useRoom(onError) {
 
         socket.on(
           'p2p:notice',
-          text => errorRef.current(text),
+          text => { if (socketRef.current === socket) errorRef.current(text); },
         );
 
         socket.on('disconnect', reason => {
@@ -592,11 +605,12 @@ export default function useRoom(onError) {
           }
         });
 
-        const result = await socket.enter(
+        const result = await wait(socket.enter(
           mode,
           details,
           remoteConfig,
-        );
+        ));
+        if (socketRef.current !== socket) return { cancelled: true };
 
         receiveRoom(result.room);
         playSound('join');
@@ -629,7 +643,8 @@ export default function useRoom(onError) {
           roomConnection: 'P2P',
         });
 
-        await loadInitialMessages(socket);
+        await wait(loadInitialMessages(socket));
+      operation.signal.throwIfAborted();
 
         savePreference(
           'nickname',
@@ -648,6 +663,7 @@ export default function useRoom(onError) {
       socketRef.current = socket;
 
       socket.on('room:state', value => {
+          if (socketRef.current !== socket) return;
         receiveRoom(value);
         void syncMissingMessages(socket);
       });
@@ -665,6 +681,7 @@ export default function useRoom(onError) {
       socket.on('member:left', memberLeft);
 
       socket.on('room:owner-token', value => {
+          if (socketRef.current !== socket) return;
         setOwnerToken(
           typeof value?.ownerToken === 'string'
             ? value.ownerToken
@@ -719,7 +736,7 @@ export default function useRoom(onError) {
         }
       });
 
-      await new Promise((resolve, reject) => {
+      await wait(new Promise((resolve, reject) => {
         socket.once('connect', resolve);
 
         socket.once(
@@ -732,9 +749,9 @@ export default function useRoom(onError) {
         );
 
         socket.connect();
-      });
+      }));
 
-      const result = await ack(
+      const result = await wait(ack(
         socket,
         `room:${mode}`,
         {
@@ -748,7 +765,8 @@ export default function useRoom(onError) {
               roomId: details.roomId.trim(),
             }),
         },
-      );
+      ));
+      if (socketRef.current !== socket) return { cancelled: true };
 
       receiveRoom(result.room);
       playSound('join');
@@ -768,7 +786,8 @@ export default function useRoom(onError) {
         roomConnection: 'Socket.IO',
       });
 
-      await loadInitialMessages(socket);
+      await wait(loadInitialMessages(socket));
+        operation.signal.throwIfAborted();
 
       savePreference(
         'nickname',
@@ -782,13 +801,11 @@ export default function useRoom(onError) {
 
       return result;
     } catch (error) {
-      if (socketRef.current === socket) {
-        await leave();
-      } else {
-        setConnection('idle');
-      }
-
+      if (operation.signal.aborted) return { cancelled: true };
+      if (operationRef.current === operation) await leave(true);
       throw error;
+    } finally {
+      if (operationRef.current === operation) operationRef.current = null;
     }
   }, [
     clearMessages,
@@ -1035,38 +1052,6 @@ export default function useRoom(onError) {
       throw error;
     }
   }, [revokeImageUrl, sendImage]);
-
-  useEffect(() => {
-    const unsubscribe = window.roomcast?.onBeforeClose?.(
-      async () => {
-        // Exiting must never depend on the handover finishing. Give it a short budget,
-        // then report whatever happened: the main process closes the window either way,
-        // and the room server ends the room when this socket disappears.
-        let outcome = null;
-        try {
-          outcome = await Promise.race([
-            leave(),
-            new Promise(resolve => { setTimeout(() => resolve(null), 2000); }),
-          ]);
-        } catch (error) {
-          console.error(
-            '关闭窗口前房间迁移失败：',
-            error,
-          );
-          errorRef.current?.(error.message || '移交未完成，房间已关闭。');
-        }
-
-        window.roomcast?.closeReady?.({
-          ok: true,
-          migratedTo: outcome?.migratedTo || '',
-          closed: outcome?.closed === true,
-          reason: String(outcome?.reason || '').slice(0, 200),
-        });
-      },
-    );
-
-    return () => unsubscribe?.();
-  }, [leave]);
 
   useEffect(
     () => () => {

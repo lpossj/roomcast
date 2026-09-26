@@ -87,6 +87,6 @@ test('stage-one UI wiring keeps 50 percent volume, bounded PCM, fullscreen resto
   assert.match(worklet, /maxQueuedFrames = 12000/);
   assert.match(worklet, /this\.count < this\.startFrames/);
   assert.match(main, /capture\.start\(mode === 'exclude' \? processId : process\.pid, false, onData\)/);
-  assert.equal((app.match(/aria-label="离开房间"/g) || []).length, 1);
+  assert.equal((app.match(/className="rail-button leave-room-rail"/g) || []).length, 1);
   assert.doesNotMatch(app, /className="people-section"|className="under-stage"/);
 });

@@ -374,10 +374,16 @@ export class P2PRoom {
     return this;
   }
 
+  assertOpen() {
+    if (this.closed) throw new DOMException('操作已取消', 'AbortError');
+  }
+
   async localSocket() {
+    this.assertOpen();
     if (typeof document !== 'undefined' && !window.roomcast?.desktop) {
       if (!this.browserService) {
         const { createBrowserRoomService } = await import('./browser-room-service.js');
+        this.assertOpen();
         this.browserService = createBrowserRoomService();
       }
       return this.browserService.connect();
@@ -413,10 +419,13 @@ export class P2PRoom {
       throw error;
     });
 
+    if (this.closed) socket.disconnect();
+    this.assertOpen();
     return socket;
   }
 
   async openPeer(id, override) {
+    this.assertOpen();
     const options = {
       config: {
         iceServers:
@@ -475,6 +484,7 @@ export class P2PRoom {
       '公共信令服务连接超时；当前网络可能无法访问该服务。',
     );
 
+    this.assertOpen();
     this.peer.on(
       'disconnected',
       () => {
@@ -506,6 +516,7 @@ export class P2PRoom {
     details,
     config,
   ) {
+    this.assertOpen();
     this.peerServer =
       config.peerServer;
 
@@ -529,6 +540,7 @@ export class P2PRoom {
             || { enabled: false },
         });
 
+      this.assertOpen();
       const relay =
         relayResult.iceServers;
 
@@ -552,6 +564,8 @@ export class P2PRoom {
 
       this.local =
         await this.localSocket();
+      if (this.closed) this.local.disconnect();
+      this.assertOpen();
 
       for (
         const event
@@ -591,6 +605,7 @@ export class P2PRoom {
         },
       );
 
+      this.assertOpen();
       this.id =
         result.selfId;
 
@@ -607,6 +622,7 @@ export class P2PRoom {
         `roomcast-v1-${this.roomId}`,
         config.peerServer,
       );
+      this.assertOpen();
 
       this.peer.on(
         'connection',
@@ -735,6 +751,7 @@ export class P2PRoom {
           || { enabled: false },
       });
 
+    this.assertOpen();
     const relay =
       relayResult.iceServers;
 
@@ -763,6 +780,7 @@ export class P2PRoom {
       undefined,
       this.peerServer,
     );
+    this.assertOpen();
 
     this.peer.on(
       'connection',
@@ -772,6 +790,7 @@ export class P2PRoom {
     );
 
     await this.connectRemote();
+    this.assertOpen();
 
     this.connected = true;
 
@@ -786,6 +805,7 @@ export class P2PRoom {
         },
       );
 
+    this.assertOpen();
     if (!result.ok) {
       throw new Error(
         result.error,
@@ -1602,6 +1622,7 @@ export class P2PRoom {
         if (result?.ok) healthy.push({ memberId, elapsed: performance.now() - started });
       } catch { /* A non-responsive member must not block a healthy successor. */ }
     }));
+    if (this.closed) return { cancelled: true };
     healthy.sort((a, b) => a.elapsed - b.elapsed);
 
     let exported, successor;
@@ -1611,6 +1632,7 @@ export class P2PRoom {
       const candidate = this.guestMembers.get(memberId);
       if (!candidate?.open) continue;
       const result = await ack(this.local, 'room:migration-export', { candidateIds: [memberId] });
+      if (this.closed) return { cancelled: true };
       if (!result.ok) {
         // The server refused this handover (rate limit, room state). Try the next
         // candidate instead of aborting the exit with an exception.
@@ -1623,6 +1645,7 @@ export class P2PRoom {
           ticket: result.tickets[result.successorId],
           inviteSecret: this.inviteSecret,
         }, 8000);
+        if (this.closed) return { cancelled: true };
         if (!prepared?.ok) throw new Error(prepared?.error || '新房主未能恢复房间。');
         exported = result;
         successor = candidate;
@@ -1654,6 +1677,7 @@ export class P2PRoom {
         ticket: exported.tickets[exported.successorId],
         inviteSecret: this.inviteSecret,
       }, 3000);
+      if (this.closed) return { cancelled: true };
       if (!armed?.ok || armed.armed !== true || !successor.open) {
         throw new Error(armed?.error || '新房主未确认接管。');
       }

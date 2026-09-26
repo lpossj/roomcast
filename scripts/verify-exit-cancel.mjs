@@ -1,23 +1,46 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { _electron as electron } from 'playwright';
+import { _electron as electron, chromium } from 'playwright';
 
 const root = process.cwd();
 const closeMessage = process.env.ROOMCAST_EXIT_MESSAGE === 'SC_CLOSE' ? 'SC_CLOSE' : 'WM_CLOSE';
 const report = { closeMessage, startedAt: new Date().toISOString(), testMode: false, checks: [] };
 const output = path.join(root, `.test/exit-cancel-${process.env.ROOMCAST_SMOKE_EXE ? 'packaged' : 'dev'}-${closeMessage}`);
 await mkdir(output, { recursive: true });
-let app;
+let app, browser;
 const record = (name, data = true) => { report.checks.push({ name, data }); console.log(name, JSON.stringify(data)); };
 try {
   const env = { ...process.env, ROOMCAST_ALLOW_PARALLEL_INSTANCE: '1', ROOMCAST_PROFILE_DIR: path.join(output, 'profile'), ROOMCAST_DATA_DIR: path.join(output, 'data') };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ROOMCAST_TEST_MODE;
-  app = await electron.launch({ executablePath: process.env.ROOMCAST_SMOKE_EXE || path.join(root, 'node_modules/electron/dist/electron.exe'),
-    args: process.env.ROOMCAST_SMOKE_EXE ? [] : [root], env, timeout: 45000 });
-  const page = await app.firstWindow();
+  let page;
+  if (process.env.ROOMCAST_SMOKE_EXE) {
+    // Packaged fuses disable Node inspection. Connect to Chromium CDP instead.
+    const child = spawn(process.env.ROOMCAST_SMOKE_EXE, ['--remote-debugging-port=0'], { env, windowsHide: true, stdio: 'ignore' });
+    app = { process: () => child };
+    let port = 0;
+    const deadline = Date.now() + 30000;
+    while (!port && Date.now() < deadline) {
+      port = Number((await readFile(path.join(env.ROOMCAST_PROFILE_DIR, 'DevToolsActivePort'), 'utf8').catch(() => '')).split('\n')[0]);
+      if (!port) await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.ok(port, 'packaged Chromium debugging port must open');
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    page = browser.contexts()[0].pages()[0];
+  } else {
+    app = await electron.launch({ executablePath: path.join(root, 'node_modules/electron/dist/electron.exe'), args: [root], env, timeout: 45000 });
+    page = await app.firstWindow();
+    // Seed only the future isolated packaged-test profiles, to avoid OBS driver
+    // installation during an exit-only test. No user's preferences are read.
+    const encrypted = await app.evaluate(({ safeStorage }) => safeStorage.encryptString(JSON.stringify({ shareSettings: { captureBackend: 'native' }, autoCheckUpdates: false })).toString('base64'));
+    for (const message of ['WM_CLOSE', 'SC_CLOSE']) {
+      const dir = path.join(root, `.test/exit-cancel-packaged-${message}/profile`);
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, 'preferences.bin'), Buffer.from(encrypted, 'base64'));
+    }
+  }
   await page.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).waitFor({ timeout: 30000 });
   record('real-desktop-started-without-test-mode');
   let pendingConfig;
@@ -55,6 +78,7 @@ try {
     return JSON.parse(text);
   };
   const rootPid = app.process().pid;
+  record('launched-root-pid', rootPid);
   const before = await processIds(), tracked = new Set([rootPid]);
   let changed = true;
   while (changed) { changed = false; for (const item of before) {
@@ -62,11 +86,11 @@ try {
   } }
   // Protect against both a beforeunload veto and a renderer that cannot reply.
   await page.evaluate(() => { window.onbeforeunload = () => false; });
-  const hwnd = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(win => !win.isDestroyed()).getNativeWindowHandle().readBigUInt64LE().toString());
   const exited = new Promise(resolve => app.process().once('exit', (code, signal) => resolve({ code, signal, at: Date.now() })));
   void page.evaluate(() => { for (;;) {} }).catch(() => {});
+  const nativeSource = 'using System; using System.Runtime.InteropServices; public static class RoomcastExitTest { public delegate bool Callback(IntPtr h, IntPtr l); [DllImport("user32.dll")] public static extern bool EnumWindows(Callback c, IntPtr l); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l); public static IntPtr Find(int[] pids) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p; GetWindowThreadProcessId(h,out p); if(Array.IndexOf(pids,(int)p)>=0 && IsWindowVisible(h)){found=h; return false;} return true;},IntPtr.Zero); return found; } }';
   const native = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    'Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public static class RoomcastExitTest { [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l); }\'; $now=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); if(-not [RoomcastExitTest]::PostMessageW([IntPtr]::new([Int64]'+hwnd+'), '+(closeMessage === 'SC_CLOSE' ? '274, [IntPtr]::new(61536)' : '16, [IntPtr]::Zero')+', [IntPtr]::Zero)){exit 2}; Write-Output $now'],
+    "Add-Type -TypeDefinition '"+nativeSource+"'; $handle=[RoomcastExitTest]::Find([Int32[]]@("+[...tracked].join(',')+")); if($handle -eq [IntPtr]::Zero){exit 2}; $now=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); if(-not [RoomcastExitTest]::PostMessageW($handle, "+(closeMessage === 'SC_CLOSE' ? '274, [IntPtr]::new(61536)' : '16, [IntPtr]::Zero')+", [IntPtr]::Zero)){exit 3}; Write-Output $now"],
     { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   native.stdout.on('data', data => { stdout += data; }); native.stderr.on('data', data => { stderr += data; });
@@ -87,6 +111,7 @@ try {
   report.ok = false; report.error = error.stack; throw error;
 } finally {
   if (app) app.process().kill(); // only the isolated process this script created
+  if (browser) await browser.close().catch(() => {});
   report.finishedAt = new Date().toISOString();
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
 }

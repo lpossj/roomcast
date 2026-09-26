@@ -157,14 +157,15 @@ const INITIAL_THEME_MODE = INITIAL_THEME_SETTINGS.mode;
 const INITIAL_CUSTOM_THEME_COLOR = INITIAL_THEME_SETTINGS.color;
 const INITIAL_WINDOWS_ACCENT_COLOR = loadWindowsAccentColor();
 applyThemeColor(INITIAL_THEME_MODE === THEME_MODE_WINDOWS ? INITIAL_WINDOWS_ACCENT_COLOR : INITIAL_CUSTOM_THEME_COLOR);
-function Modal({ title, subtitle, children, onClose, wide, busy }) {
+function Modal({ title, subtitle, children, onClose, wide, busy, cancellable = false }) {
+  const blocked = busy && !cancellable;
   const dialog = useRef(null);
   const closeRef = useRef(onClose); closeRef.current = onClose;
   useEffect(() => {
     const previous = document.activeElement;
     const first = dialog.current?.querySelector('input, button, select'); first?.focus();
     const key = event => {
-      if (event.key === 'Escape' && !busy) closeRef.current();
+      if (event.key === 'Escape' && !blocked) closeRef.current();
       if (event.key === 'Tab') {
         const elements = [...dialog.current.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], textarea:not(:disabled)')];
         if (!elements.length) return;
@@ -175,8 +176,8 @@ function Modal({ title, subtitle, children, onClose, wide, busy }) {
     };
     document.addEventListener('keydown', key);
     return () => { document.removeEventListener('keydown', key); previous?.focus(); };
-  }, [busy]);
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}><section className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={dialog}><header className="modal-header"><div><h2 id="modal-title">{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} disabled={busy} aria-label="关闭"><X size={20} /></button></header>{children}</section></div>;
+  }, [blocked]);
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !blocked) onClose(); }}><section className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={dialog}><header className="modal-header"><div><h2 id="modal-title">{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} disabled={blocked} aria-label="关闭"><X size={20} /></button></header>{children}</section></div>;
 }
 
 function Dropdown({ label, value, options, onChange, disabled = false, description = '', className = '' }) {
@@ -225,13 +226,14 @@ function EntryModal({ mode, onClose, onEnter, busy, defaultServer, inviteRoom, c
       setError(failure.message);
     }
   };
-  return <Modal title={kind === 'create' ? '创建房间' : '加入房间'} onClose={onClose} busy={busy}>
+  return <Modal title={kind === 'create' ? '创建房间' : '加入房间'} onClose={onClose} busy={busy} cancellable>
     {canHost && <div className="segmented"><button className={kind === 'create' ? 'selected' : ''} onClick={() => { setKind('create'); setError(''); }} disabled={busy}><Plus size={16} />创建</button><button className={kind === 'join' ? 'selected' : ''} onClick={() => { setKind('join'); setError(''); }} disabled={busy}><Link size={16} />加入</button></div>}
     <form onSubmit={submit} className="entry-form">
       <label>你的昵称<input {...field('nickname')} autoComplete="nickname" placeholder="大家怎么称呼你？" required maxLength={24} disabled={busy} /></label>
       <label>{kind === 'create' ? '房间名称' : '邀请链接'}<input {...field(kind === 'create' ? 'name' : 'roomId')} placeholder={kind === 'create' ? '例如：周末放映室' : '粘贴 roomcast://join/…'} required maxLength={kind === 'create' ? 40 : 7000} disabled={busy} /></label>
       {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
       <button className="button primary full" type="submit" disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : kind === 'create' ? <Plus size={17} /> : <ArrowRight size={17} />}{busy ? '正在连接…' : kind === 'create' ? '创建并进入房间' : '进入房间'}</button>
+      {busy && <button className="button secondary full" type="button" onClick={onClose}>停止连接</button>}
     </form>
   </Modal>;
 }
@@ -488,10 +490,12 @@ function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck }) 
 }
 
 function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor, update, autoCheckUpdates, setAutoCheckUpdates, onCheckUpdates, updateInstall, onAutoUpdate }) {
+  const activeTest = useRef(true);
+  useEffect(() => { activeTest.current = true; return () => { activeTest.current = false; }; }, []);
   const [working, setWorking] = useState('');
   const [error, setError] = useState('');
   const [section, setSection] = useState('general');
-  const testRelay = async () => { setWorking('relay'); setError(''); try { const servers = await fetchRelayIce(relaySettings); setRelaySettings(relaySettings); alert(`TURN 可用，已获取 ${servers.length} 组临时 ICE 地址。`); } catch (failure) { setError(failure.message); } finally { setWorking(''); } };
+  const testRelay = async () => { setWorking('relay'); setError(''); try { const servers = await fetchRelayIce(relaySettings); if (!activeTest.current) return; setRelaySettings(relaySettings); alert(`TURN 可用，已获取 ${servers.length} 组临时 ICE 地址。`); } catch (failure) { if (activeTest.current) setError(failure.message); } finally { if (activeTest.current) setWorking(''); } };
   const themePresets = ['#78ddbd', '#6aa9ff', '#a98bff', '#ff8fb8', '#f0b35f', '#8bd36e'];
   // Web clients cannot capture a screen or enumerate capture devices, so those sections
   // are not rendered at all instead of being shown disabled.
@@ -503,7 +507,7 @@ function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refres
     { id: 'about', label: '关于', icon: Info },
   ];
   const active = sections.some(item => item.id === section) ? section : 'general';
-  return <Modal title="设置" onClose={onClose} wide busy={!!working}>
+  return <Modal title="设置" onClose={onClose} wide busy={!!working} cancellable>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="设置分类">
         {sections.map(item => <button key={item.id} type="button" className={active === item.id ? 'selected' : ''} aria-current={active === item.id ? 'true' : undefined} onClick={() => setSection(item.id)}><item.icon size={16} />{item.label}</button>)}
@@ -549,11 +553,14 @@ function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInv
   const [webViewerUrl, setWebViewerUrl] = useState(window.roomcast?.desktop ? '' : new URL('.', window.location.href).href);
   const [webViewerError, setWebViewerError] = useState('');
   const [webViewerBusy, setWebViewerBusy] = useState(false);
+  const webRequest = useRef(0);
+  useEffect(() => () => { webRequest.current++; }, []);
   const startWebViewer = useCallback(() => {
+    const request = ++webRequest.current;
     if (!window.roomcast?.startWebInvite) return;
     setWebViewerBusy(true);
     setWebViewerError('');
-    window.roomcast.startWebInvite().then(result => setWebViewerUrl(result.url || '')).catch(error => setWebViewerError(cleanIpcError(error))).finally(() => setWebViewerBusy(false));
+    window.roomcast.startWebInvite().then(result => { if (request === webRequest.current) setWebViewerUrl(result.url || ''); }).catch(error => { if (request === webRequest.current) setWebViewerError(cleanIpcError(error)); }).finally(() => { if (request === webRequest.current) setWebViewerBusy(false); });
   }, []);
   useEffect(() => {
     if (!isP2P || !window.roomcast?.startWebInvite) return undefined;
@@ -855,6 +862,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
   const notify = useCallback(text => { clearTimeout(toastTimer.current); setToast({ text }); toastTimer.current = setTimeout(() => setToast(null), 8500); }, []);
+  const roomAction = useRef(0);
   const session = useRoom(notify);
   const { room, selfId, server, config, connection, socketRef, messages, hasOlderMessages, historyLoading, loadOlderMessages, sendMessage, sendImages, recallMessage, enter, leave, command } = session;
   const audioDevices = useDevices();
@@ -1113,15 +1121,30 @@ export default function App() {
       notify('网页端只用于用邀请链接加入并观看；请在电脑上用 Roomcast 客户端创建房间。');
       return;
     }
-    await enter(mode, { ...details, relaySettings });
+    const action = ++roomAction.current;
+    const result = await enter(mode, { ...details, relaySettings });
+    if (action === roomAction.current && !result?.cancelled) setModal(null);
+  };
+  const cancelEntry = () => {
+    roomAction.current++;
+    if (connection === 'connecting') void leave(true);
     setModal(null);
   };
   const handleLeave = async () => {
-    if (ownsCapture.current) { ownsCapture.current = false; try { await stopLocalShare(); } catch (error) { notify(`停止采集失败：${error.message}`); } }
+    const action = ++roomAction.current;
+    const force = connection === 'leaving';
+    setModal(null);
+    const socket = socketRef.current;
+    if (ownsCapture.current) {
+      ownsCapture.current = false;
+      void stopLocalShare(socket).catch(error => { if (action === roomAction.current) notify(`停止采集失败：${error.message}`); });
+    }
     try {
-      const outcome = await leave(); setModal(null); setChat(''); refresh();
+      const outcome = await leave(force);
+      if (action !== roomAction.current) return;
+      setChat(''); refresh();
       if (outcome?.closed) notify(outcome.reason || '房间已关闭。');
-    } catch (error) { notify(error.message); }
+    } catch (error) { if (action === roomAction.current) notify(error.message); }
   };
   // A backgrounded web page cannot answer the room handover probe, which used to leave the
   // desktop owner unable to exit. Web clients therefore leave the room themselves once the
@@ -1527,7 +1550,7 @@ export default function App() {
 
   return <div className={`app-shell ${showChat ? '' : 'chat-hidden'} ${showMembers ? 'members-open' : ''} ${desktopChrome ? 'desktop-chrome' : ''}`}>
     {desktopChrome && <div className="roomcast-titlebar" aria-hidden="true"><span className="roomcast-titlebar-logo"><span className="roomcast-titlebar-mark"><i /><i /></span></span><span className="roomcast-titlebar-name">同屏 Roomcast</span></div>}
-    <aside className="icon-rail"><button className="brand-icon" title="同屏 Roomcast" aria-label="同屏首页" onClick={() => { if (!room) setModal(null); }}><span className="brand-mark"><span /><span /></span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} aria-label={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} onClick={() => setModal(room ? 'invite' : canHostRoom ? 'create' : 'join')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title="离开房间" aria-label="离开房间" onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className={`rail-button ${updateAvailable ? 'has-update' : ''}`} title={updateAvailable ? `设置 · 有可用更新 ${update.result.version}` : '设置'} aria-label={updateAvailable ? `设置，有可用更新 ${update.result.version}` : '设置'} onClick={() => setModal('settings')}><Settings size={21} />{updateAvailable && <span className="rail-update-dot" aria-hidden="true" />}</button><div className={`rail-avatar ${avatarClass(self?.avatarColor)}`} title={self?.name || '尚未加入'}>{initials(self?.name || loadPreference('nickname', '') || '你')}</div></aside>
+    <aside className="icon-rail"><button className="brand-icon" title="同屏 Roomcast" aria-label="同屏首页" onClick={() => { if (!room) setModal(null); }}><span className="brand-mark"><span /><span /></span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} aria-label={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} onClick={() => setModal(room ? 'invite' : canHostRoom ? 'create' : 'join')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title={connection === 'leaving' ? '停止等待并离开' : '离开房间'} aria-label={connection === 'leaving' ? '停止等待并离开' : '离开房间'} onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className={`rail-button ${updateAvailable ? 'has-update' : ''}`} title={updateAvailable ? `设置 · 有可用更新 ${update.result.version}` : '设置'} aria-label={updateAvailable ? `设置，有可用更新 ${update.result.version}` : '设置'} onClick={() => setModal('settings')}><Settings size={21} />{updateAvailable && <span className="rail-update-dot" aria-hidden="true" />}</button><div className={`rail-avatar ${avatarClass(self?.avatarColor)}`} title={self?.name || '尚未加入'}>{initials(self?.name || loadPreference('nickname', '') || '你')}</div></aside>
 
     <aside className="channel-sidebar"><header className="brand-header"><div><strong>同屏<span>Roomcast</span></strong><small>A SPACE FOR YOUR PEOPLE</small></div><span className="version-pill">BETA</span>{!desktopChrome && <button className="icon-button mobile-members-close" aria-label="关闭成员栏" onClick={() => setShowMembers(false)}><X size={18} /></button>}</header><div className="sidebar-section-heading"><span>房间</span></div><button className="channel-item selected" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><Volume2 size={19} /><span>{room?.name || (canHostRoom ? '开始你的房间' : '加入房间')}</span>{room ? <span className="channel-count">{room.members.length}</span> : <ChevronRight size={16} />}</button><div className="channel-subtitle"><span className={`status-dot ${room ? 'online' : ''}`} />{room ? `${room.members.length} 人在线 · 最多 10 人` : '房间准备好了，只差你们'}</div>
       <div className="sidebar-section-heading members-heading"><span>成员 <small>{room ? String(room.members.length).padStart(2, '0') : '00'}</small></span><Users size={14} /></div>
@@ -1535,7 +1558,7 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`network-latency ${latencyTone}`} aria-label={`网络延迟：${latencyMs == null ? '-- ms' : `${latencyMs} ms`}`}><Wifi className="network-latency-icon" size={17} strokeWidth={2.2} aria-hidden="true" /><span>{latencyMs == null ? '-- ms' : `${latencyMs} ms`}</span></span></div>
     </aside>
 
-    <main className="main-content"><header className="room-header">{room && <div className="room-header-title"><Volume2 size={22} /><h2>{room.name}</h2></div>}<div className="room-header-actions"><span className={`connection-pill ${room ? 'connected' : ''}`}><span className="status-dot" />房间连接：{room ? config?.roomConnection || 'P2P' : '未连接'}</span>{!desktopChrome && <button className={`icon-button mobile-members-toggle ${showMembers ? 'toggled' : ''}`} title={showMembers ? '收起成员' : '查看成员'} aria-label={showMembers ? '收起成员' : '查看成员'} onClick={() => { setShowChat(false); setShowMembers(value => !value); }}><Users size={19} /></button>}<button className={`icon-button ${showChat ? 'toggled' : ''}`} title={showChat ? '收起聊天' : '展开聊天'} aria-label={showChat ? '收起聊天' : '展开聊天'} onClick={() => { setShowMembers(false); setShowChat(value => !value); }}><MessageSquare size={19} /></button></div></header>
+    <main className="main-content"><header className="room-header">{room && <div className="room-header-title"><Volume2 size={22} /><h2>{room.name}</h2></div>}<div className="room-header-actions">{connection === 'leaving' && <button className="button secondary small" onClick={handleLeave}>停止等待并离开</button>}<span className={`connection-pill ${room ? 'connected' : ''}`}><span className="status-dot" />房间连接：{room ? config?.roomConnection || 'P2P' : '未连接'}</span>{!desktopChrome && <button className={`icon-button mobile-members-toggle ${showMembers ? 'toggled' : ''}`} title={showMembers ? '收起成员' : '查看成员'} aria-label={showMembers ? '收起成员' : '查看成员'} onClick={() => { setShowChat(false); setShowMembers(value => !value); }}><Users size={19} /></button>}<button className={`icon-button ${showChat ? 'toggled' : ''}`} title={showChat ? '收起聊天' : '展开聊天'} aria-label={showChat ? '收起聊天' : '展开聊天'} onClick={() => { setShowMembers(false); setShowChat(value => !value); }}><MessageSquare size={19} /></button></div></header>
       <div className="content-columns"><section className="stage-column"><div className="stage-heading"><div><span className="small-icon-box"><Monitor size={17} /></span><h3>共享屏幕</h3><span className="stage-state">{streams.length ? `${streams.length} 路共享` : '等待分享'}</span></div></div>
         <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>{streams.length ? <div ref={screenGridRef} className={`screen-grid count-${streams.length}`} data-preview-scale={previewScale.toFixed(1)} style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}>{streams.map(stream => <ScreenPlayer key={[stream.memberId, stream.startedAt].join("-")} stream={stream} iceServers={config?.mediaIceServers} outputDeviceId={audioDevices.preferences.outputId} viewerMemberId={selfId} deafened={false} transport={socketRef.current?.mediaP2P ? socketRef.current : undefined} reportViewing={reportViewing} initiallyEntered={watchingStreams.current.has(stream.memberId)} onViewingChange={rememberViewing} />)}</div> : <EmptyScreen room={room} onShare={canShareScreen ? openShare : null} onCreate={canHostRoom ? () => setModal('create') : null} onJoin={() => setModal('join')} />}</div>
       </section>
@@ -1560,7 +1583,7 @@ export default function App() {
       <footer className="voice-dock">{canShareScreen && <div className="dock-controls"><button className="button share-button" onClick={openShare} disabled={shareBusy || (!!room && !self?.canShare && !ownShare)}>{shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={19} />}<span>{ownShare ? '修改共享设置' : '共享屏幕'}</span></button>{ownShare && <button className="control-button leave-button" onClick={stopShare} disabled={shareBusy} title="停止共享" aria-label="停止共享"><Square size={16} /></button>}</div>}</footer>
     </main>
     {updatePrompt.open && update.result?.available && <UpdatePromptModal current={update.result.current || localConfig?.version || APP_VERSION} result={update.result} install={updateInstall} dontRemind={updatePrompt.dontRemind} setDontRemind={value => setUpdatePrompt(current => ({ ...current, dontRemind: value }))} onClose={closeUpdatePrompt} onUpdate={startAutoUpdate} onOpenPage={() => { window.roomcast?.openReleasePage?.().catch(() => { }); }} />}
-    {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} canHost={canHostRoom} onClose={() => setModal(null)} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
+    {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} canHost={canHostRoom} onClose={cancelEntry} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
     {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} />}
     {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
     {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
