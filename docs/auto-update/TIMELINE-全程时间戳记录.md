@@ -104,6 +104,10 @@
 | **16:42:32** | **重新发布站点**（gh-pages `fcf7221 → d8b710d`） | 当前 `dist/` 覆盖式合并：保留历史哈希资源，新增 3 个新哈希资源；**不上传桌面的 `updater.*`** |
 | 16:43 | 线上核对 | `https://lpossj.github.io/roomcast/version.json` = `{"version":"0.14.3-beta.3",…}`（HTTP 200）→ **STEP-12 的限流降级滞后问题一并解决** |
 | 16:43 | beta.3 Release 工作流仍在跑 | 已过 `Package loopback runtime asset`，剩 SHA256 / Playwright / 三项打包验证 / 发布 |
+| **16:47:30** | beta.3 Release 完成 | `completed / success`；发布页转正式预发布 |
+| 16:48 | 发布资产与 `SHA256.txt` 交叉核对 | 6 个资产哈希与 GitHub 摘要**逐个一致** → 自动更新校验必过 |
+| 16:49 | 发布页正文更正 | 补记 16:42 的站点调整（原文写"网页入口未改动"）→ `gh release edit` 同步 |
+| **16:51** | 为人工观看生成 `0.14.3-beta.2` 目录版测试包 | 用当前源码 + 临时降版本号打包；附 `启动测试.cmd`（独立数据目录，不与正式版抢锁）与 `怎么测.txt`；源码版本号已还原、git 干净 |
 
 > 坑：**本机 git 必须显式走代理**（系统代理 `127.0.0.1:7890`，git 不会自动使用），
 > 否则 `fetch/push` 表现为"连不上 github.com:443"；也正是它让首次 `main` 推送因本地
