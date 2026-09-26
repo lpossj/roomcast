@@ -1,0 +1,116 @@
+{
+  "sourceHead": "238ed28c26acd160b524391793f0bd203f0ecf71",
+  "timestamp": "2026-09-26T22:25:36+08:00",
+  "records": [
+    {
+      "old": "docs/EXIT-CANCEL-20260926.md",
+      "record": "docs/时间戳记录/EXIT-CANCEL-20260926.md",
+      "sha256": "c8cbe793417c238b094058255259102073863eb97d5137cf36f0359ef6283ff3"
+    },
+    {
+      "old": "docs/BETA6-LOCAL-REBUILD-20260926.md",
+      "record": "docs/时间戳记录/BETA6-LOCAL-REBUILD-20260926.md",
+      "sha256": "4b3bc8131c5770c02587cb6350a61d87180649568c57c56ea1ce238d8f294e2c"
+    },
+    {
+      "old": "docs/HANDOFF-AUDIT-20260926.md",
+      "record": "docs/时间戳记录/HANDOFF-AUDIT-20260926.md",
+      "sha256": "42fb4390d12ebba234f97ce22e03c861295f64044e06ab6f02df03217274daf9"
+    },
+    {
+      "old": "docs/auto-update/STEP-01-源码对比与同步.md",
+      "record": "docs/时间戳记录/auto-update/STEP-01-源码对比与同步.md",
+      "sha256": "91306999de792b641cafdd1bea968096fd84732cf63643dd73be3b79071bc8a8"
+    },
+    {
+      "old": "docs/auto-update/STEP-02-全自动更新设计.md",
+      "record": "docs/时间戳记录/auto-update/STEP-02-全自动更新设计.md",
+      "sha256": "2a4d8892c804895b923ff100af9d25796e3225721470d6098c7471bb60d8b8a6"
+    },
+    {
+      "old": "docs/auto-update/STEP-03-下载与校验改造.md",
+      "record": "docs/时间戳记录/auto-update/STEP-03-下载与校验改造.md",
+      "sha256": "d55c5c46f76645aa07aaef50ca3a945a0c98be4e2f87d7f4069ae91406a2567c"
+    },
+    {
+      "old": "docs/auto-update/STEP-04-自动替换模块.md",
+      "record": "docs/时间戳记录/auto-update/STEP-04-自动替换模块.md",
+      "sha256": "d0f28ead735d1774a1aed57282dd3171090f47493c7631aed0e2acd6d16000b6"
+    },
+    {
+      "old": "docs/auto-update/STEP-05-主进程与更新窗口.md",
+      "record": "docs/时间戳记录/auto-update/STEP-05-主进程与更新窗口.md",
+      "sha256": "3a25928bc241bc1954aa3c2504fa758f89f22223108131094304089f02e6b477"
+    },
+    {
+      "old": "docs/auto-update/STEP-06-界面更新弹窗.md",
+      "record": "docs/时间戳记录/auto-update/STEP-06-界面更新弹窗.md",
+      "sha256": "750494c9d38dd3b3f5f18083119ad6194da2580373ad0e9c486e0dfe86885ba3"
+    },
+    {
+      "old": "docs/auto-update/STEP-07-测试与验证.md",
+      "record": "docs/时间戳记录/auto-update/STEP-07-测试与验证.md",
+      "sha256": "94d5de6f323f61f7ea75126384db1592629c15b65d84a64c464c9ace74d789fe"
+    },
+    {
+      "old": "docs/auto-update/STEP-08-审查与失败模式分析.md",
+      "record": "docs/时间戳记录/auto-update/STEP-08-审查与失败模式分析.md",
+      "sha256": "a0af558c745465e0e57f7c51cb167b065c851d4446fb23ca64eb86fe334f9c81"
+    },
+    {
+      "old": "docs/auto-update/STEP-09-限流降级修复.md",
+      "record": "docs/时间戳记录/auto-update/STEP-09-限流降级修复.md",
+      "sha256": "2ffcf8d42052832434c2e046698e294881aa28b08ef96099fa3e06d2a2ca9e79"
+    },
+    {
+      "old": "docs/auto-update/STEP-10-目标校验误判修复.md",
+      "record": "docs/时间戳记录/auto-update/STEP-10-目标校验误判修复.md",
+      "sha256": "f95cc554bad02acc47cbd327f2124d217b23db029bd6de27214d2192b568e252"
+    },
+    {
+      "old": "docs/auto-update/STEP-11-自驱动端到端检查.md",
+      "record": "docs/时间戳记录/auto-update/STEP-11-自驱动端到端检查.md",
+      "sha256": "f409af20db5b3801e16f6459f01292f895d504718042fa5b7e5c51ec626c4bec"
+    },
+    {
+      "old": "docs/auto-update/STEP-12-发布0.14.3-beta.3.md",
+      "record": "docs/时间戳记录/auto-update/STEP-12-发布0.14.3-beta.3.md",
+      "sha256": "8b7c38fd18a2827a6607767f076d5ebcfa1a0c287edcf4af2cb689ebcfcd2483"
+    },
+    {
+      "old": "docs/auto-update/STEP-13-停用网页包发布.md",
+      "record": "docs/时间戳记录/auto-update/STEP-13-停用网页包发布.md",
+      "sha256": "f0c91ed69b8bdb7f2e0ace6aeb851fec8aacc232b3ca306d75c1ec8844c35ee3"
+    },
+    {
+      "old": "docs/auto-update/STEP-14-网页端去掉建房入口.md",
+      "record": "docs/时间戳记录/auto-update/STEP-14-网页端去掉建房入口.md",
+      "sha256": "106b7db86637d4fe5aa41188b104e0ff76bf970fb9286dc3dae7b8f8d6bd12eb"
+    },
+    {
+      "old": "docs/auto-update/STEP-15-修复更新期间控制台窗口并精简下载入口.md",
+      "record": "docs/时间戳记录/auto-update/STEP-15-修复更新期间控制台窗口并精简下载入口.md",
+      "sha256": "0595e0887c9de9d5450ece888f1aca824251bad1b08a6e5a1ada0f2244563232"
+    },
+    {
+      "old": "docs/auto-update/STEP-16-限流降级改用发布订阅.md",
+      "record": "docs/时间戳记录/auto-update/STEP-16-限流降级改用发布订阅.md",
+      "sha256": "e57b00ba137556a3321619c94d647deeda6243cc6373d48c34ece6129d69d2d4"
+    },
+    {
+      "old": "docs/auto-update/STEP-17-修复替换脚本被主程序连带终止.md",
+      "record": "docs/时间戳记录/auto-update/STEP-17-修复替换脚本被主程序连带终止.md",
+      "sha256": "dce65710f35ce5088d426494dfd4df647e605a344dfde26278a2af4bad7bc4fd"
+    },
+    {
+      "old": "docs/auto-update/STEP-18-同号重发0.14.3-beta.5.md",
+      "record": "docs/时间戳记录/auto-update/STEP-18-同号重发0.14.3-beta.5.md",
+      "sha256": "01498f0ce09a976e167b21902f81307869cca0c4e9c65fe143da77fc3acfbe06"
+    },
+    {
+      "old": "docs/auto-update/TIMELINE-全程时间戳记录.md",
+      "record": "docs/时间戳记录/auto-update/TIMELINE-全程时间戳记录.md",
+      "sha256": "00efc405ab5de74e7d448aaaef3df273f89ae62d4efc0fb9d974287d12ee6b2e"
+    }
+  ]
+}
