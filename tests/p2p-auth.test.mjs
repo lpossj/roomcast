@@ -322,3 +322,39 @@ test('closing an older guest session cannot delete its replacement mapping', asy
   assert.equal(guest.disconnected(), 1);
 });
 
+test('disconnect still releases remaining connections when one cleanup throws', async () => {
+  const room = new P2PRoom();
+  const released = [];
+  room.stopScreenStream = () => { throw Error('capture failed'); };
+  room.local = { removeAllListeners() { throw Error('listener failed'); }, disconnect() { released.push('local'); } };
+  room.browserService = { close: async () => { throw Error('service failed'); } };
+  room.guests.add({ close() { throw Error('guest failed'); } });
+  room.guests.add({ close() { released.push('guest'); } });
+  room.remote = { close() { released.push('remote'); } };
+  room.peer = { destroy() { released.push('peer'); } };
+  room.screenViewers.set('bad', { pc: { close() { throw Error('viewer failed'); } } });
+  room.screenViewers.set('good', { pc: { close() { released.push('viewer'); } } });
+  room.disconnect();
+  await flush();
+  assert.deepEqual(released, ['local', 'guest', 'remote', 'peer', 'viewer']);
+  assert.equal(room.closed, true);
+  assert.equal(room.guests.size, 0);
+  assert.equal(room.screenViewers.size, 0);
+  assert.equal(room.browserService, null);
+});
+
+test('one failed track or screen session does not retain the rest of the capture', () => {
+  const room = new P2PRoom();
+  const released = [];
+  room.stopVdoPublisher = () => { throw Error('publisher failed'); };
+  room.screenSessions.set('bad', { videoPolicy: { stop() { throw Error('policy failed'); } }, pc: { close() { released.push('first-pc'); } } });
+  room.screenSessions.set('good', { pc: { close() { released.push('second-pc'); } } });
+  room.screenStream = {
+    getTracks: () => [{ stop() { throw Error('track failed'); } }, { stop() { released.push('track'); } }],
+    roomcastCleanup() { released.push('capture'); },
+  };
+  room.stopScreenStream();
+  assert.deepEqual(released, ['first-pc', 'second-pc', 'track', 'capture']);
+  assert.equal(room.screenStream, null);
+  assert.equal(room.screenSessions.size, 0);
+});

@@ -2754,18 +2754,19 @@ export class P2PRoom {
   }
 
   stopScreenStream() {
-    this.stopVdoPublisher();
+    const release = callback => { try { callback(); } catch { } };
+    release(() => this.stopVdoPublisher());
 
     for (
       const entry
       of this.screenSessions.values()
     ) {
-      entry.videoPolicy?.stop();
+      release(() => entry.videoPolicy?.stop());
       clearTimeout(
         entry.calibrateTimer,
       );
 
-      entry.pc?.close();
+      release(() => entry.pc?.close());
     }
 
     this.screenSessions.clear();
@@ -2776,11 +2777,10 @@ export class P2PRoom {
         ?.getTracks()
       || []
     ) {
-      track.stop();
+      release(() => track.stop());
     }
 
-    this.screenStream
-      ?.roomcastCleanup?.();
+    release(() => this.screenStream?.roomcastCleanup?.());
 
     this.screenStream = null;
   }
@@ -3593,6 +3593,8 @@ export class P2PRoom {
     this.closed = true;
     this.connected = false;
     this.pendingMigrationCommit = null;
+    // Failure in one cleanup must not retain the other room connections.
+    const release = callback => { try { callback(); } catch { } };
 
     this.resolveMigration?.();
 
@@ -3612,32 +3614,29 @@ export class P2PRoom {
 
     this.delayedTimers.clear();
 
-    this.stopScreenStream();
+    release(() => this.stopScreenStream());
 
-    this.local
-      ?.removeAllListeners?.();
-
-    this.local
-      ?.disconnect();
-    void this.browserService?.close();
+    release(() => this.local?.removeAllListeners?.());
+    release(() => this.local?.disconnect());
+    release(() => { void Promise.resolve(this.browserService?.close()).catch(() => { }); });
     this.browserService = null;
 
     for (
       const guest
       of this.guests
     ) {
-      guest.close();
+      release(() => guest.close());
     }
 
     for (
       const guest
       of this.unauthenticated
     ) {
-      guest.close();
+      release(() => guest.close());
     }
 
-    this.remote?.close();
-    this.peer?.destroy();
+    release(() => this.remote?.close());
+    release(() => this.peer?.destroy());
 
     for (
       const resolve
@@ -3692,7 +3691,7 @@ export class P2PRoom {
       of this.screenViewers
         .values()
     ) {
-      entry.pc?.close();
+      release(() => entry.pc?.close());
     }
 
     this.pending.clear();
