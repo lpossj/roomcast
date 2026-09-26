@@ -3428,6 +3428,51 @@ select {
     color: #ffc9c9
 }
 
+/* Startup update prompt: release notes get their own scroll area so a long changelog
+   cannot push the "立即更新" button off screen. */
+.update-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px
+}
+
+.update-prompt-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 13px
+}
+
+.update-prompt-head span {
+    color: var(--muted);
+    font-size: 12px
+}
+
+.update-prompt-notes {
+    max-height: 240px;
+    overflow-y: auto;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #ffffff08;
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word
+}
+
+.update-prompt-remind {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    cursor: pointer
+}
+
 @media(max-width:650px) {
     .settings-layout {
         flex-direction: column;

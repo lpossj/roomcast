@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+    <title>正在更新 Roomcast</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; padding: 22px 24px;
+        font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+        background: #11151c; color: #e8edf4;
+        -webkit-user-select: none; user-select: none;
+      }
+      header { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+      header .mark {
+        width: 22px; height: 22px; border-radius: 6px; flex: 0 0 auto;
+        background: linear-gradient(135deg, #3ddc84, #22a06b);
+      }
+      h1 { font-size: 16px; font-weight: 600; margin: 0; }
+      .version { color: #8f9bb0; font-size: 12px; margin: 2px 0 16px 32px; }
+      .phase { font-size: 13px; color: #c7d2e2; margin-bottom: 8px; min-height: 18px; }
+      .bar { height: 8px; border-radius: 4px; background: #1e2632; overflow: hidden; }
+      .bar > span { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #3ddc84, #22a06b); transition: width .2s ease; }
+      .bar.indeterminate > span { width: 35%; animation: slide 1.2s ease-in-out infinite; }
+      @keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+      .detail { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 12px; color: #8f9bb0; }
+      .steps { margin-top: 16px; font-size: 12px; color: #7d8899; line-height: 1.7; }
+      .steps b { color: #3ddc84; font-weight: 600; }
+      .error { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: #2a1b1e; border: 1px solid #5d2b31; color: #ffb4b4; font-size: 12px; line-height: 1.6; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+      button {
+        font: inherit; font-size: 12px; padding: 7px 14px; border-radius: 8px; cursor: pointer;
+        border: 1px solid #2c3644; background: #1a212b; color: #dbe4f0;
+      }
+      button.primary { border-color: #2f8f5f; background: #1f7a4d; color: #eafff4; }
+      button:disabled { opacity: .5; cursor: default; }
+      .hidden { display: none !important; }
+      .note { margin-top: 14px; font-size: 11px; color: #6c7788; line-height: 1.6; }
+    </style>
+  </head>
+  <body>
+    <header><span class="mark"></span><h1>正在更新 Roomcast</h1></header>
+    <div class="version" id="version">准备中…</div>
+    <div class="phase" id="phase">正在准备更新…</div>
+    <div class="bar" id="bar"><span id="fill"></span></div>
+    <div class="detail"><span id="detail-left"></span><span id="detail-right"></span></div>
+    <div class="steps" id="steps"></div>
+    <div class="error hidden" id="error" role="alert"></div>
+    <div class="actions hidden" id="actions">
+      <button type="button" class="primary" id="retry">重试</button>
+      <button type="button" id="page">打开发布页（手动下载）</button>
+      <button type="button" id="quit">关闭并重新打开程序</button>
+    </div>
+    <div class="note" id="note">更新包会用发布页的 SHA256.txt 校验通过后才会替换程序文件；替换过程在程序退出后进行。</div>
+    <script src="./updater.js"></script>
+  </body>
+</html>

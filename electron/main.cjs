@@ -29,6 +29,11 @@ let privateSession;
 let workerFetch;
 let forceWindowClose = false;
 let closeHandshakeTimer = null;
+// Automatic update state. The updater window outlives the main window, so both are
+// tracked here, and `updaterState` is the single source of truth the progress UI reads
+// (the window may load after the download already started).
+let updaterWindow = null;
+let updaterState = { status: 'idle' };
 const audioCaptures = new Map();
 let LoopbackCapture;
 let obsCaptureEngine = null;
@@ -279,7 +284,7 @@ else {
       // is used or safeStorage is temporarily unavailable.
       const themePreferencesPath = path.join(app.getPath('userData'), 'theme-preferences.json');
       const legacyThemePreferencesPath = path.join(rootDir, 'theme-preferences.json');
-      const preferenceKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server']);
+      const preferenceKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion']);
       let preferences = {};
       let themePreferences = {};
       let loadedThemeFromStablePath = false;
@@ -563,17 +568,40 @@ else {
         if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口关闭网页入口。');
         return webInvite.stop();
       });
-      // Update check. Chromium's network stack is used instead of Node's fetch so the
-      // request follows the Windows proxy and certificate configuration; the renderer
-      // never supplies a URL, it only names an asset from the result main already holds.
+      // Update check and automatic update. Chromium's network stack is used instead of
+      // Node's fetch so the request follows the Windows proxy and certificate
+      // configuration; the renderer never supplies a URL, it only names an asset from the
+      // result main already holds.
+      //
+      // The automatic path keeps the two halves deliberately apart: update-check.mjs
+      // verifies the download, update-install.mjs refuses to touch the installed program
+      // unless that verification happened. Nothing on disk changes before this process is
+      // about to exit.
+      // The updater window outlives the main window, so neither check may touch a destroyed
+      // window: reading `webContents` off a destroyed BrowserWindow throws, which would make
+      // every updater-window call (status/retry/open page) fail once the main window is gone.
+      const windowAlive = candidate => Boolean(candidate) && !candidate.isDestroyed();
+      const owns = (event, candidate) => windowAlive(candidate)
+        && event.sender === candidate.webContents
+        && event.senderFrame === candidate.webContents.mainFrame
+        && trusted(event.senderFrame.url);
       const requireOwner = (event, reason) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error(reason);
+        if (!owns(event, window) && !owns(event, updaterWindow)) throw new Error(reason);
       };
+      const requireMainWindow = (event, reason) => {
+        if (!owns(event, window)) throw new Error(reason);
+      };
+      const loadUpdateCheck = () => import(pathToFileURL(path.join(__dirname, 'update-check.mjs')).href);
+      const loadUpdateInstall = () => import(pathToFileURL(path.join(__dirname, 'update-install.mjs')).href);
+      // A replacement that fails after this process is gone cannot report itself, so the
+      // apply script leaves a marker the next launch reads back (see update-last-failure).
+      const updateFailureMarkerPath = path.join(app.getPath('userData'), 'update-failed.txt');
       let updateChecker = null;
       let lastUpdateCheck = null;
+      let updatePipeline = null;
       const ensureUpdateChecker = async () => {
         if (!updateChecker) {
-          const { createUpdateChecker } = await import(pathToFileURL(path.join(__dirname, 'update-check.mjs')).href);
+          const { createUpdateChecker } = await loadUpdateCheck();
           updateChecker = createUpdateChecker({
             currentVersion: app.getVersion(),
             fetchImpl: (url, options) => net.fetch(url, options),
@@ -581,10 +609,176 @@ else {
         }
         return updateChecker;
       };
+      const describeTarget = async () => {
+        const { describeInstallTarget } = await loadUpdateInstall();
+        return describeInstallTarget({
+          platform: process.platform,
+          isPackaged: app.isPackaged,
+          execPath: process.execPath,
+          portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+          // Authoritative: the asar this process actually loaded its code from.
+          appPath: app.getAppPath(),
+        });
+      };
+      const publishUpdaterState = () => {
+        if (updaterWindow && !updaterWindow.isDestroyed()) updaterWindow.webContents.send('roomcast:update-state', updaterState);
+      };
+      const setUpdaterState = patch => {
+        updaterState = { ...updaterState, ...patch };
+        publishUpdaterState();
+      };
+      const createUpdaterWindow = () => {
+        if (updaterWindow && !updaterWindow.isDestroyed()) return updaterWindow;
+        updaterWindow = new BrowserWindow({
+          width: 560, height: 360, resizable: false, minimizable: false, maximizable: false,
+          title: '正在更新 Roomcast', backgroundColor: '#11151c', show: false, autoHideMenuBar: true, useContentSize: true,
+          webPreferences: { session: privateSession, preload: path.join(__dirname, 'updater-preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false },
+        });
+        // Automated update checks drive this window through remote debugging; in test mode it
+        // stays hidden exactly like the main window, so a scripted run never steals focus.
+        const showUpdaterWindow = () => {
+          if (updaterWindow && !updaterWindow.isDestroyed() && !process.env.ROOMCAST_TEST_MODE) updaterWindow.show();
+        };
+        updaterWindow.once('ready-to-show', showUpdaterWindow);
+        updaterWindow.on('closed', () => { updaterWindow = null; });
+        // The main window is already gone, so this window must become visible even if the
+        // page cannot be loaded; otherwise the app would keep running with no UI at all.
+        updaterWindow.webContents.on('did-fail-load', showUpdaterWindow);
+        setTimeout(showUpdaterWindow, 3000);
+        updaterWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+        updaterWindow.webContents.on('will-navigate', event => event.preventDefault());
+        void updaterWindow.loadURL(`${service.url}/updater.html`).catch(() => { });
+        return updaterWindow;
+      };
+      // The replacement needs this process to be gone. The main window normally closes
+      // immediately (the renderer finishes its room handover first), but a stuck handover
+      // must not stall a deliberately automatic update forever.
+      const waitForMainWindowClose = async (timeoutMs = 25000) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          if (!window || window.isDestroyed()) return true;
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        return !window || window.isDestroyed();
+      };
+      const runUpdatePipeline = async ({ target, asset, version }) => {
+        let plan = null;
+        let workDir = '';
+        try {
+          const installer = await loadUpdateInstall();
+          workDir = installer.updateWorkRoot();
+          const downloadDir = path.join(workDir, 'download');
+          await fs.promises.mkdir(downloadDir, { recursive: true });
+          const destination = path.join(downloadDir, path.basename(asset.name));
+          const checker = await ensureUpdateChecker();
+          setUpdaterState({ status: 'running', phase: 'connecting', version, asset: asset.name, received: 0, total: Number(asset.size) || 0, done: 0, files: 0, error: '' });
+          const downloaded = await checker.download(asset, destination, lastUpdateCheck.checksumUrl, progress => {
+            setUpdaterState({ phase: progress.phase, received: progress.received, total: progress.total });
+          });
+          setUpdaterState({ phase: 'extracting', done: 0, files: 0 });
+          plan = await installer.prepareUpdateInstall({
+            target,
+            download: downloaded,
+            pid: process.pid,
+            // A portable build runs as launcher.exe -> inner Roomcast.exe, and the launcher
+            // keeps the downloaded EXE locked until it exits (portable.nsi ExecWait).
+            parentPid: target.kind === 'portable-exe' ? process.ppid : 0,
+            failureMarkerPath: updateFailureMarkerPath,
+            version,
+            workDir,
+            onProgress: progress => setUpdaterState({ phase: 'extracting', done: progress.done, files: progress.total }),
+          });
+          setUpdaterState({ phase: 'closing' });
+          // Room ownership migration must not be abandoned: if the renderer refused or never
+          // answered the close handshake, cancel the update instead of forcing the app down.
+          if (!await waitForMainWindowClose()) {
+            throw Object.assign(new Error('程序还没有退出（房间迁移可能未完成），已取消自动更新，当前安装未被修改。可点"重试"，或手动退出程序后再更新。'), { code: 'close' });
+          }
+          const started = installer.startApplyScript(plan.scriptPath, {
+            onError: error => setUpdaterState({ status: 'failed', phase: 'failed', error: `无法启动替换脚本：${error?.message || error}` }),
+          });
+          if (!started.pid) throw new Error('无法启动替换脚本，更新已取消，当前安装未被修改。');
+          // A pid alone is not proof the script runs: if it never writes its first log line,
+          // quitting here would leave the user with a closed app and no replacement at all.
+          if (!await installer.waitForApplyScriptStart(plan.logPath)) {
+            throw new Error('替换脚本没有真正开始运行（可能被安全软件或受限环境拦截），已取消自动更新，当前程序未被修改。可重试，或手动下载安装包。');
+          }
+          // Only now is it true that the app is going down for the replacement.
+          setUpdaterState({ phase: 'restarting' });
+          // Let the UI paint the final state before this process disappears.
+          setTimeout(() => app.quit(), 900);
+        } catch (error) {
+          // Nothing outside the work directory was modified yet: drop it and report. This
+          // must run even when the failure happened before the plan existed, otherwise a
+          // downloaded 200+ MB archive stays in %TEMP% (observed in real testing).
+          const cleanupDir = plan?.workDir || workDir;
+          if (cleanupDir) await fs.promises.rm(cleanupDir, { recursive: true, force: true }).catch(() => { });
+          setUpdaterState({ status: 'failed', phase: 'failed', error: String(error?.message || '更新失败') });
+        } finally {
+          updatePipeline = null;
+        }
+      };
+      const beginUpdate = async () => {
+        if (!lastUpdateCheck?.available) throw new Error('请先检查更新。');
+        if (updatePipeline) return { ok: false, reason: '更新已经开始了。' };
+        const target = await describeTarget();
+        if (!target.supported) return { ok: false, unsupported: true, reason: target.reason };
+        if (!lastUpdateCheck.checksumUrl) return { ok: false, unsupported: true, reason: '发布页没有提供 SHA256 校验文件，无法自动更新；请手动下载安装包。' };
+        const { selectInstallAsset } = await loadUpdateCheck();
+        const asset = selectInstallAsset(lastUpdateCheck.assets, target.kind);
+        if (!asset) return { ok: false, unsupported: true, reason: '发布页没有与当前安装方式匹配的更新包。' };
+        updaterState = { status: 'running', phase: 'starting', version: lastUpdateCheck.version, asset: asset.name, received: 0, total: Number(asset.size) || 0, done: 0, files: 0, error: '' };
+        createUpdaterWindow();
+        publishUpdaterState();
+        // Step 2 of the requested flow: close the running program, then show progress.
+        // window.close() reuses the existing renderer handshake, so sharing, the room and
+        // the chat session are torn down exactly as they are on a normal close.
+        if (window && !window.isDestroyed()) window.close();
+        updatePipeline = runUpdatePipeline({ target, asset, version: lastUpdateCheck.version });
+        return { ok: true, version: lastUpdateCheck.version, kind: target.kind, asset: asset.name };
+      };
       ipcMain.handle('roomcast:update-check', async event => {
         requireOwner(event, '不允许此窗口检查更新。');
         lastUpdateCheck = await (await ensureUpdateChecker()).check();
         return lastUpdateCheck;
+      });
+      ipcMain.handle('roomcast:update-target', async event => {
+        requireOwner(event, '不允许此窗口读取更新方式。');
+        const target = await describeTarget();
+        return { kind: target.kind, supported: target.supported, reason: target.reason };
+      });
+      ipcMain.handle('roomcast:update-start', async event => {
+        requireMainWindow(event, '不允许此窗口启动自动更新。');
+        return beginUpdate();
+      });
+      ipcMain.handle('roomcast:update-status', event => {
+        requireOwner(event, '不允许此窗口读取更新状态。');
+        return updaterState;
+      });
+      ipcMain.handle('roomcast:update-retry', async event => {
+        requireOwner(event, '不允许此窗口重试更新。');
+        return beginUpdate();
+      });
+      ipcMain.handle('roomcast:update-quit', event => {
+        requireOwner(event, '不允许此窗口退出程序。');
+        setTimeout(() => app.quit(), 50);
+        return { ok: true };
+      });
+      // Failure recovery: bring the program back instead of leaving the user with nothing.
+      ipcMain.handle('roomcast:update-relaunch', event => {
+        requireOwner(event, '不允许此窗口重新打开程序。');
+        app.relaunch();
+        setTimeout(() => app.quit(), 50);
+        return { ok: true };
+      });
+      // Read-and-clear, so a failed replacement is reported exactly once.
+      ipcMain.handle('roomcast:update-last-failure', event => {
+        requireMainWindow(event, '不允许此窗口读取更新失败记录。');
+        let marker = '';
+        try { marker = fs.readFileSync(updateFailureMarkerPath, 'utf8'); } catch { return null; }
+        try { fs.rmSync(updateFailureMarkerPath, { force: true }); } catch { }
+        const [version = '', workDir = ''] = String(marker).split(/\r?\n/);
+        return { version, workDir, logPath: workDir ? path.join(workDir, 'apply.log') : '' };
       });
       ipcMain.handle('roomcast:update-download', async (event, name) => {
         requireOwner(event, '不允许此窗口下载更新。');
@@ -1007,6 +1201,11 @@ else {
         }
         void Promise.allSettled([session.defaultSession.clearCache(), session.defaultSession.clearStorageData()])
           .then(() => startupMark('maintenance-end'));
+        // A previous automatic update cannot delete its own temporary directory; do it here
+        // once the app is up again (anything newer than ten minutes is left alone).
+        void loadUpdateInstall()
+          .then(module => module.cleanupStaleUpdateWorkDirs())
+          .catch(() => { });
       });
     } catch (e) {
       dialog.showErrorBox('同屏启动失败', `${e.message}\n\n请关闭其他正在运行的 Roomcast 后重试；若仍失败，请查看使用说明。`);
