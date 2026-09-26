@@ -126,6 +126,21 @@
 | 17:2x | 门禁 | 构建通过；`npm test` **191/191**（188 + 3 新增） |
 | 17:2x | 版本号 → `0.14.3-beta.5` | 发布说明/验收清单/CHANGELOG/STEP-16 同步；提交 + tag + 推送触发下一次 Release |
 
+## 阶段 8 · 修掉"脚本活不下来"，并改为**只本地提交、不再发版**（详见 `STEP-17`）
+
+| 时间 | 事件 | 结果 |
+| --- | --- | --- |
+| **17:38:40.73** | beta.4 → beta.5 真实更新暴露新缺陷 | `apply.log` **只有 91 字节一行** `update start`；`download/`、`payload/` 仍在，`app.asar` 仍是 beta.4，无残留 cmd 进程 → **替换脚本被连带终止** |
+| 17:4x | 定位 | `detached:true` → `DETACHED_PROCESS`：Windows 因此忽略 `CREATE_NO_WINDOW`（多窗口），但它也是子进程脱离 Chromium job object 的唯一手段 → **窗口与存活二选一** |
+| 17:4x | 修复 | 改为**两级隐藏启动器**：`detached` 的隐藏 `powershell.exe` → `Start-Process … -WindowStyle Hidden` 派生 `cmd.exe` 跑脚本；兜底退回 `cmd-detached` |
+| 17:4x | 验证 | 可见控制台计数 = **基线 2（零新增）**；标记文件 `ran` → `late` 证明**启动器退出后脚本仍在跑** |
+| 17:4x | 单测 | 重写为 `the apply script is launched detached through a hidden launcher`（spawn 目标/参数/选项、带空格路径引号、PID 缺失兜底） |
+| 17:4x | 测试债 | 真机归档用例不再依赖已被清理的 `release\Roomcast-0.14.3-beta.1-Windows\`：改为 3 项必做断言 + 两次读取一致性，参照目录仅在存在时逐字节比对 |
+| **17:44–17:45** | 反例记录 | 仓库根 `NOTICE`(2437B) ≠ 包内 `NOTICE`(2441B)，不能当参照物；包内 `version` 文件是 Electron 版本(44.3.0)而非 app 版本 |
+| **17:46:14** | 门禁 | `node tests/update-install.test.mjs` **17/17**；`npm test` **191/191** |
+| **17:47** | 用户叫停发版 | 「你又要 release 一次？我更新 release 被你整乱了」→ 决定 **只在本地 commit**，不打 tag、不 push、不建 Release；核实线上 tag `v0.14.3-beta.1…beta.5` 与远端一一对应、无重复无错位 |
+| **17:47** | 登记结论 | **beta.4**：能更新但闪 3 个窗口；**beta.5**：无窗口但替换静默失败 → 从这两版出发无法验证成功更新（执行更新的就是旧代码本身） |
+
 > 坑：**本机 git 必须显式走代理**（系统代理 `127.0.0.1:7890`，git 不会自动使用），
 > 否则 `fetch/push` 表现为"连不上 github.com:443"；也正是它让首次 `main` 推送因本地
 > `origin/main` 陈旧而被拒。

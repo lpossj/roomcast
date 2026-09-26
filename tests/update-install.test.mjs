@@ -318,10 +318,17 @@ test('the apply script start guard waits for the first log line', async () => {
   assert.equal(await waitForApplyScriptStart(emptyLog, { timeoutMs: 300, intervalMs: 50 }), false);
 });
 
-test('the apply script is launched with cmd.exe-safe quoting', () => {
-  // Regression test for a real failure: passing `/d /s /c "<path>"` made Node escape the
-  // quotes as \" (which cmd.exe does not understand), so the script never ran a single line.
-  // The bare path must be passed and /s must not be used.
+test('the apply script is launched detached through a hidden launcher', () => {
+  // Three real failures shaped this:
+  //  1. `/d /s /c "<path>"` made Node escape the quotes as \" (cmd.exe does not understand
+  //     them), so the script never ran a single line.
+  //  2. `windowsHide` without `detached` gives a hidden console but the app's exit then KILLS
+  //     the script (Chromium runs a job object; detached is what breaks the child away) —
+  //     measured: the script logged its first line, the app exited, nothing was replaced.
+  //  3. `detached` alone shows windows, because Windows ignores CREATE_NO_WINDOW when
+  //     DETACHED_PROCESS is present — measured: +1..3 visible console windows.
+  // The launcher chain satisfies both: detached powershell (hidden, outside the job) starts
+  // the script with -WindowStyle Hidden, so every console child inherits that hidden console.
   const calls = [];
   const spawnImpl = (file, args, options) => {
     calls.push({ file, args, options });
@@ -330,18 +337,43 @@ test('the apply script is launched with cmd.exe-safe quoting', () => {
   const scriptPath = 'C:\\Users\\me\\AppData\\Local\\Temp\\roomcast-update-1\\apply.cmd';
   const started = startApplyScript(scriptPath, { spawnImpl, comspec: 'C:\\Windows\\System32\\cmd.exe' });
   assert.equal(started.pid, 4242);
+  assert.equal(started.via, 'powershell-hidden');
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].file, 'C:\\Windows\\System32\\cmd.exe');
-  assert.deepEqual(calls[0].args, ['/d', '/c', scriptPath]);
-  assert.ok(!calls[0].args.includes('/s'), '不能使用 /s');
-  assert.ok(!calls[0].args.some(argument => argument.includes('"')), '不能自己给路径加引号');
-  // Regression test for the console windows users saw during a real update: libuv maps
-  // `detached` to DETACHED_PROCESS, and Windows ignores CREATE_NO_WINDOW (from windowsHide)
-  // when DETACHED_PROCESS is present, so every console child of the script gets a NEW VISIBLE
-  // console. Measured with a window counter: detached -> +1..3 windows, windowsHide only -> 0.
-  assert.notEqual(calls[0].options.detached, true, '不能使用 detached：会让 windowsHide 失效并弹出控制台窗口');
+  assert.equal(calls[0].file, 'powershell.exe');
+  assert.deepEqual(calls[0].args.slice(0, 4), ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden']);
+  assert.equal(calls[0].args[4], '-Command');
+  assert.match(calls[0].args[5], /Start-Process -FilePath \$env:ComSpec/);
+  assert.match(calls[0].args[5], /-WindowStyle Hidden$/);
+  assert.ok(calls[0].args[5].includes(scriptPath), '必须把脚本路径交给启动器');
+  assert.ok(!calls[0].args[5].includes('/s '), '不能使用 /s');
+  assert.equal(calls[0].options.detached, true, '必须 detached，否则程序退出时脚本会被一起杀掉');
   assert.equal(calls[0].options.windowsHide, true);
   assert.equal(calls[0].options.stdio, 'ignore');
+
+  // A path with spaces must be quoted for cmd.exe, not for Node.
+  const spaced = [];
+  startApplyScript('C:\\Users\\me\\App Data\\apply.cmd', {
+    spawnImpl: (file, args, options) => { spaced.push({ file, args, options }); return { pid: 1, on() { }, unref() { } }; },
+  });
+  assert.ok(spaced[0].args[5].includes("'\"C:\\Users\\me\\App Data\\apply.cmd\"'"), '含空格路径必须由 cmd 侧加引号');
+
+  // If PowerShell cannot be started, fall back to a detached cmd.exe so the update still
+  // happens (windows may flash), and report which path was used.
+  const fallback = [];
+  const started2 = startApplyScript(scriptPath, {
+    spawnImpl: (file, args, options) => {
+      fallback.push({ file, args, options });
+      return { pid: fallback.length === 1 ? 0 : 777, on() { }, unref() { } };
+    },
+    comspec: 'C:\\Windows\\System32\\cmd.exe',
+  });
+  assert.equal(started2.via, 'cmd-detached');
+  assert.equal(started2.pid, 777);
+  assert.equal(fallback.length, 2);
+  assert.equal(fallback[1].file, 'C:\\Windows\\System32\\cmd.exe');
+  assert.deepEqual(fallback[1].args, ['/d', '/c', scriptPath]);
+  assert.equal(fallback[1].options.detached, true);
+  assert.equal(fallback[1].options.windowsHide, true);
 });
 
 test('an unverified download is never installed', async () => {
@@ -411,14 +443,40 @@ test('the real release archive parses and extracts with this reader', async t =>
   const wanted = new Set(['resources/NOTICE', 'version', 'resources/app.asar']);
   const result = await extractZip(archive, destination, { only: name => wanted.has(name) });
   assert.equal(result.files, 3);
-  // Compare against the already extracted release build next to the archive: a full
-  // 221 MB, 2 101 entry electron-builder ZIP must round-trip byte for byte.
-  const reference = fileURLToPath(new URL('../release/Roomcast-0.14.3-beta.1-Windows/', import.meta.url));
+
+  // Structural checks that hold for any electron-builder archive: every entry we asked
+  // for came out non-empty, the payload is a real multi-megabyte asar, and a second,
+  // independent read of the same entries is byte identical (central directory and local
+  // headers agree, so the reader is not silently truncating or padding).
+  const first = new Map();
   for (const name of wanted) {
-    const extracted = await readFile(path.join(destination, ...name.split('/')));
+    const bytes = await readFile(path.join(destination, ...name.split('/')));
+    assert.ok(bytes.length > 0, `${name} must not be empty`);
+    first.set(name, bytes);
+  }
+  assert.ok(first.get('resources/app.asar').length > 1_000_000, 'app.asar must carry the whole app');
+  const again = path.join(workRoot, 'real-release-again');
+  const second = await extractZip(archive, again, { only: name => wanted.has(name) });
+  assert.equal(second.files, 3);
+  for (const name of wanted) {
+    const bytes = await readFile(path.join(again, ...name.split('/')));
+    assert.equal(
+      createHash('sha256').update(bytes).digest('hex'),
+      createHash('sha256').update(first.get(name)).digest('hex'),
+      `${name} must read identically twice`,
+    );
+  }
+
+  // When the archive has already been unpacked next to itself, compare byte for byte:
+  // a full 221 MB, 2 101 entry electron-builder ZIP must round-trip exactly. The
+  // unpacked folder is build scratch that may have been cleaned, so it is optional and
+  // its absence must not be reported as a reader failure.
+  const reference = fileURLToPath(new URL('../release/Roomcast-0.14.3-beta.1-Windows/', import.meta.url));
+  if (!(await stat(reference).catch(() => null))) return;
+  for (const name of wanted) {
     const original = await readFile(path.join(reference, ...name.split('/')));
     assert.equal(
-      createHash('sha256').update(extracted).digest('hex'),
+      createHash('sha256').update(first.get(name)).digest('hex'),
       createHash('sha256').update(original).digest('hex'),
       `${name} must match the extracted release build`,
     );

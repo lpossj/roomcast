@@ -358,33 +358,44 @@ export function buildApplyScript({ target, payloadDir = '', assetPath = '', work
   return lines.join('\r\n');
 }
 
-export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = spawn, onError, comspec = process.env.ComSpec || 'cmd.exe' } = {}) {
-  // Do NOT pre-quote the path, and do NOT use /s. Node quotes Windows arguments itself and
-  // escapes any embedded quote as \" — which cmd.exe does not understand — so the previous
-  // `/d /s /c "<path>"` form made cmd.exe fail before running a single line (verified: the
-  // script produced no log at all, in a normal shell as well as in the sandbox). Passing the
-  // bare path lets Node add quotes only when the path needs them, which cmd.exe handles
-  // correctly for paths with and without spaces.
-  //
-  // `detached` must stay OFF: libuv maps it to DETACHED_PROCESS, and Windows ignores
-  // CREATE_NO_WINDOW (what `windowsHide` sets) when DETACHED_PROCESS is present. The script
-  // then has no console, so every console child it runs (tasklist, ping, robocopy) allocates
-  // a NEW VISIBLE console window — users saw three console windows pop up during a real
-  // update. With `windowsHide` alone the script gets one hidden console and all children
-  // inherit it, so nothing is ever shown. Windows does not kill child processes when their
-  // parent exits, so the script still outlives the app.
-  // Measured with a visible-console counter: detached -> +1..3 windows, windowsHide only -> 0.
-  const child = spawnImpl(comspec, ['/d', '/c', scriptPath], {
-    cwd,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  // spawn() reports failures asynchronously; without a listener that would be an unhandled
-  // 'error' event in the main process.
-  child.on?.('error', error => { if (typeof onError === 'function') onError(error); });
-  child.unref?.();
-  // pid is undefined when the process could not be started at all.
-  return { pid: Number(child.pid) || 0 };
+// Starts the replacement script so that it (a) survives this process exiting and (b) never
+// shows a console window. Both constraints were learned the hard way from real updates:
+//
+//   * `detached: true` is REQUIRED for survival. libuv maps it to DETACHED_PROCESS and, when
+//     the parent is inside a job object (Chromium/Electron runs one), it also asks Windows to
+//     break the child away from that job. Without it the app's exit kills the script — measured:
+//     the script wrote its first log line, the app exited, and nothing was ever replaced.
+//   * `detached: true` alone shows windows: Windows ignores CREATE_NO_WINDOW (what
+//     `windowsHide` sets) when DETACHED_PROCESS is present, so the script has no console and
+//     every console child it runs (tasklist, ping, robocopy) allocates a NEW VISIBLE console —
+//     users saw three console windows during a real update.
+//
+// So the script is started by a hidden PowerShell launcher that is itself detached:
+//   detached powershell (hidden console, outside the job)
+//     -> Start-Process -WindowStyle Hidden <cmd /d /c script>   (inherits that hidden console)
+//        -> tasklist / ping / robocopy                           (inherit it too)
+// Measured with a visible-console counter: cmd detached -> +1 window, launcher chain -> 0,
+// and the launcher chain still ran the script after the launcher itself had exited.
+export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = spawn, onError, comspec = process.env.ComSpec || 'cmd.exe', powershell = 'powershell.exe' } = {}) {
+  const launch = (file, args) => {
+    const child = spawnImpl(file, args, { cwd, stdio: 'ignore', windowsHide: true, detached: true });
+    // spawn() reports failures asynchronously; without a listener that would be an unhandled
+    // 'error' event in the main process.
+    child.on?.('error', error => { if (typeof onError === 'function') onError(error); });
+    child.unref?.();
+    // pid is undefined when the process could not be started at all.
+    return Number(child.pid) || 0;
+  };
+  // cmd.exe needs the quotes itself when the path contains spaces; Node must not be the one
+  // adding them (see the /d /s /c note in git history: Node escapes them as \" and cmd.exe
+  // then fails before running a single line).
+  const target = /\s/.test(scriptPath) ? `"${scriptPath}"` : scriptPath;
+  const command = `Start-Process -FilePath $env:ComSpec -ArgumentList '/d','/c','${target.replace(/'/g, "''")}' -WindowStyle Hidden`;
+  const viaLauncher = launch(powershell, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command]);
+  if (viaLauncher) return { pid: viaLauncher, via: 'powershell-hidden' };
+  // PowerShell unavailable or blocked: fall back to a detached cmd.exe. Survival (the part
+  // that decides whether the update happens at all) is preserved; windows may flash.
+  return { pid: launch(comspec, ['/d', '/c', scriptPath]), via: 'cmd-detached' };
 }
 
 // A successful spawn only proves a pid was handed out: the process can still die before
