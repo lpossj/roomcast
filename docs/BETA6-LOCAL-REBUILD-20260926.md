@@ -27,3 +27,21 @@
 - 重用刚通过构建的dist，直接调用本地electron-builder生成portable及zip；禁止publish。打包TMP/TEMP设为本仓库.test/beta6-build-temp，避免现有清理钩子触碰其他会话临时目录。
 - 缓存cloudflared/OBS/OBS源包均已存在，使用现有校验与缓存；不重新下载发布包。
 - 格式检查发现验收清单末尾多余空行，已移除；只影响文档，无需重跑已通过的代码门禁。
+
+## 2026-09-26 21:16:33 +08:00 — 步骤4：Windows包完成与档案一致性
+
+- portable EXE与Windows ZIP已成功生成，显式publish never；复用门禁生成的dist，无重复前端构建。
+- cloudflared/OBS与源码归档为本地缓存；未下载发布包。builder为正式EXE更新asar完整性资源并应用fuses，未手改asar。
+- 打包版本为0.14.3-beta.6；Electron/server所有打包源码与工作区逐字节一致；dist全部文件一致；Windows ZIP内asar与win-unpacked一致。
+- 最终bundle不含refreshRelay或被禁止的提示；已有退出预算标记存在、旧否决行不存在。
+- 详细静态验证：.test/beta6-package-inspection.json；构建日志：.test/beta6-build-portable.log与beta6-build-zip.log。
+- 下一步验证真实便携包欢迎页及运行时；手机和复杂退出场景仍由用户真机测试。
+
+## 2026-09-26 21:18:44 +08:00 — 步骤5：正式便携包验收与最终文档提交
+
+- npm run verify:release通过，ok=true；真实便携EXE欢迎页与桌面桥接正常，版本0.14.3-beta.6；许可证/OBS许可及四项运行时哈希通过。
+- 本轮包内18个Electron/server代码文件、8个dist文件与工作区一致；Windows ZIP内asar一致；未手改asar，正式重构建启动无完整性失败。
+- 未进行手机跨网、采集/音频、复杂退出移交的真机测试，交由用户执行；不把同网旧包测试写成新包通过。
+- 为避免源码ZIP包含落后的文档或自引哈希，本文档与验收清单先做最终本地提交，再从干净HEAD运行package:source、一次生成strict SHA256清单。
+- 后续归档/校验的逐步实际结果、最终提交及各产物哈希记入release/BETA6-LOCAL-VALIDATION.md（release忽略目录，不造成新的脏工作区）。
+- 可回滚修改：5066c33为源码包保全；a2415a0为注释/文档。版本仍beta.6；没有push/tag/Release。
