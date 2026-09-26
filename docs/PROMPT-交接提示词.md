@@ -1,5 +1,7 @@
 # 交接提示词（可直接复制粘贴给下一个模型）
 
+> 接手更正（2026-09-26 21:08:52 +08:00）：以下为历史交接稿；其中手机失败阶段、Windows参数、代理必要性及旧验收记录有不准确结论。请先读 `docs/HANDOFF-AUDIT-20260926.md` 和 `docs/BETA6-LOCAL-REBUILD-20260926.md`。用户已确认beta.5/beta.6同网均可观看、TURN未启用；本轮不声称手机跨网故障已修复，保持beta.6，仅本地验证打包，禁止push/tag/Release。
+
 ---
 
 你是接手 **Roomcast**（Windows 桌面端 + 网页观看端；Electron 44 + React 19 + Vite 7；仓库 `github.com/lpossj/roomcast`；本地路径 `C:\Users\Administrator\Documents\Deepseek\roomcast-source`）的工程师。

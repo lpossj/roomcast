@@ -358,24 +358,15 @@ export function buildApplyScript({ target, payloadDir = '', assetPath = '', work
   return lines.join('\r\n');
 }
 
-// Starts the replacement script so that it (a) survives this process exiting and (b) never
-// shows a console window. Both constraints were learned the hard way from real updates:
-//
-//   * `detached: true` is REQUIRED for survival. libuv maps it to DETACHED_PROCESS and, when
-//     the parent is inside a job object (Chromium/Electron runs one), it also asks Windows to
-//     break the child away from that job. Without it the app's exit kills the script — measured:
-//     the script wrote its first log line, the app exited, and nothing was ever replaced.
-//   * `detached: true` alone shows windows: Windows ignores CREATE_NO_WINDOW (what
-//     `windowsHide` sets) when DETACHED_PROCESS is present, so the script has no console and
-//     every console child it runs (tasklist, ping, robocopy) allocates a NEW VISIBLE console —
-//     users saw three console windows during a real update.
-//
-// So the script is started by a hidden PowerShell launcher that is itself detached:
-//   detached powershell (hidden console, outside the job)
-//     -> Start-Process -WindowStyle Hidden <cmd /d /c script>   (inherits that hidden console)
-//        -> tasklist / ping / robocopy                           (inherit it too)
-// Measured with a visible-console counter: cmd detached -> +1 window, launcher chain -> 0,
-// and the launcher chain still ran the script after the launcher itself had exited.
+// Keep the replacement script alive after this process exits and hide its console.
+// On Windows, libuv adds non-detached children to its own kill-on-close job;
+// detached children skip that assignment. This does not request
+// CREATE_BREAKAWAY_FROM_JOB or guarantee escape from every external job.
+// detached and windowsHide may be set together. Windows ignores CREATE_NO_WINDOW
+// with DETACHED_PROCESS, while SW_HIDE remains a separate window setting.
+// Direct detached cmd launch previously produced visible descendant consoles.
+// Retain the measured hidden PowerShell -> hidden cmd launcher, including its
+// detached fallback; this comment correction changes no launch behavior.
 export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = spawn, onError, comspec = process.env.ComSpec || 'cmd.exe', powershell = 'powershell.exe' } = {}) {
   const launch = (file, args) => {
     const child = spawnImpl(file, args, { cwd, stdio: 'ignore', windowsHide: true, detached: true });

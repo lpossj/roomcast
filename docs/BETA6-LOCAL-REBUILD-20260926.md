@@ -16,3 +16,14 @@
 - node --test tests/package-source.test.mjs：4/4通过，0失败；实际Git仓库覆盖两种脏工作区、成功归档与无HEAD归档失败。
 - 验证失败路径保留旧ZIP字节、成功路径生成HEAD ZIP、临时文件清理；未操作现有发布包。
 - scripts/package-source.mjs与新回归单独提交；其他注释/文档留给下一独立提交。
+
+## 2026-09-26 21:12:06 +08:00 — 步骤3：最终项目门禁与注释/文档提交
+
+- npm run check通过：许可证检查、195/195测试（0失败）、前端构建、网络架构检查全绿。日志：.test/beta6-final-check.log。
+- 新增4项归档保全用例；未删/放宽旧用例。Vite保留已有大chunk提示，不属本次最小修复范围。
+- 对比确认electron/update-install.mjs及对应旧测试只改注释；src/、server/、electron/main.cjs/preload.cjs相对接手HEAD没有本轮改动。
+- 源码包修复已独立提交5066c33；注释/文档更正另行本地提交，未push。
+- 本机未发现正在运行的Roomcast.exe，打包不需终止用户进程；磁盘空间充足。
+- 重用刚通过构建的dist，直接调用本地electron-builder生成portable及zip；禁止publish。打包TMP/TEMP设为本仓库.test/beta6-build-temp，避免现有清理钩子触碰其他会话临时目录。
+- 缓存cloudflared/OBS/OBS源包均已存在，使用现有校验与缓存；不重新下载发布包。
+- 格式检查发现验收清单末尾多余空行，已移除；只影响文档，无需重跑已通过的代码门禁。

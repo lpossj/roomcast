@@ -319,16 +319,11 @@ test('the apply script start guard waits for the first log line', async () => {
 });
 
 test('the apply script is launched detached through a hidden launcher', () => {
-  // Three real failures shaped this:
-  //  1. `/d /s /c "<path>"` made Node escape the quotes as \" (cmd.exe does not understand
-  //     them), so the script never ran a single line.
-  //  2. `windowsHide` without `detached` gives a hidden console but the app's exit then KILLS
-  //     the script (Chromium runs a job object; detached is what breaks the child away) —
-  //     measured: the script logged its first line, the app exited, nothing was replaced.
-  //  3. `detached` alone shows windows, because Windows ignores CREATE_NO_WINDOW when
-  //     DETACHED_PROCESS is present — measured: +1..3 visible console windows.
-  // The launcher chain satisfies both: detached powershell (hidden, outside the job) starts
-  // the script with -WindowStyle Hidden, so every console child inherits that hidden console.
+  // Regression coverage for the existing hidden launcher: cmd quoting, survival
+  // after the app exits, and hidden descendants. On Windows, libuv adds
+  // non-detached children to its own job; detached skips that assignment.
+  // detached and windowsHide are compatible options, but CREATE_NO_WINDOW is
+  // ignored with DETACHED_PROCESS, so the explicit hidden launcher still matters.
   const calls = [];
   const spawnImpl = (file, args, options) => {
     calls.push({ file, args, options });

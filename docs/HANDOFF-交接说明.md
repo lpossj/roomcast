@@ -1,5 +1,7 @@
 # Roomcast 交接说明书（2026-09-26 会话全程）
 
+> 接手更正（2026-09-26 21:08:52 +08:00）：以下为历史交接稿；其中手机失败阶段、Windows参数、代理必要性及旧验收记录有不准确结论。请先读 `docs/HANDOFF-AUDIT-20260926.md` 和 `docs/BETA6-LOCAL-REBUILD-20260926.md`。用户已确认beta.5/beta.6同网均可观看、TURN未启用；本轮不声称手机跨网故障已修复，保持beta.6，仅本地验证打包，禁止push/tag/Release。
+
 > 生成时间：2026-09-26 19:3x（本机时间 UTC+8）
 > 交接对象：接手此仓库的另一个模型 / 另一位工程师
 > 仓库：`C:\Users\Administrator\Documents\Deepseek\roomcast-source`（远端 `github.com/lpossj/roomcast`，分支 `main`）
