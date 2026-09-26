@@ -38,7 +38,29 @@
    主线为 `ae2c6ba`，两者**树完全一致**（因为变基只把同一批改动搬到了你已有的 `12bd388` 之上）。
 4. **`version.json` 需另行发布**（见下）。
 
-## 3. 网页站点 `version.json`（16:37 决定不再自动发布 → 16:42 手工发布一次，已解决）
+## 4. 发布结果（2026-09-26 16:47）
+
+**Release 工作流 `36230079046`：completed / success**（16:32:22 启动 → 16:47:30 完成）。
+发布页已从草稿转为正式预发布：<https://github.com/lpossj/roomcast/releases/tag/v0.14.3-beta.3>
+（`isDraft: false`、`isPrerelease: true`）。
+
+| 资产 | 大小（字节） | SHA256（与 GitHub 记录的摘要一致） |
+| --- | --- | --- |
+| `Roomcast-0.14.3-beta.3-Windows.exe` | 149,916,762 | `56A07B5A7C3E3A7B68039771A81FE895CF2F8186E03ABCF30BBEB3BC974F5379` |
+| `Roomcast-0.14.3-beta.3-Windows.zip` | 221,713,396 | `7C6B3EE231C4D17672735DC1440BFB453EEB9FEE4C38A05E245740D1C7624C88` |
+| `Roomcast-0.14.3-beta.3-source.zip` | 850,462 | `597EC6B8B7FC6998465677009A40BBEA7E8A73A80678C6FDBDBEF33436014251` |
+| `Roomcast-0.14.3-beta.3-loopback-capture.zip` | 163,704 | `01517EEA4BF967880F89BDC0BD2928197350FB9F43CB4F5A60B629A944A3503B` |
+| `SHA256.txt` | 761 | （清单本身） |
+| `OBS-Studio-32.1.2-Sources.tar.gz` | 16,606,155 | `C6532380C68A75327FE8B551461ADECA8F184DCBE4015096251A6DE76362A554` |
+
+**校验交叉核对**：从发布页下载的 `SHA256.txt`，其中每个资产行的哈希与 GitHub 对上传文件计算的
+`digest` **逐个一致** —— 即自动更新对 beta.3 的 SHA256 校验会通过，不会因校验失败而拒绝安装。
+
+工作流内已完成的关键门禁（截取自步骤状态）：`Run project checks`（含 188 项测试）、
+`Prepare embedded OBS runtime`、`Verify packaged OBS runtime`、`Verify portable relaunch preserves runtime`、
+`Verify capture backend switching`、`Verify packaged release` —— 全部 ✓ 后才是 `Publish beta release`。
+
+## 5. 网页站点 `version.json`（16:37 决定不再自动发布 → 16:42 手工发布一次，已解决）
 
 - 限流降级依赖 `https://lpossj.github.io/roomcast/version.json`；它由网页包（gh-pages）发布产生。
 - **Release 工作流只把 `Roomcast-<版本>-WebViewer.zip` 作为资产上传，不会自动部署 gh-pages**，
