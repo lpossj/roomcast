@@ -3,49 +3,41 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 
-// Closing Roomcast used to be gated on the room handover: a failed migration replied
-// `ok: false` and the window stayed open forever. Exit is now unconditional - the
-// handover gets a short budget and the window closes regardless.
-test('Electron closes the window even when the handover fails, is unanswered or is asked twice', async () => {
-  const source = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
-  const start = source.indexOf("window.on('close', event => {");
-  const end = source.indexOf("ipcMain.on('roomcast:system-accent-color-get'", start);
+const source = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+const start = source.indexOf("window.on('close',");
+const end = source.indexOf("ipcMain.on('roomcast:system-accent-color-get'", start);
+assert.ok(start >= 0 && end > start);
+
+for (const testMode of [false, true]) {
+  test(`first native close exits immediately, including unresponsive renderer and cleanup (test mode: ${testMode})`, () => {
+    let close, exits = [];
+    const context = vm.createContext({
+      window: { on: (event, handler) => { assert.equal(event, 'close'); close = handler; },
+        webContents: { send() { throw new Error('renderer is unresponsive'); } } },
+      app: { exit: code => exits.push(code) },
+      clearTimeout() {}, setTimeout() { throw new Error('exit must not schedule a wait'); },
+      writeWindowState() { throw new Error('disk write is blocked'); },
+      service: { close: () => new Promise(() => {}) },
+      saveTimer: 1, quitting: false, process: { env: testMode ? { ROOMCAST_TEST_MODE: '1' } : {} },
+    });
+    vm.runInContext(source.slice(start, end), context);
+    close({ preventDefault() { throw new Error('close must not be vetoed'); } });
+    assert.deepEqual(exits, [0]);
+    assert.equal(context.quitting, true);
+  });
+}
+
+test('automatic update destroys only the main window and keeps its pipeline alive', () => {
+  const start = source.indexOf('// Destroy only the main window:');
+  const end = source.indexOf('return { ok: true, version:', start);
   assert.ok(start >= 0 && end > start);
-  const handlers = new Map();
-  let timeout, closes = 0, cancelled = 0;
-  const webContents = { send() {}, mainFrame: { url: 'app' } };
+  const calls = [];
   const context = vm.createContext({
-    window: { on: (event, handler) => handlers.set(event, handler), webContents, isDestroyed: () => false, close: () => closes++ },
-    ipcMain: { on: (event, handler) => handlers.set(event, handler) },
-    clearTimeout() {}, setTimeout: callback => { timeout = callback; return 1; },
-    console: { warn() {} },
-    Date, CLOSE_GRACE_MS: 2500,
-    saveTimer: null, closeHandshakeTimer: null, closeRequestedAt: 0, forceWindowClose: false, quitting: false,
-    process: { env: {} }, writeWindowState() {}, trusted: () => true,
+    window: { isDestroyed: () => false, destroy: () => calls.push('destroy'),
+      close() { throw new Error('normal close would exit the updater'); } },
+    runUpdatePipeline: () => { calls.push('update'); return Promise.resolve(); },
+    target: {}, asset: {}, lastUpdateCheck: { version: 'test' }, updatePipeline: null,
   });
   vm.runInContext(source.slice(start, end), context);
-  const request = () => handlers.get('close')({ preventDefault: () => cancelled++ });
-  const reply = result => handlers.get('roomcast:close-ready')({ sender: webContents, senderFrame: webContents.mainFrame }, result);
-
-  // A reported migration failure is information, not a veto.
-  request();
-  assert.equal(closes, 0, 'the first close request must still give the handover its budget');
-  reply({ ok: false, reason: '新房主未确认接管' });
-  assert.equal(closes, 1, 'a failed handover must not keep the window open');
-  assert.equal(cancelled, 1);
-
-  // Asking twice quits immediately, even if the renderer never answers. The second
-  // request is still prevented before the forced close is issued, so it counts as a
-  // cancelled attempt plus the close that follows.
-  closes = 0; cancelled = 0; context.forceWindowClose = false; context.closeRequestedAt = 0;
-  request(); request();
-  assert.equal(closes, 1, 'a second close request must close the window at once');
-  assert.equal(cancelled, 2);
-
-  // And the deadline closes it when nothing answers at all.
-  closes = 0; cancelled = 0; context.forceWindowClose = false; context.closeRequestedAt = 0;
-  request();
-  assert.equal(typeof timeout, 'function');
-  timeout();
-  assert.equal(closes, 1, 'the grace deadline must close the window on its own');
+  assert.deepEqual(calls, ['destroy', 'update']);
 });

@@ -27,15 +27,8 @@ let captureSelection = null;
 let quitting = false;
 let privateSession;
 let workerFetch;
-let forceWindowClose = false;
-let closeHandshakeTimer = null;
-// Closing the window must never depend on the room handover finishing, so the window
-// gets a short budget and then closes anyway; a second close request is an explicit
-// "quit now" that skips the wait entirely.
-const CLOSE_GRACE_MS = 2500;
-// A stuck local service close or session clear must not outlive the window either.
+// Non-window quit paths (for example a finished update) retain bounded cleanup.
 const EXIT_GRACE_MS = 5000;
-let closeRequestedAt = 0;
 // Automatic update state. The updater window outlives the main window, so both are
 // tracked here, and `updaterState` is the single source of truth the progress UI reads
 // (the window may load after the download already started).
@@ -500,62 +493,12 @@ else {
       window.on('move', saveWindowState);
       window.on('maximize', saveWindowState);
       window.on('unmaximize', saveWindowState);
-      window.on('close', event => {
+      window.on('close', () => {
+        // The native X is an unconditional exit. Do not wait for renderer replies,
+        // room migration, beforeunload, service cleanup or asynchronous capture work.
         clearTimeout(saveTimer);
-        writeWindowState();
-
-        if (forceWindowClose || quitting || process.env.ROOMCAST_TEST_MODE) return;
-
-        event.preventDefault();
-
-        const now = Date.now();
-
-        // Asking twice inside the grace window is an explicit "quit now": a stuck
-        // handover, a failed migration or an unresponsive renderer must never keep
-        // the program open.
-        if (closeRequestedAt && now - closeRequestedAt < CLOSE_GRACE_MS) {
-          forceWindowClose = true;
-
-          if (window && !window.isDestroyed()) window.close();
-
-          return;
-        }
-
-        closeRequestedAt = now;
-
-        window.webContents.send('roomcast:before-close');
-
-        if (closeHandshakeTimer) clearTimeout(closeHandshakeTimer);
-
-        closeHandshakeTimer = setTimeout(() => {
-          closeHandshakeTimer = null;
-          // The handover has had its budget. Close regardless: the room server ends
-          // the room when the owner socket disappears without a completed migration.
-          forceWindowClose = true;
-
-          if (window && !window.isDestroyed()) window.close();
-        }, CLOSE_GRACE_MS);
-      });
-      ipcMain.on('roomcast:close-ready', (event, result) => {
-        if (
-          event.sender !== window?.webContents ||
-          event.senderFrame !== window.webContents.mainFrame ||
-          !trusted(event.senderFrame.url)
-        ) return;
-
-        clearTimeout(closeHandshakeTimer);
-        closeHandshakeTimer = null;
-        closeRequestedAt = 0;
-
-        // A negative report is information, not a veto: the renderer has already been
-        // told to leave, and the deadline decides when the window goes away.
-        if (result?.ok === false) {
-          console.warn('[Roomcast] 关闭窗口前房间移交未能完成：', String(result?.reason || '未说明原因').slice(0, 200));
-        }
-
-        forceWindowClose = true;
-
-        if (window && !window.isDestroyed()) window.close();
+        quitting = true;
+        app.exit(0);
       });
       ipcMain.on('roomcast:system-accent-color-get', event => {
         const allowed = event.sender === window?.webContents && event.senderFrame === window.webContents.mainFrame && trusted(event.senderFrame.url);
@@ -763,10 +706,9 @@ else {
         updaterState = { status: 'running', phase: 'starting', version: lastUpdateCheck.version, asset: asset.name, received: 0, total: Number(asset.size) || 0, done: 0, files: 0, error: '' };
         createUpdaterWindow();
         publishUpdaterState();
-        // Step 2 of the requested flow: close the running program, then show progress.
-        // window.close() reuses the existing renderer handshake, so sharing, the room and
-        // the chat session are torn down exactly as they are on a normal close.
-        if (window && !window.isDestroyed()) window.close();
+        // Destroy only the main window: normal window.close() now exits the process,
+        // while the updater must stay alive to finish downloading and installing.
+        if (window && !window.isDestroyed()) window.destroy();
         updatePipeline = runUpdatePipeline({ target, asset, version: lastUpdateCheck.version });
         return { ok: true, version: lastUpdateCheck.version, kind: target.kind, asset: asset.name };
       };
