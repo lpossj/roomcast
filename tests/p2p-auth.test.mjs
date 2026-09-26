@@ -233,3 +233,92 @@ test('closing before open promptly cleans the pending handshake', async t => {
   assert.equal(f.connection.listenerCount('open'), 0);
   assert.equal(f.room.unauthenticated.size, 0);
 });
+
+const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+
+async function admittedGuest(room, id, reply = { ok: true }) {
+  const socket = new EventEmitter();
+  socket.data = {};
+  socket.connected = true;
+  let disconnected = 0, closed = 0, probes = 0;
+  socket.disconnect = () => { disconnected++; };
+  socket.timeout = () => ({ emit: (_event, _payload, callback) => callback(null, { ok: true, selfId: id }) });
+  room.localSocket = async () => socket;
+  const connection = new EventEmitter();
+  connection.open = true;
+  connection.metadata = { protocol: 2, authMode: 'invite' };
+  connection.send = message => {
+    if (message.authChallenge) void createPeerAuthProof(room.inviteSecret, message.authChallenge)
+      .then(authProof => connection.emit('data', { authProof }));
+    if (message.control === 'migration:probe') {
+      probes++;
+      if (reply) queueMicrotask(() => connection.emit('data', { controlReply: message.controlId, result: reply }));
+    }
+  };
+  connection.close = () => { closed++; connection.open = false; connection.emit('close'); };
+  await room.accept(connection);
+  connection.emit('data', { id: 'join', event: 'room:join', payload: { roomId: room.roomId } });
+  await flush();
+  assert.equal(room.guestMembers.get(id), connection);
+  return { connection, disconnected: () => disconnected, closed: () => closed, probes: () => probes };
+}
+
+test('a silent web guest is removed without a close event while responsive and busy guests stay', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const room = new P2PRoom();
+  room.roomId = 'ABCDEF12'; room.inviteSecret = 's'.repeat(43);
+  t.after(() => room.disconnect());
+  const silent = await admittedGuest(room, 'silent', null);
+  const healthy = await admittedGuest(room, 'healthy');
+  const busy = await admittedGuest(room, 'busy', { ok: false });
+  t.mock.timers.tick(10_000); await flush();
+  assert.equal(silent.probes(), 1);
+  assert.equal(silent.disconnected(), 0);
+  t.mock.timers.tick(14_999); await flush();
+  assert.equal(silent.disconnected(), 0, 'allow the full response budget');
+  t.mock.timers.tick(1); await flush();
+  assert.equal(silent.disconnected(), 1);
+  assert.equal(silent.closed(), 1);
+  assert.equal(room.guestMembers.has('silent'), false);
+  assert.equal(room.guests.has(silent.connection), false);
+  assert.equal(healthy.disconnected(), 0);
+  assert.equal(busy.disconnected(), 0, 'busy replies still prove presence');
+  assert.equal(room.guests.size, 2);
+  room.disconnect();
+  const probes = healthy.probes();
+  t.mock.timers.tick(60_000); await flush();
+  assert.equal(healthy.probes(), probes, 'no probes after closing the room');
+  assert.equal(room.controlPending.size, 0);
+});
+
+test('host timer suspension resets presence instead of expiring its web guest', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let clock = 0;
+  t.mock.method(performance, 'now', () => clock);
+  const room = new P2PRoom();
+  room.roomId = 'ABCDEF12'; room.inviteSecret = 's'.repeat(43);
+  t.after(() => room.disconnect());
+  const guest = await admittedGuest(room, 'paused', null);
+  t.mock.timers.tick(10_000); await flush();
+  clock = 60_000;
+  t.mock.timers.tick(15_000); await flush();
+  assert.equal(guest.disconnected(), 0);
+  t.mock.timers.tick(10_000); await flush();
+  assert.equal(guest.probes(), 2, 'resume with a fresh probe');
+  clock += 15_000;
+  t.mock.timers.tick(15_000); await flush();
+  assert.equal(guest.disconnected(), 1, 'a new timely unanswered probe expires the guest');
+});
+
+test('closing an older guest session cannot delete its replacement mapping', async t => {
+  const room = new P2PRoom();
+  room.roomId = 'ABCDEF12'; room.inviteSecret = 's'.repeat(43);
+  t.after(() => room.disconnect());
+  const guest = await admittedGuest(room, 'same-id');
+  const replacement = { close() {} };
+  room.guestMembers.set('same-id', replacement);
+  guest.connection.close();
+  assert.equal(room.guestMembers.get('same-id'), replacement);
+  assert.equal(guest.disconnected(), 1);
+});
+

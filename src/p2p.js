@@ -56,6 +56,9 @@ const INVITE_SECRET = /^[A-Za-z0-9_-]{43}$/;
 const PEER_AUTH_ICE_TIMEOUT_MS = 25_000;
 const PEER_AUTH_TOTAL_TIMEOUT_MS = PEER_AUTH_ICE_TIMEOUT_MS + PEER_AUTH_TIMEOUT_MS;
 
+const GUEST_PROBE_INTERVAL_MS = 10_000;
+const GUEST_PROBE_TIMEOUT_MS = 15_000;
+
 const defaultScreenSettings = {
   width: 1920,
   height: 1080,
@@ -1799,6 +1802,7 @@ export class P2PRoom {
     let requests = 0;
 
     let timeout;
+    let presenceTimer;
 
     const cleanup = () => {
       if (closed) return;
@@ -1806,8 +1810,9 @@ export class P2PRoom {
       closed = true;
 
       clearTimeout(timeout);
+      clearTimeout(presenceTimer);
 
-      socket?.disconnect();
+      try { socket?.disconnect(); } catch { }
 
       this.unauthenticated
         .delete(connection);
@@ -1824,6 +1829,28 @@ export class P2PRoom {
         this.guestMembers
           .delete(memberId);
       }
+    };
+
+    const checkPresence = () => {
+      clearTimeout(presenceTimer);
+      if (closed || this.closed) return;
+      presenceTimer = setTimeout(async () => {
+        if (closed || this.closed) return;
+        const started = performance.now();
+        try {
+          // This read-only probe is also supported by older web viewers. A
+          // negative reply means busy, not absent; only no reply expires a guest.
+          await this.sendControl(connection, 'migration:probe', {}, GUEST_PROBE_TIMEOUT_MS);
+        } catch {
+          // A paused host cannot assess a guest during its own timer stall.
+          if (performance.now() - started <= GUEST_PROBE_TIMEOUT_MS + 5_000) {
+            cleanup();
+            try { connection.close(); } catch { }
+            return;
+          }
+        }
+        checkPresence();
+      }, GUEST_PROBE_INTERVAL_MS);
     };
 
     connection.on(
@@ -2201,6 +2228,7 @@ export class P2PRoom {
                 memberId,
                 connection,
               );
+            checkPresence();
           }
 
           if (
