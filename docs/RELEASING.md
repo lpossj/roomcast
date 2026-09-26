@@ -68,19 +68,15 @@ npm run verify:release
 
 发布前应在干净 Windows 10/11 x64 机器上完成当前版本对应的 `docs/RELEASE_CHECKLIST-<version>.md` 验收项。若该版本还没有检查表，先按 `docs/RELEASE_CHECKLIST-0.14.3-beta.1.md` 复制一份再执行，不要沿用上一版结论。
 
-## 网页入口站点（自 0.14.3-beta.3 起不再随版本发布）
+## 线上观看网页与 Release 附件
 
 桌面端生成的"电脑／手机网页观看链接"指向固定站点 `https://lpossj.github.io/roomcast/`（`electron/web-invite.cjs` 的默认入口）。
-该站点的独立网页包（`release/Roomcast-<version>-WebViewer` 与 `WebViewer.zip`）**不再随版本构建与发布**：
-维护者不使用"网页版当房主建房"的路径，因此打包脚本 `scripts/package-web-viewer.mjs` 与 `npm run package:web` 已删除。
+**更新线上观看网页不等于发布 WebViewer ZIP。** 自 beta.7 起，观看端有必要的修复时把当前 `dist/index.html`、`dist/assets/` 和音频 worklet 部署到 `gh-pages`，保留 `.nojekyll`，同步 `version.json`。不上传 Electron 更新窗口文件或桌面 API，也不构建/发布独立 WebViewer ZIP 附件。
 
-后果（发布时必须知道）：
-
-- 站点保持 beta.3 之前已发布的内容；**新版本的界面改动不会出现在网页端**，观看链接仍然可用。
-- 站点的 `version.json` 不再更新。桌面端更新检查在 GitHub 接口被限流时会读取它作为降级来源，
-  因此该降级路径会停留在旧版本号（**安全方向**：只会"检查不到更新"，不会误装或报错）。
-- 若将来需要恢复网页发布：重新添加打包脚本（内容为把 `dist/` 复制到站点目录并写入 `version.json`），
-  或直接从当前 `dist/` 手工部署到 gh-pages。
+- 只有 Roomcast 客户端提供创建房间入口；手机网页供观看，电脑网页在加入后可按浏览器能力共享，不能创建房间。
+- `version.json` 只声明已公开版本及当前 `peerAuthProtocol`，用于版本/更新降级信息；先完成对应 Release，再更新这个声明，避免宣告尚未公开的安装包。
+- 部署后检查 Pages 构建、线上入口实际 JS、版本声明及网页加入确认；检查只读取网页文件，不重复下载 Windows 发布包。
+- 此前站点冻结在 beta.3 的记录仍作为历史保留，不能作为 beta.7 部署后的现状说明。
 
 ## 构建机卫生
 
