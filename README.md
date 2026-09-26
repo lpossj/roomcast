@@ -4,7 +4,7 @@ Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间�
 
 Roomcast 只面向合法、知情同意的屏幕共享与聊天。使用前请阅读 [ACCEPTABLE_USE.md](ACCEPTABLE_USE.md)。
 
-> 当前版本是公开测试版（Beta）。Windows 桌面应用可立即生成固定 HTTPS 电脑／手机网页邀请，无需网站注册或登录，网页也可创建和加入 P2P 房间；网页建房者需要保持浏览器页面运行。手机浏览器通常不实现 `getDisplayMedia`，因此手机网页以观看和聊天为主，共享按钮会显示为"仅支持观看"。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
+> 当前版本是公开测试版（Beta）。创建房间（当房主）只由 Windows 桌面客户端发起，桌面端可立即生成固定 HTTPS 电脑／手机网页邀请，无需网站注册或登录；观看者用邀请链接在浏览器里加入观看，**电脑浏览器在房间里也可以共享屏幕**，手机浏览器通常不实现 `getDisplayMedia`，因此手机网页以观看和聊天为主（共享按钮显示为"仅支持观看"）。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
 
 [下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.3-beta.3.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
 
