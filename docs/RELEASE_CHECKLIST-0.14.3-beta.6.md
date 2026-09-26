@@ -20,6 +20,22 @@
 - Windows 关机（`session-end`）路径未单独处理；未新增"退出时优先移交"的设置项。
 - 服务端提示文案「房主连接异常中断；未完成安全迁移，房间已关闭。」未中性化（一行改动，留给下一版）。
 
-## 产物与校验（本机打包）
+## 产物与校验（本机打包，2026-09-26 19:0x–19:1x）
 
-<!-- 打包完成后填写实际文件名与 SHA256 -->
+| 产物 | SHA256 |
+| --- | --- |
+| `Roomcast-0.14.3-beta.6-Windows.exe`（便携单文件） | `FB303723F6DEF4E322D69E2E685960041601CD5B8C9A0982E3BFFD4A772503F2` |
+| `Roomcast-0.14.3-beta.6-Windows.zip`（目录版） | `7F8C580C765DD4EBA1805CB6F25CA4DD99434DB784C0327E1D6BAA3AD9898BB3` |
+| `Roomcast-0.14.3-beta.6-source.zip` | `411FF7D6048C93D87D7DC5E8CA5DEC45925B994E8165D982C063EB6C48F6D846` |
+| `Roomcast-0.14.3-beta.6-loopback-capture.zip` | `01517EEA4BF967880F89BDC0BD2928197350FB9F43CB4F5A60B629A944A3503B` |
+
+- [x] `node scripts/generate-checksums.mjs --strict`：`release/SHA256.txt` 已生成，7 个条目齐全（含 `OBS-Studio-32.1.2-Sources.tar.gz`、`loopback_capture_addon.node`、`LICENSE`、`cloudflared.exe`）。
+- [x] `npm run verify:release`：`"ok": true`（打包后的许可证与运行时资产逐项核对通过）。
+- [x] **打包产物内的代码核对**（把 `release/win-unpacked/resources/app.asar` 解包后逐项检查）：
+  `package.json` 版本 = `0.14.3-beta.6`；`electron/main.cjs` 含 `CLOSE_GRACE_MS` 与 `EXIT_GRACE_MS`；
+  旧否决行 `if (result?.ok === false) return;` **已不存在**；渲染层 bundle `index-C-NEg8rD.js` 含 `refreshRelay` 与"没有可用的中继"提示文案，
+  且旧的「房间迁移失败，请重试退出」文案已移除。
+- [x] **打包产物冒烟测试**（隔离 profile 启动 `release/win-unpacked/Roomcast.exe`，CDP 驱动）：
+  1 051 ms 内启动并交出调试端口；桥接 API（`startWebInvite` / `closeReady`）存在；渲染层文案正常；
+  调用 `window.close()` 后进程 **157 ms 内以退出码 0 结束** —— 关闭路径被改写后**仍然关得掉**（回归保护）。
+- [x] 本地提交：`8699968 Fix mobile relay credentials and make exit unconditional, 0.14.3-beta.6`（**按要求未 push、未打 tag、未发 Release**）。
