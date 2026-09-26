@@ -74,3 +74,19 @@
 - 最终npm test：216项，215通过、0失败、1可选旧beta.1归档测试跳过；新的真实服务和首次离开回归均计入。完整check的构建/许可证/网络门禁已经通过，生产代码未再变更。
 - 先把已公开beta.6的EXE/ZIP/source/loopback/SHA256.txt复制到release/已发布-beta6-20260926，再重新构建本地beta.6；保留旧附件用于对照，不动远端标签或Release，不重复下载大型包。
 - 后续交付归档/校验生成的实际时间戳将放在release/时间戳记录/，避免源码ZIP自包含自身校验值产生循环归档。源码内仍包含本轮全部代码、审查报告和持续验证记录。
+
+## 2026-09-26 23:58:16 +08:00 — 本地构建进行中
+
+- 已公开EXE/ZIP备份哈希与发布记录一致；修复/文档提交已完成，本地构建正在便携包压缩阶段。cloudflared及OBS/源码均命中本机已校验缓存，没有下载大型发布包。
+- 构建后将顺序运行便携包校验和一个真实打包实例的关闭回归，不同时启动多个窗口。
+- 一条辅助搜索误把PowerShell参数传给rg，已停止该搜索；不影响构建，不为此重跑已通过的测试。
+
+## 2026-09-27 00:01:59 +08:00 — 新beta.6构建及包内验证完成
+
+- EXE/ZIP顺序构建退出0；运行时缓存，无重复下载。verify:release本次便携包退出0、ok=true，版本beta.6、欢迎页/桌面桥接/运行时哈希与许可证通过。
+- 实际打包程序未启用TEST_MODE：既有×取消卡住配置、取消后设置可用、下一次Escape取消通过；冻结渲染器且beforeunload否决下SC_CLOSE 71ms、code0，自身7个进程无残留。
+- 第一次包内脚本错误把electron-builder精简后的package.json当作原完整开发配置逐字节比较，失败；修正为语义检查name/version/main/type，其余应用文件仍逐字节。第二次嵌套路径用斜杠而asar在Windows按本地分隔符解析，读取失败；归档列出文件确实存在，改为path.normalize后通过，未改app.asar。
+- 关键Electron/服务文件4项与全部dist8项逐字节相同；实际Windows ZIP经更新器读取路径解压app.asar/主EXE/NOTICE/version，与本次win-unpacked相同。
+- 本地WebViewer ZIP生成完成；EXE SHA256=9692A59FB042C550D3E9FB9969460B5FA3EA4B358962A690BF3654B30C573FBB；Windows ZIP=273CC5488A955A18CC4E03945C15E3E18C908E64373297B380ACB15A11B4A678；WebViewer ZIP=47F199D50C756AFB0DC7EFD172D4F511B398CA47D516E06B01E07A6AB18D82C0。
+- 下一步仅文档最终提交、干净源码归档及校验清单；实际归档后结果记release/时间戳记录/，所有新改动未push、未tag、未更新Release或网页。
+- 微信/iOS真机尚未验收；公开静态站点仍是此前核对的beta.3，邀请新UI必须部署新网页才影响线上手机。
