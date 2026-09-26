@@ -50,11 +50,11 @@ try {
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('你的昵称', { exact: true }).fill('取消回归');
   await dialog.getByRole('button', { name: '创建并进入房间', exact: true }).click();
-  await dialog.getByRole('button', { name: '停止连接', exact: true }).waitFor();
+  await dialog.getByRole('button', { name: '正在连接…', exact: true }).waitFor();
   assert.equal(await dialog.getByRole('button', { name: '关闭', exact: true }).isEnabled(), true);
-  await dialog.getByRole('button', { name: '停止连接', exact: true }).click();
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   await dialog.waitFor({ state: 'hidden' });
-  record('hung-config-can-stop-and-close-dialog');
+  record('hung-config-first-X-closes-dialog');
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('heading', { name: '设置', exact: true }).waitFor();
   await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click();
@@ -64,7 +64,7 @@ try {
   await page.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).click();
   await dialog.getByLabel('你的昵称', { exact: true }).fill('第二次取消');
   await dialog.getByRole('button', { name: '创建并进入房间', exact: true }).click();
-  await dialog.getByRole('button', { name: '停止连接', exact: true }).waitFor();
+  await dialog.getByRole('button', { name: '正在连接…', exact: true }).waitFor();
   await page.keyboard.press('Escape');
   await dialog.waitFor({ state: 'hidden' });
   record('escape-stops-second-hung-connection');

@@ -147,3 +147,25 @@ test('closed P2P local socket disconnects when its delayed connection finally op
   await assert.rejects(connecting, error => error.name === 'AbortError');
   assert.equal(disconnected, true);
 });
+
+test('the existing leave action forces cleanup on its first invocation', async () => {
+  const app = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const start = app.indexOf('  const handleLeave = async () => {');
+  const end = app.indexOf('\n  const ', start + 10);
+  assert.ok(start >= 0 && end > start);
+  const h = harness();
+  const joined = h.enter('join', details); await tick();
+  const socket = h.sockets[0]; socket.entry.resolve(result('old')); await joined;
+  socket.leave = () => { throw Error('must not start a handover'); };
+  const handleLeave = vm.runInNewContext(app.slice(start, end) + '; handleLeave;', {
+    roomAction: { current: 0 }, setModal() {}, socketRef: h.socketRef,
+    ownsCapture: { current: false }, leave: h.leave, setChat() {}, refresh() {}, notify() {},
+  });
+  await handleLeave();
+  assert.equal(socket.disconnected, true);
+  assert.equal(h.state.connection, 'idle');
+  assert.equal(h.state.room, null);
+  const next = h.enter('join', details); await tick();
+  h.sockets[1].entry.resolve(result('next')); await next;
+  assert.equal(h.state.room.id, 'next');
+});

@@ -223,7 +223,6 @@ function EntryModal({ mode, onClose, onEnter, busy, defaultServer, inviteRoom, c
       <label>{kind === 'create' ? '房间名称' : '邀请链接'}<input {...field(kind === 'create' ? 'name' : 'roomId')} placeholder={kind === 'create' ? '例如：周末放映室' : '粘贴 roomcast://join/…'} required maxLength={kind === 'create' ? 40 : 7000} disabled={busy} /></label>
       {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
       <button className="button primary full" type="submit" disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : kind === 'create' ? <Plus size={17} /> : <ArrowRight size={17} />}{busy ? '正在连接…' : kind === 'create' ? '创建并进入房间' : '进入房间'}</button>
-      {busy && <button className="button secondary full" type="button" onClick={onClose}>停止连接</button>}
     </form>
   </Modal>;
 }
@@ -1102,13 +1101,13 @@ export default function App() {
   }, [room, notify, stopLocalShare]);
   useEffect(() => {
     const unload = () => {
+      if (!window.roomcast?.desktop) { void leave(true); return; }
       if (ownsCapture.current) socketRef.current?.stopScreenStream?.();
-      if (!window.roomcast?.desktop) socketRef.current?.disconnect?.();
     };
     window.addEventListener('beforeunload', unload);
     window.addEventListener('pagehide', unload);
     return () => { window.removeEventListener('beforeunload', unload); window.removeEventListener('pagehide', unload); };
-  }, []);
+  }, [leave]);
 
   const copy = async text => {
     try {
@@ -1139,7 +1138,6 @@ export default function App() {
   };
   const handleLeave = async () => {
     const action = ++roomAction.current;
-    const force = connection === 'leaving';
     setModal(null);
     const socket = socketRef.current;
     if (ownsCapture.current) {
@@ -1147,7 +1145,7 @@ export default function App() {
       void stopLocalShare(socket).catch(error => { if (action === roomAction.current) notify(`停止采集失败：${error.message}`); });
     }
     try {
-      const outcome = await leave(force);
+      const outcome = await leave(true);
       if (action !== roomAction.current) return;
       setChat(''); refresh();
       if (outcome?.closed) notify(outcome.reason || '房间已关闭。');
@@ -1557,7 +1555,7 @@ export default function App() {
 
   return <div className={`app-shell ${showChat ? '' : 'chat-hidden'} ${showMembers ? 'members-open' : ''} ${desktopChrome ? 'desktop-chrome' : ''}`}>
     {desktopChrome && <div className="roomcast-titlebar" aria-hidden="true"><span className="roomcast-titlebar-logo"><span className="roomcast-titlebar-mark"><i /><i /></span></span><span className="roomcast-titlebar-name">同屏 Roomcast</span></div>}
-    <aside className="icon-rail"><button className="brand-icon" title="同屏 Roomcast" aria-label="同屏首页" onClick={() => { if (!room) setModal(null); }}><span className="brand-mark"><span /><span /></span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} aria-label={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} onClick={() => setModal(room ? 'invite' : canHostRoom ? 'create' : 'join')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title={connection === 'leaving' ? '停止等待并离开' : '离开房间'} aria-label={connection === 'leaving' ? '停止等待并离开' : '离开房间'} onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className={`rail-button ${updateAvailable ? 'has-update' : ''}`} title={updateAvailable ? `设置 · 有可用更新 ${update.result.version}` : '设置'} aria-label={updateAvailable ? `设置，有可用更新 ${update.result.version}` : '设置'} onClick={() => setModal('settings')}><Settings size={21} />{updateAvailable && <span className="rail-update-dot" aria-hidden="true" />}</button><div className={`rail-avatar ${avatarClass(self?.avatarColor)}`} title={self?.name || '尚未加入'}>{initials(self?.name || loadPreference('nickname', '') || '你')}</div></aside>
+    <aside className="icon-rail"><button className="brand-icon" title="同屏 Roomcast" aria-label="同屏首页" onClick={() => { if (!room) setModal(null); }}><span className="brand-mark"><span /><span /></span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} aria-label={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} onClick={() => setModal(room ? 'invite' : canHostRoom ? 'create' : 'join')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title="离开房间" aria-label="离开房间" onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className={`rail-button ${updateAvailable ? 'has-update' : ''}`} title={updateAvailable ? `设置 · 有可用更新 ${update.result.version}` : '设置'} aria-label={updateAvailable ? `设置，有可用更新 ${update.result.version}` : '设置'} onClick={() => setModal('settings')}><Settings size={21} />{updateAvailable && <span className="rail-update-dot" aria-hidden="true" />}</button><div className={`rail-avatar ${avatarClass(self?.avatarColor)}`} title={self?.name || '尚未加入'}>{initials(self?.name || loadPreference('nickname', '') || '你')}</div></aside>
 
     <aside className="channel-sidebar"><header className="brand-header"><div><strong>同屏<span>Roomcast</span></strong><small>A SPACE FOR YOUR PEOPLE</small></div><span className="version-pill">BETA</span>{!desktopChrome && <button className="icon-button mobile-members-close" aria-label="关闭成员栏" onClick={() => setShowMembers(false)}><X size={18} /></button>}</header><div className="sidebar-section-heading"><span>房间</span></div><button className="channel-item selected" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><Volume2 size={19} /><span>{room?.name || (canHostRoom ? '开始你的房间' : '加入房间')}</span>{room ? <span className="channel-count">{room.members.length}</span> : <ChevronRight size={16} />}</button><div className="channel-subtitle"><span className={`status-dot ${room ? 'online' : ''}`} />{room ? `${room.members.length} 人在线 · 最多 10 人` : '房间准备好了，只差你们'}</div>
       <div className="sidebar-section-heading members-heading"><span>成员 <small>{room ? String(room.members.length).padStart(2, '0') : '00'}</small></span><Users size={14} /></div>
@@ -1565,7 +1563,7 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`network-latency ${latencyTone}`} aria-label={`网络延迟：${latencyMs == null ? '-- ms' : `${latencyMs} ms`}`}><Wifi className="network-latency-icon" size={17} strokeWidth={2.2} aria-hidden="true" /><span>{latencyMs == null ? '-- ms' : `${latencyMs} ms`}</span></span></div>
     </aside>
 
-    <main className="main-content"><header className="room-header">{room && <div className="room-header-title"><Volume2 size={22} /><h2>{room.name}</h2></div>}<div className="room-header-actions">{connection === 'leaving' && <button className="button secondary small" onClick={handleLeave}>停止等待并离开</button>}<span className={`connection-pill ${room ? 'connected' : ''}`}><span className="status-dot" />房间连接：{room ? config?.roomConnection || 'P2P' : '未连接'}</span>{!desktopChrome && <button className={`icon-button mobile-members-toggle ${showMembers ? 'toggled' : ''}`} title={showMembers ? '收起成员' : '查看成员'} aria-label={showMembers ? '收起成员' : '查看成员'} onClick={() => { setShowChat(false); setShowMembers(value => !value); }}><Users size={19} /></button>}<button className={`icon-button ${showChat ? 'toggled' : ''}`} title={showChat ? '收起聊天' : '展开聊天'} aria-label={showChat ? '收起聊天' : '展开聊天'} onClick={() => { setShowMembers(false); setShowChat(value => !value); }}><MessageSquare size={19} /></button></div></header>
+    <main className="main-content"><header className="room-header">{room && <div className="room-header-title"><Volume2 size={22} /><h2>{room.name}</h2></div>}<div className="room-header-actions"><span className={`connection-pill ${room ? 'connected' : ''}`}><span className="status-dot" />房间连接：{room ? config?.roomConnection || 'P2P' : '未连接'}</span>{!desktopChrome && <button className={`icon-button mobile-members-toggle ${showMembers ? 'toggled' : ''}`} title={showMembers ? '收起成员' : '查看成员'} aria-label={showMembers ? '收起成员' : '查看成员'} onClick={() => { setShowChat(false); setShowMembers(value => !value); }}><Users size={19} /></button>}<button className={`icon-button ${showChat ? 'toggled' : ''}`} title={showChat ? '收起聊天' : '展开聊天'} aria-label={showChat ? '收起聊天' : '展开聊天'} onClick={() => { setShowMembers(false); setShowChat(value => !value); }}><MessageSquare size={19} /></button></div></header>
       <div className="content-columns"><section className="stage-column"><div className="stage-heading"><div><span className="small-icon-box"><Monitor size={17} /></span><h3>共享屏幕</h3><span className="stage-state">{streams.length ? `${streams.length} 路共享` : '等待分享'}</span></div></div>
         <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>{streams.length ? <div ref={screenGridRef} className={`screen-grid count-${streams.length}`} data-preview-scale={previewScale.toFixed(1)} style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}>{streams.map(stream => <ScreenPlayer key={[stream.memberId, stream.startedAt].join("-")} stream={stream} iceServers={config?.mediaIceServers} outputDeviceId={audioDevices.preferences.outputId} viewerMemberId={selfId} deafened={false} transport={socketRef.current?.mediaP2P ? socketRef.current : undefined} reportViewing={reportViewing} initiallyEntered={watchingStreams.current.has(stream.memberId)} onViewingChange={rememberViewing} />)}</div> : <EmptyScreen room={room} onShare={canShareScreen ? openShare : null} onCreate={canHostRoom ? () => setModal('create') : null} onJoin={() => setModal('join')} />}</div>
       </section>
