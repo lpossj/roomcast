@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { compareVersions, createUpdateChecker, findChecksum, isPrereleaseVersion, RELEASES_PAGE, selectInstallAsset, selectLatestRelease, VERSION_MANIFEST_URL } from '../electron/update-check.mjs';
+import { compareVersions, createUpdateChecker, findChecksum, isPrereleaseVersion, parseReleaseFeed, RELEASE_FEED_URL, RELEASES_PAGE, selectInstallAsset, selectLatestRelease, VERSION_MANIFEST_URL } from '../electron/update-check.mjs';
 
 const release = (tag, overrides = {}) => ({
   tag_name: `v${tag}`,
@@ -81,9 +81,10 @@ test('a rate-limited GitHub API falls back to the published version manifest', a
   assert.match(result.notes, /^## 修复/);
   assert.equal(result.notesUnavailable, false);
   assert.equal(selectInstallAsset(result.assets, 'directory').name, 'Roomcast-0.14.3-beta.2-Windows.zip');
-  // The API is still tried first; the manifest is only the fallback.
+  // The API is tried first, then the release feed, and only then the static manifest.
   assert.match(requests[0], /^https:\/\/api\.github\.com\//);
-  assert.equal(requests[1], VERSION_MANIFEST_URL);
+  assert.equal(requests[1], RELEASE_FEED_URL);
+  assert.equal(requests[2], VERSION_MANIFEST_URL);
 });
 
 test('the manifest fallback keeps the prerelease rule, the no-update result and honest errors', async () => {
@@ -115,6 +116,79 @@ test('the manifest fallback keeps the prerelease rule, the no-update result and 
   const failure = await bothDown.check().catch(error => error);
   assert.match(failure.message, /请求过于频繁/);
   assert.equal(failure.code, 'rate-limit');
+});
+
+test('a rate-limited GitHub API falls back to the release feed', async () => {
+  // The release feed is the authoritative source without any API quota, so it is tried first.
+  const feed = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><title>junk without a release link</title><updated>2026-09-26T00:00:00Z</updated></entry>
+  <entry>
+    <title>Roomcast 0.14.3-beta.2 Beta</title>
+    <link rel="alternate" type="text/html" href="https://github.com/lpossj/roomcast/releases/tag/v0.14.3-beta.2"/>
+    <updated>2026-09-26T05:53:18Z</updated>
+  </entry>
+  <entry>
+    <title>Roomcast 0.14.4 Beta</title>
+    <link rel="alternate" type="text/html" href="https://github.com/lpossj/roomcast/releases/tag/v0.14.4"/>
+    <updated>2026-09-27T00:00:00Z</updated>
+  </entry>
+</feed>`;
+  const requests = [];
+  const checker = createUpdateChecker({
+    currentVersion: '0.14.3-beta.3',
+    fetchImpl: async url => {
+      requests.push(url);
+      if (url.startsWith('https://api.github.com/')) return { ok: false, status: 403 };
+      if (url === RELEASE_FEED_URL) return { ok: true, status: 200, text: async () => feed };
+      if (url.includes('/docs/RELEASE_NOTES-')) return { ok: true, status: 200, text: async () => '# Roomcast 0.14.4\n\n## 修复\n\n控制台窗口。\n' };
+      return { ok: false, status: 404 };
+    },
+  });
+  const result = await checker.check();
+  assert.equal(result.available, true);
+  assert.equal(result.viaFeed, true);
+  assert.equal(result.version, '0.14.4');
+  assert.equal(result.publishedAt, '2026-09-27T00:00:00Z');
+  assert.equal(result.pageUrl, 'https://github.com/lpossj/roomcast/releases/tag/v0.14.4');
+  assert.equal(result.checksumUrl, 'https://github.com/lpossj/roomcast/releases/download/v0.14.4/SHA256.txt');
+  assert.deepEqual(result.assets.map(asset => asset.name), [
+    'Roomcast-0.14.4-Windows.exe',
+    'Roomcast-0.14.4-Windows.zip',
+  ]);
+  assert.match(result.notes, /^## 修复/);
+  // The API is still tried first, then the feed.
+  assert.match(requests[0], /^https:\/\/api\.github\.com\//);
+  assert.equal(requests[1], RELEASE_FEED_URL);
+});
+
+test('parseReleaseFeed reads tags, ignores junk and sorts newest first', () => {
+  const entries = parseReleaseFeed(`
+    <entry><title>no link here</title></entry>
+    <entry><title>A</title><link rel="alternate" href="https://github.com/lpossj/roomcast/releases/tag/v0.14.3-beta.10"/><updated>t1</updated></entry>
+    <entry><title>B</title><link rel="alternate" href="https://github.com/lpossj/roomcast/releases/tag/not-a-version"/></entry>
+    <entry><title>C</title><link rel="alternate" href="https://github.com/lpossj/roomcast/releases/tag/v0.14.3-beta.2"/><updated>t2</updated></entry>
+  `);
+  assert.deepEqual(entries.map(entry => entry.version), ['0.14.3-beta.10', '0.14.3-beta.2']);
+  assert.equal(entries[0].tag, 'v0.14.3-beta.10');
+  assert.equal(entries[1].updated, 't2');
+  assert.deepEqual(parseReleaseFeed(''), []);
+});
+
+test('the manifest is only used when the feed fails too', async () => {
+  const checker = createUpdateChecker({
+    currentVersion: '0.14.3-beta.1',
+    fetchImpl: async url => {
+      if (url.startsWith('https://api.github.com/')) return { ok: false, status: 403 };
+      if (url === RELEASE_FEED_URL) return { ok: false, status: 503 };
+      if (url === VERSION_MANIFEST_URL) return { ok: true, status: 200, json: async () => ({ version: '0.14.3-beta.2' }) };
+      return { ok: false, status: 404 };
+    },
+  });
+  const result = await checker.check();
+  assert.equal(result.available, true);
+  assert.equal(result.viaManifest, true);
+  assert.equal(result.version, '0.14.3-beta.2');
 });
 
 test('checksum parsing matches the release file format', () => {

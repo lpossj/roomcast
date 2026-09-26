@@ -410,7 +410,7 @@ function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, inst
     <div className="update-status">
       {status === 'checking' && <><LoaderCircle size={14} className="spin" />正在检查…</>}
       {status === 'done' && !failure && !available && <><Check size={14} />已是最新版本</>}
-      {available && <><Info size={14} />发现新版本 <strong>{result.version}</strong>{result.prerelease ? '（测试版）' : ''}{result.viaManifest ? '（GitHub 接口受限，已改用固定站点版本清单）' : ''}</>}
+      {available && <><Info size={14} />发现新版本 <strong>{result.version}</strong>{result.prerelease ? '（测试版）' : ''}{result.viaFeed ? '（GitHub 接口受限，已改用发布订阅检查）' : result.viaManifest ? '（GitHub 接口受限，已改用固定站点版本清单）' : ''}</>}
       {status === 'done' && !available && !failure && !result && <><Info size={14} />尚未检查</>}
     </div>
     {available && notes && <p className="about-note update-notes">{notes}{String(result.notes || '').length > 320 ? '…' : ''}</p>}

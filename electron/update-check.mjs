@@ -23,6 +23,10 @@ export const RELEASES_PAGE = 'https://github.com/lpossj/roomcast/releases';
 // release workflow always uploads artifacts under predictable names, so the check can
 // continue without the API. Verification never changes: SHA256.txt is still required.
 export const VERSION_MANIFEST_URL = 'https://lpossj.github.io/roomcast/version.json';
+// The repository's release feed is the better fallback: same authoritative source as the API,
+// includes prereleases, and costs no quota at all. The static manifest above is only used if
+// this also fails (the site is no longer republished with every release).
+export const RELEASE_FEED_URL = 'https://github.com/lpossj/roomcast/releases.atom';
 const RELEASE_DOWNLOAD_BASE = 'https://github.com/lpossj/roomcast/releases/download';
 const RELEASE_NOTES_BASE = 'https://raw.githubusercontent.com/lpossj/roomcast';
 const CHECK_TIMEOUT_MS = 15000;
@@ -143,6 +147,31 @@ export function selectInstallAsset(assets, kind) {
   return null;
 }
 
+// The release feed is Atom XML. A small regex parse avoids shipping an XML dependency for one
+// document whose shape GitHub controls; anything that does not look like a release tag is
+// skipped, and the caller compares versions rather than trusting the feed order.
+export function parseReleaseFeed(xml) {
+  const decode = value => String(value || '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+  const entries = [];
+  for (const chunk of String(xml || '').split(/<entry[\s>]/).slice(1)) {
+    const link = chunk.match(/<link[^>]*rel="alternate"[^>]*href="([^"]+)"/);
+    if (!link) continue;
+    const tag = (link[1].match(/\/releases\/tag\/([^/?#"]+)$/) || [])[1] || '';
+    const version = String(tag).replace(/^v/i, '');
+    if (!parseVersion(version)) continue;
+    entries.push({
+      tag,
+      version,
+      name: decode((chunk.match(/<title>([\s\S]*?)<\/title>/) || [])[1]).trim(),
+      updated: decode((chunk.match(/<updated>([^<]*)<\/updated>/) || [])[1]).trim(),
+    });
+  }
+  // Newest first, so `find` can stop at the first entry that is actually newer.
+  return entries.sort((a, b) => compareVersions(b.version, a.version));
+}
+
 export function createUpdateChecker({ currentVersion, fetchImpl, apiUrl = RELEASE_API, timeoutMs = CHECK_TIMEOUT_MS }) {
   if (typeof fetchImpl !== 'function') throw new Error('更新检查缺少网络实现。');
 
@@ -172,26 +201,19 @@ export function createUpdateChecker({ currentVersion, fetchImpl, apiUrl = RELEAS
       if (!newest) return { available: false, current: currentVersion };
       return { available: true, current: currentVersion, ...describeRelease(newest.release, newest.version) };
     } catch (error) {
-      // Rate limits and transient API failures must not disable updates. Fall back to the
-      // published manifest; if that fails too, report the original API problem.
-      const fallback = await checkViaManifest().catch(() => null);
+      // Rate limits and transient API failures must not disable updates. The release feed is
+      // tried first because it is the same authoritative source without any API quota; the
+      // static manifest is only kept as a last resort. If both fail, report the API problem.
+      const fallback = await checkViaFeed().catch(() => null) || await checkViaManifest().catch(() => null);
       if (fallback) return fallback;
       throw error;
     }
   }
 
-  // Version + asset URLs without the GitHub API. Release notes are fetched from the tagged
-  // source (also quota free); if that fails the UI says the notes are unavailable instead of
-  // pretending the release has none.
-  async function checkViaManifest() {
-    const manifest = await (await request(VERSION_MANIFEST_URL, { action: '读取版本清单' })).json();
-    const version = String(manifest?.version || '').trim().replace(/^v/i, '');
-    if (!parseVersion(version)) {
-      throw Object.assign(new Error('版本清单格式无法识别。'), { code: 'manifest' });
-    }
-    // Same rule as the API path: a stable install is never pushed onto a prerelease.
-    if (isPrereleaseVersion(version) && !isPrereleaseVersion(currentVersion)) return { available: false, current: currentVersion };
-    if (compareVersions(version, currentVersion) <= 0) return { available: false, current: currentVersion };
+  // Shared by both fallbacks: build a result from a version string plus a source marker.
+  // Release notes come from the tagged source (quota free); if that fails the UI says the
+  // notes are unavailable instead of pretending the release has none.
+  async function describeFallback(version, { name = '', publishedAt = '', viaFeed = false } = {}) {
     const base = `${RELEASE_DOWNLOAD_BASE}/v${version}`;
     let notes = '';
     try {
@@ -204,18 +226,45 @@ export function createUpdateChecker({ currentVersion, fetchImpl, apiUrl = RELEAS
       current: currentVersion,
       version,
       tag: `v${version}`,
-      name: `Roomcast ${version}`,
+      name: name || `Roomcast ${version}`,
       notes,
       notesUnavailable: !notes,
-      publishedAt: '',
+      publishedAt,
       pageUrl: `${RELEASES_PAGE}/tag/v${version}`,
       prerelease: isPrereleaseVersion(version),
       checksumUrl: `${base}/SHA256.txt`,
       // Sizes are unknown here; the download reports progress from content-length instead.
       assets: [`Roomcast-${version}-Windows.exe`, `Roomcast-${version}-Windows.zip`]
-        .map(name => ({ name, size: 0, url: `${base}/${name}` })),
-      viaManifest: true,
+        .map(assetName => ({ name: assetName, size: 0, url: `${base}/${assetName}` })),
+      ...(viaFeed ? { viaFeed: true } : { viaManifest: true }),
     };
+  }
+
+  // Same rule as the API path, applied to a version string from a quota-free source.
+  function newerThanCurrent(version) {
+    if (!parseVersion(version)) return false;
+    if (isPrereleaseVersion(version) && !isPrereleaseVersion(currentVersion)) return false;
+    return compareVersions(version, currentVersion) > 0;
+  }
+
+  // The repository's release feed: authoritative, includes prereleases, and costs no API
+  // quota. This is the fallback that matters, because the API allows only 60 requests per
+  // hour per IP and a shared or proxied address reaches that limit.
+  async function checkViaFeed() {
+    const entries = parseReleaseFeed(await (await request(RELEASE_FEED_URL, { action: '读取发布订阅', headers: { Accept: 'application/atom+xml' } })).text());
+    const newest = entries.find(entry => newerThanCurrent(entry.version));
+    if (!newest) return { available: false, current: currentVersion };
+    return describeFallback(newest.version, { name: newest.name, publishedAt: newest.updated, viaFeed: true });
+  }
+
+  async function checkViaManifest() {
+    const manifest = await (await request(VERSION_MANIFEST_URL, { action: '读取版本清单' })).json();
+    const version = String(manifest?.version || '').trim().replace(/^v/i, '');
+    if (!parseVersion(version)) {
+      throw Object.assign(new Error('版本清单格式无法识别。'), { code: 'manifest' });
+    }
+    if (!newerThanCurrent(version)) return { available: false, current: currentVersion };
+    return describeFallback(version);
   }
 
   // Streams the asset to `${destination}.part` while hashing it, so a failed or tampered

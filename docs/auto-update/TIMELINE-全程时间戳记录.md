@@ -119,7 +119,12 @@
 | 17:2x | 修复 | `startApplyScript` 去掉 `detached`；`UpdateSection` 删除 EXE/ZIP 按钮与相关状态；删除 `downloadUpdate`/`revealUpdate`（渲染层 + preload + 两个 IPC） |
 | 17:2x | 门禁 | 构建通过；`npm test` **188/188**；死代码扫描干净 |
 | 17:2x | 版本号 → `0.14.3-beta.4` | `package.json` + `package-lock.json`（两处）+ README 链接；新增发布说明与验收清单、CHANGELOG 条目 |
-| （随后） | 提交 + 打 tag + 推送 → Release | 见 `RELEASE_CHECKLIST-0.14.3-beta.4.md` 的"真实更新验证结果" |
+| **17:15:40** | **beta.4 发布成功** | Release 工作流 `36231452452` `completed/success`；发布页转正式预发布，6 个资产齐全 |
+| 17:2x | **真实更新验证（第一轮）** | beta.3（含修复）→ 期望更新到 beta.4，但 app 报 `available:false` → **暴露新缺陷** |
+| 17:2x | 定位 | 同一代理下 API 额度 `remaining=0`（403）→ 退回固定站点清单 → 清单停在 beta.3（站点已冻结）→ 检查不到 beta.4 |
+| 17:2x | 修复 | 降级链改为"**发布订阅 `releases.atom` 优先**"（同源、含测试版、零额度），站点清单仅作最后备选；新增 3 项单测 |
+| 17:2x | 门禁 | 构建通过；`npm test` **191/191**（188 + 3 新增） |
+| 17:2x | 版本号 → `0.14.3-beta.5` | 发布说明/验收清单/CHANGELOG/STEP-16 同步；提交 + tag + 推送触发下一次 Release |
 
 > 坑：**本机 git 必须显式走代理**（系统代理 `127.0.0.1:7890`，git 不会自动使用），
 > 否则 `fetch/push` 表现为"连不上 github.com:443"；也正是它让首次 `main` 推送因本地
