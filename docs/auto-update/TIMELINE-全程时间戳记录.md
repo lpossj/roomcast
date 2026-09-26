@@ -88,6 +88,21 @@
 | 16:32:41 | `main` 补推送前的变基 | 远端多出 `12bd388`；变基**无冲突** → `main` = `ae2c6ba`，与 tag 提交**树完全等价** |
 | 16:32:5x | 推送 `main` | 成功 `12bd388..ae2c6ba` → 触发 **CI 工作流 `36230100244`** |
 
+## 阶段 6 · 网页包停用与网页端改为"只加入"（详见 `STEP-13` / `STEP-14`）
+
+| 时间 | 事件 | 结果 |
+| --- | --- | --- |
+| 16:34 | 发布记录提交 `143e45d` 并推送 | CI（main）**success** |
+| **16:37** | 用户决定：不再打包/发布网页包 | 删除 `scripts/package-web-viewer.mjs` + `npm run package:web`；`RELEASING.md` 写明站点冻结的后果 |
+| 16:38 | 提交 `3f173ce` 并推送 | 188/188 测试 + 构建通过 |
+| **16:39** | 用户澄清网页端定位：只用邀请链接加入观看；电脑浏览器可共享；**不要网页建房** | 确认需改代码 + **必须重新发布站点** |
+| 16:41 | 改 `src/App.jsx`（8 处收口到 `canHostRoom`） | 空屏入口、图标栏 ×2、侧栏、分享按钮、入口弹窗切换、`handleEnter` 硬校验、删除旧提示 |
+| 16:41 | 构建 + 全量测试 | 构建通过；`npm test` **188/188** |
+| 16:42 | 提交 `1e89172 Make the web client join-only instead of a second host` 并推送 | `3f173ce..1e89172 main` |
+| **16:42:32** | **重新发布站点**（gh-pages `fcf7221 → d8b710d`） | 当前 `dist/` 覆盖式合并：保留历史哈希资源，新增 3 个新哈希资源；**不上传桌面的 `updater.*`** |
+| 16:43 | 线上核对 | `https://lpossj.github.io/roomcast/version.json` = `{"version":"0.14.3-beta.3",…}`（HTTP 200）→ **STEP-12 的限流降级滞后问题一并解决** |
+| 16:43 | beta.3 Release 工作流仍在跑 | 已过 `Package loopback runtime asset`，剩 SHA256 / Playwright / 三项打包验证 / 发布 |
+
 > 坑：**本机 git 必须显式走代理**（系统代理 `127.0.0.1:7890`，git 不会自动使用），
 > 否则 `fetch/push` 表现为"连不上 github.com:443"；也正是它让首次 `main` 推送因本地
 > `origin/main` 陈旧而被拒。

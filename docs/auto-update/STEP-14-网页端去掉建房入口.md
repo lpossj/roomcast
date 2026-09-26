@@ -48,4 +48,15 @@
 | 构建 | `npm run build` 通过 |
 | 全量测试 | `npm test` → **188 / 188 通过** |
 | 源码级收口检查 | `canHostRoom` 出现在 8 处（标记 + 空屏 + 图标栏 ×2 + 侧栏 + 分享 + 弹窗 + 硬校验），网页端无残余建房入口 |
-| 站点发布 | 见本文件末尾"发布结果" |
+| 站点发布 | 见下方"发布结果" |
+
+## 5. 发布结果（2026-09-26 16:42）
+
+| 项目 | 结果 |
+| --- | --- |
+| 提交 | `1e89172 Make the web client join-only instead of a second host`（16:4x，已推送 main） |
+| 站点发布提交 | gh-pages：`fcf7221 → d8b710d Publish Roomcast 0.14.3-beta.3 static web viewer`（16:42:32） |
+| 合并方式 | 当前 `dist/` 覆盖式合并；**保留历史哈希资源**（旧 `index-COjH_I0p.js`、`index-xtjTNr8p.css`、`vdo-screen-publisher-C1gUL7R1.js` 仍在），新增 `index-D7bwsBp3.js`、`index-CuGt97Sb.css`、`vdo-screen-publisher-jEyszcS0.js` |
+| 排除项 | 桌面端进度窗口页面 `updater.html` / `updater.js` **不上传站点**（网页里无作用） |
+| version.json | `{"version":"0.14.3-beta.3","peerAuthProtocol":2}` —— 线上实测已生效（HTTP 200） |
+| 附带效果 | STEP-12 §3 提到的"限流降级停留在 beta.2"**已解决**：降级清单现在指向 beta.3 |
