@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { _electron as electron, chromium } from 'playwright';
@@ -13,6 +13,7 @@ let app, browser;
 const record = (name, data = true) => { report.checks.push({ name, data }); console.log(name, JSON.stringify(data)); };
 try {
   const env = { ...process.env, ROOMCAST_ALLOW_PARALLEL_INSTANCE: '1', ROOMCAST_PROFILE_DIR: path.join(output, 'profile'), ROOMCAST_DATA_DIR: path.join(output, 'data') };
+  await rm(path.join(env.ROOMCAST_PROFILE_DIR, 'DevToolsActivePort'), { force: true });
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ROOMCAST_TEST_MODE;
   let page;
@@ -88,7 +89,7 @@ try {
   await page.evaluate(() => { window.onbeforeunload = () => false; });
   const exited = new Promise(resolve => app.process().once('exit', (code, signal) => resolve({ code, signal, at: Date.now() })));
   void page.evaluate(() => { for (;;) {} }).catch(() => {});
-  const nativeSource = 'using System; using System.Runtime.InteropServices; public static class RoomcastExitTest { public delegate bool Callback(IntPtr h, IntPtr l); [DllImport("user32.dll")] public static extern bool EnumWindows(Callback c, IntPtr l); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l); public static IntPtr Find(int[] pids) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p; GetWindowThreadProcessId(h,out p); if(Array.IndexOf(pids,(int)p)>=0 && IsWindowVisible(h)){found=h; return false;} return true;},IntPtr.Zero); return found; } }';
+  const nativeSource = 'using System; using System.Runtime.InteropServices; public static class RoomcastExitTest { public delegate bool Callback(IntPtr h, IntPtr l); [DllImport("user32.dll")] public static extern bool EnumWindows(Callback c, IntPtr l); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder text, int count); [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l); public static IntPtr Find(int[] pids) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p; GetWindowThreadProcessId(h,out p); if(Array.IndexOf(pids,(int)p)>=0){var text=new System.Text.StringBuilder(512); GetWindowText(h,text,512); if(text.ToString().Contains("Roomcast")){found=h; return false;}} return true;},IntPtr.Zero); return found; } }';
   const native = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     "Add-Type -TypeDefinition '"+nativeSource+"'; $handle=[RoomcastExitTest]::Find([Int32[]]@("+[...tracked].join(',')+")); if($handle -eq [IntPtr]::Zero){exit 2}; $now=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); if(-not [RoomcastExitTest]::PostMessageW($handle, "+(closeMessage === 'SC_CLOSE' ? '274, [IntPtr]::new(61536)' : '16, [IntPtr]::Zero')+", [IntPtr]::Zero)){exit 3}; Write-Output $now"],
     { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -110,7 +111,12 @@ try {
 } catch (error) {
   report.ok = false; report.error = error.stack; throw error;
 } finally {
-  if (app) app.process().kill(); // only the isolated process this script created
+  if (app) {
+    // Playwright's process can be a launcher. On failure terminate its complete
+    // tree, before the launcher disappears and leaves the actual app orphaned.
+    const cleanup = spawn('taskkill.exe', ['/PID', String(app.process().pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    await new Promise(resolve => { cleanup.once('error', resolve); cleanup.once('exit', resolve); });
+  }
   if (browser) await browser.close().catch(() => {});
   report.finishedAt = new Date().toISOString();
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
