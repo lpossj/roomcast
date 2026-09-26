@@ -397,10 +397,11 @@ function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
   </Modal>;
 }
 
-function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, onDownload, onReveal }) {
+function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, onDownload, onReveal, install, onAutoUpdate }) {
   const { status, result, error, downloading, downloaded } = update;
   const [pageError, setPageError] = useState('');
   const available = Boolean(result?.available);
+  const autoInstall = available && Boolean(install?.supported);
   const notes = String(result?.notes || '').replace(/\s+/g, ' ').slice(0, 320);
   const failure = error || pageError;
   return <section className="settings-section"><h3><Download size={17} />软件更新</h3>
@@ -409,10 +410,19 @@ function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, onDo
     <div className="update-status">
       {status === 'checking' && <><LoaderCircle size={14} className="spin" />正在检查…</>}
       {status === 'done' && !failure && !available && <><Check size={14} />已是最新版本</>}
-      {available && <><Info size={14} />发现新版本 <strong>{result.version}</strong>{result.prerelease ? '（测试版）' : ''}</>}
+      {available && <><Info size={14} />发现新版本 <strong>{result.version}</strong>{result.prerelease ? '（测试版）' : ''}{result.viaManifest ? '（GitHub 接口受限，已改用固定站点版本清单）' : ''}</>}
       {status === 'done' && !available && !failure && !result && <><Info size={14} />尚未检查</>}
     </div>
     {available && notes && <p className="about-note update-notes">{notes}{String(result.notes || '').length > 320 ? '…' : ''}</p>}
+    {available && !notes && result.notesUnavailable && <p className="about-note update-notes">更新内容暂时读不到（GitHub 接口受限）；可以点下面的"打开发布页"查看，或直接更新。</p>}
+    {autoInstall && <div className="settings-buttons">
+      <button className="button primary small" onClick={onAutoUpdate} disabled={Boolean(downloading) || Boolean(install?.busy)}>
+        {install?.busy ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}
+        {install?.busy ? '正在准备自动更新…' : `立即更新到 ${result.version}`}
+      </button>
+    </div>}
+    {available && !autoInstall && <p className="about-note">当前运行方式不支持自动覆盖程序目录{install?.reason ? `：${install.reason}` : '。'}请用下面的按钮手动下载安装包。</p>}
+    {install?.error && <div className="update-manual" role="alert"><Info size={15} /><span>{install.error}</span></div>}
     {available && <div className="update-assets">
       {result.assets.map(asset => <button key={asset.name} type="button" className="button secondary small" disabled={Boolean(downloading)} onClick={() => onDownload(asset.name)}>
         {downloading === asset.name ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
@@ -427,8 +437,38 @@ function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, onDo
       {/* Always available: the API check or the download can time out behind a proxy. */}
       <button className={`button ${failure ? 'secondary' : 'subtle'} small`} onClick={() => { setPageError(''); window.roomcast?.openReleasePage?.().catch(failure => setPageError(cleanIpcError(failure))); }}><Link size={15} />打开发布页（手动下载）</button>
     </div>
-    <p className="about-note">更新检查只向 GitHub 公开发布接口请求版本信息（不发送任何标识），下载的安装包会用发布页的 SHA256.txt 校验；本版不会自动替换正在运行的程序。网络受限时可直接用上面的"打开发布页"在浏览器里下载。</p>
+    <p className="about-note">更新检查只向 GitHub 公开发布接口请求版本信息（不发送任何标识）。自动更新会下载官方发布包、用发布页的 SHA256.txt 校验，校验通过后关闭程序、覆盖程序目录并自动重新打开；找不到 SHA256.txt 或校验不一致时不会安装。Windows 产物未签名，校验值只能说明文件与发布页一致。网络受限时可用上面的"打开发布页"手动下载。</p>
   </section>;
+}
+
+// The startup prompt: what changed, and one button that actually updates. Closing it (X or
+// 稍后) can remember the version so the same release does not pop up again.
+function UpdatePromptModal({ current, result, install, dontRemind, setDontRemind, onClose, onUpdate, onOpenPage }) {
+  const [error, setError] = useState('');
+  const busy = Boolean(install?.busy);
+  const notes = String(result?.notes || '').trim();
+  const published = String(result?.publishedAt || '').slice(0, 10);
+  const run = () => { setError(''); Promise.resolve(onUpdate()).catch(failure => setError(cleanIpcError(failure))); };
+  return <Modal
+    title={`发现新版本 ${result?.version || ''}`}
+    subtitle={`当前版本 ${current || '未知'}${result?.prerelease ? ' · 公开测试版' : ''}`}
+    onClose={onClose}
+    busy={busy}
+  >
+    <div className="update-prompt">
+      <div className="update-prompt-head"><strong>{result?.name || `Roomcast ${result?.version || ''}`}</strong>{published && <span>{published}</span>}</div>
+      <div className="update-prompt-notes">{notes || (result?.notesUnavailable ? '更新内容暂时读不到（GitHub 接口受限）。可以点下面按钮到发布页查看，或直接更新。' : '本次更新没有提供说明。')}</div>
+      {!install?.supported && <div className="update-manual" role="status"><Info size={15} /><span>{install?.reason || '当前运行方式不支持自动更新，请手动下载安装包。'}</span></div>}
+      {(error || install?.error) && <div className="inline-error" role="alert"><Info size={16} />{error || install.error}</div>}
+      <label className="update-prompt-remind"><input type="checkbox" checked={dontRemind} onChange={event => setDontRemind(event.target.checked)} /><span>不再弹出此框（下次启动不再提示 {result?.version || '此版本'}）</span></label>
+    </div>
+    <footer className="modal-actions">
+      <button className="button secondary" onClick={onClose} disabled={busy}>稍后</button>
+      {install?.supported
+        ? <button className="button primary" onClick={run} disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}{busy ? '正在准备更新…' : '立即更新'}</button>
+        : <button className="button primary" onClick={onOpenPage} disabled={busy}><Link size={17} />打开发布页下载</button>}
+    </footer>
+  </Modal>;
 }
 
 function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck, onDownload, onReveal }) {
@@ -454,7 +494,7 @@ function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck, on
   </>;
 }
 
-function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor, update, autoCheckUpdates, setAutoCheckUpdates, onCheckUpdates, onDownloadUpdate }) {
+function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor, update, autoCheckUpdates, setAutoCheckUpdates, onCheckUpdates, onDownloadUpdate, updateInstall, onAutoUpdate }) {
   const [working, setWorking] = useState('');
   const [error, setError] = useState('');
   const [section, setSection] = useState('general');
@@ -486,7 +526,7 @@ function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refres
         {active === 'service' && isDesktop && <section className="settings-section"><h3><Server size={17} />本地服务</h3><div className="diagnostic-row"><span>房间控制服务</span><span className={localConfig ? 'good-text' : 'muted-text'}>{localConfig ? <><Check size={14} />正在运行 · :{localConfig.port}</> : '无法连接'}</span></div><div className="settings-buttons"><button className="button subtle small" onClick={refresh}><RefreshCw size={15} />刷新状态</button></div></section>}
         {active === 'about' && <>
           <AboutPanel version={localConfig?.version || APP_VERSION} />
-          {isDesktop && <UpdateSection version={localConfig?.version || APP_VERSION} update={update} autoCheck={autoCheckUpdates} setAutoCheck={setAutoCheckUpdates} onCheck={onCheckUpdates} onDownload={onDownloadUpdate} onReveal={filePath => window.roomcast?.revealUpdate?.(filePath).catch(() => { })} />}
+          {isDesktop && <UpdateSection version={localConfig?.version || APP_VERSION} update={update} autoCheck={autoCheckUpdates} setAutoCheck={setAutoCheckUpdates} onCheck={onCheckUpdates} onDownload={onDownloadUpdate} install={updateInstall} onAutoUpdate={onAutoUpdate} onReveal={filePath => window.roomcast?.revealUpdate?.(filePath).catch(() => { })} />}
         </>}
         {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
       </div>
@@ -1135,6 +1175,72 @@ export default function App() {
       setUpdate(current => ({ ...current, downloading: '', error: cleanIpcError(error) }));
     }
   };
+  // Automatic update. Main decides whether this install may replace itself (portable EXE,
+  // program folder, or neither) and then takes over: it closes this window and shows the
+  // progress in a dedicated updater window, so the renderer only has to ask and report.
+  const [updateInstall, setUpdateInstall] = useState({ busy: false, error: '', supported: false, kind: '', reason: '' });
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(() => String(loadPreference('dismissedUpdateVersion', '') || ''));
+  const [updatePrompt, setUpdatePrompt] = useState({ open: false, dontRemind: false });
+  // A version prompts at most once per run: closing with 稍后 must not bring it back, and
+  // a manual check in the settings panel must not reopen it either.
+  const promptedUpdateVersion = useRef('');
+  useEffect(() => {
+    if (!desktopChrome || !window.roomcast?.updateTarget) return undefined;
+    let cancelled = false;
+    window.roomcast.updateTarget()
+      .then(target => { if (!cancelled) setUpdateInstall(current => ({ ...current, ...target })); })
+      .catch(() => { });
+    return () => { cancelled = true; };
+  }, [desktopChrome]);
+  useEffect(() => {
+    if (!desktopChrome || !window.roomcast?.takeUpdateFailure) return undefined;
+    let cancelled = false;
+    // The replacement runs after this program has exited, so a failed one can only be
+    // reported here, on the next start; the main process reads and clears the marker once.
+    window.roomcast.takeUpdateFailure()
+      .then(failure => {
+        if (cancelled || !failure?.version) return;
+        setUpdateInstall(current => ({ ...current, error: `上次自动更新到 ${failure.version} 失败，当前仍是旧版本。` }));
+        notify(`上次自动更新到 ${failure.version} 失败，已保留旧版本${failure.logPath ? `；日志：${failure.logPath}` : ''}`);
+      })
+      .catch(() => { });
+    return () => { cancelled = true; };
+  }, [desktopChrome, notify]);
+  useEffect(() => {
+    const result = update.result;
+    if (!desktopChrome || !result?.available) return;
+    // Never stack on top of another dialog (settings, share, invite...). Once that dialog
+    // closes this effect runs again and the prompt still appears.
+    if (modal) return;
+    // "不再弹出此框" remembers one version, not the whole check: the next release prompts again.
+    const version = String(result.version || '');
+    if (!version || version === dismissedUpdateVersion) return;
+    if (promptedUpdateVersion.current === version) return;
+    promptedUpdateVersion.current = version;
+    setUpdatePrompt({ open: true, dontRemind: false });
+  }, [desktopChrome, update.result, dismissedUpdateVersion, modal]);
+  const rememberDismissedVersion = () => {
+    const version = String(update.result?.version || '');
+    if (!updatePrompt.dontRemind || !version) return;
+    setDismissedUpdateVersion(version);
+    savePreference('dismissedUpdateVersion', version);
+  };
+  const closeUpdatePrompt = () => { rememberDismissedVersion(); setUpdatePrompt({ open: false, dontRemind: false }); };
+  const startAutoUpdate = async () => {
+    if (!window.roomcast?.startAutomaticUpdate) return;
+    rememberDismissedVersion();
+    setUpdateInstall(current => ({ ...current, busy: true, error: '' }));
+    try {
+      const result = await window.roomcast.startAutomaticUpdate();
+      if (result?.ok === false) {
+        setUpdateInstall(current => ({ ...current, busy: false, supported: result.unsupported ? false : current.supported, error: result.reason || '无法自动更新。' }));
+        return;
+      }
+      setUpdateInstall(current => ({ ...current, busy: false }));
+    } catch (error) {
+      setUpdateInstall(current => ({ ...current, busy: false, error: cleanIpcError(error) }));
+    }
+  };
   const startShare = async options => {
     if (!room || shareBusy) return;
     const screenSocket = socketRef.current;
@@ -1462,9 +1568,10 @@ export default function App() {
 
       <footer className="voice-dock">{canShareScreen && <div className="dock-controls"><button className="button share-button" onClick={openShare} disabled={shareBusy || (!!room && !self?.canShare && !ownShare)}>{shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={19} />}<span>{ownShare ? '修改共享设置' : '共享屏幕'}</span></button>{ownShare && <button className="control-button leave-button" onClick={stopShare} disabled={shareBusy} title="停止共享" aria-label="停止共享"><Square size={16} /></button>}</div>}</footer>
     </main>
+    {updatePrompt.open && update.result?.available && <UpdatePromptModal current={update.result.current || localConfig?.version || APP_VERSION} result={update.result} install={updateInstall} dontRemind={updatePrompt.dontRemind} setDontRemind={value => setUpdatePrompt(current => ({ ...current, dontRemind: value }))} onClose={closeUpdatePrompt} onUpdate={startAutoUpdate} onOpenPage={() => { window.roomcast?.openReleasePage?.().catch(() => { }); }} />}
     {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} onClose={() => setModal(null)} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
     {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} />}
-    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
+    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
     {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
     {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}
     {previewImage && <ImagePreviewOverlay key={previewImage.src} image={previewImage} onClose={() => setPreviewImage(null)} onImageContextMenu={handleImageContextMenu} onCopy={copyPreviewImage} onDownload={downloadPreviewImage} />}

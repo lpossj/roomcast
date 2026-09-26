@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { compareVersions, createUpdateChecker, findChecksum, isPrereleaseVersion, RELEASES_PAGE, selectLatestRelease } from '../electron/update-check.mjs';
+import { compareVersions, createUpdateChecker, findChecksum, isPrereleaseVersion, RELEASES_PAGE, selectInstallAsset, selectLatestRelease, VERSION_MANIFEST_URL } from '../electron/update-check.mjs';
 
 const release = (tag, overrides = {}) => ({
   tag_name: `v${tag}`,
@@ -50,6 +50,71 @@ test('release selection ignores drafts, downgrades and stable-only rules', () =>
   assert.equal(selectLatestRelease([release('0.14.3-beta.1'), release('0.15.0')], '0.14.2').version, '0.15.0');
   assert.equal(selectLatestRelease([], '0.14.2-beta.8'), null);
   assert.equal(selectLatestRelease([releases[0], release('bad-tag')], '0.14.2-beta.6').version, '0.14.2-beta.7');
+});
+
+test('a rate-limited GitHub API falls back to the published version manifest', async () => {
+  const requests = [];
+  const checker = createUpdateChecker({
+    currentVersion: '0.14.3-beta.1',
+    fetchImpl: async url => {
+      requests.push(url);
+      if (url.startsWith('https://api.github.com/')) return { ok: false, status: 403 };
+      if (url === VERSION_MANIFEST_URL) return { ok: true, status: 200, json: async () => ({ version: '0.14.3-beta.2', peerAuthProtocol: 2 }) };
+      if (url.includes('/docs/RELEASE_NOTES-')) return { ok: true, status: 200, text: async () => '# Roomcast 0.14.3-beta.2\n\n## 修复\n\n固定网页入口。\n' };
+      return { ok: false, status: 404 };
+    },
+  });
+  const result = await checker.check();
+  assert.equal(result.available, true);
+  assert.equal(result.viaManifest, true);
+  assert.equal(result.version, '0.14.3-beta.2');
+  assert.equal(result.prerelease, true);
+  assert.equal(result.pageUrl, 'https://github.com/lpossj/roomcast/releases/tag/v0.14.3-beta.2');
+  // The checksum file stays mandatory, and the asset names follow the release workflow.
+  assert.equal(result.checksumUrl, 'https://github.com/lpossj/roomcast/releases/download/v0.14.3-beta.2/SHA256.txt');
+  assert.deepEqual(result.assets.map(asset => asset.name), [
+    'Roomcast-0.14.3-beta.2-Windows.exe',
+    'Roomcast-0.14.3-beta.2-Windows.zip',
+  ]);
+  assert.match(result.assets[1].url, /^https:\/\/github\.com\/lpossj\/roomcast\/releases\/download\/v0\.14\.3-beta\.2\//);
+  // Notes are recovered from the tagged source, without the leading markdown title.
+  assert.match(result.notes, /^## 修复/);
+  assert.equal(result.notesUnavailable, false);
+  assert.equal(selectInstallAsset(result.assets, 'directory').name, 'Roomcast-0.14.3-beta.2-Windows.zip');
+  // The API is still tried first; the manifest is only the fallback.
+  assert.match(requests[0], /^https:\/\/api\.github\.com\//);
+  assert.equal(requests[1], VERSION_MANIFEST_URL);
+});
+
+test('the manifest fallback keeps the prerelease rule, the no-update result and honest errors', async () => {
+  const manifestOnly = version => async url => {
+    if (url.startsWith('https://api.github.com/')) return { ok: false, status: 429 };
+    if (url === VERSION_MANIFEST_URL) return { ok: true, status: 200, json: async () => ({ version }) };
+    return { ok: false, status: 404 };
+  };
+  // A stable install must not be offered a prerelease.
+  const stable = createUpdateChecker({ currentVersion: '0.14.2', fetchImpl: manifestOnly('0.14.3-beta.2') });
+  assert.deepEqual(await stable.check(), { available: false, current: '0.14.2' });
+
+  // Already newer locally, or the manifest is older: nothing to offer.
+  const older = createUpdateChecker({ currentVersion: '0.14.3-beta.2', fetchImpl: manifestOnly('0.14.3-beta.1') });
+  assert.deepEqual(await older.check(), { available: false, current: '0.14.3-beta.2' });
+
+  // Notes unavailable: the update is still offered, but the UI is told to say so.
+  const noNotes = createUpdateChecker({ currentVersion: '0.14.3-beta.1', fetchImpl: manifestOnly('0.14.4') });
+  const noNotesResult = await noNotes.check();
+  assert.equal(noNotesResult.available, true);
+  assert.equal(noNotesResult.notesUnavailable, true);
+  assert.equal(noNotesResult.notes, '');
+
+  // A broken manifest must not hide the original API error.
+  const bothDown = createUpdateChecker({
+    currentVersion: '0.14.3-beta.1',
+    fetchImpl: async url => (url.startsWith('https://api.github.com/') ? { ok: false, status: 403 } : { ok: false, status: 500 }),
+  });
+  const failure = await bothDown.check().catch(error => error);
+  assert.match(failure.message, /请求过于频繁/);
+  assert.equal(failure.code, 'rate-limit');
 });
 
 test('checksum parsing matches the release file format', () => {
@@ -145,5 +210,80 @@ test('download verifies the published checksum before writing the file', async (
     assert.equal(unverified.verified, false);
   } finally {
     await rm(destination, { force: true });
+  }
+});
+
+test('install asset selection follows the install target, not the asset order', () => {
+  const assets = [
+    { name: 'Roomcast-0.14.3-beta.2-Windows.exe', size: 149_900_518, url: 'https://example.test/a.exe' },
+    { name: 'Roomcast-0.14.3-beta.2-Windows.zip', size: 221_694_588, url: 'https://example.test/a.zip' },
+  ];
+  assert.equal(selectInstallAsset(assets, 'portable-exe').name, 'Roomcast-0.14.3-beta.2-Windows.exe');
+  assert.equal(selectInstallAsset(assets, 'directory').name, 'Roomcast-0.14.3-beta.2-Windows.zip');
+  assert.equal(selectInstallAsset([assets[0]], 'directory'), null);
+  assert.equal(selectInstallAsset(null, 'directory'), null);
+});
+
+test('streaming download reports progress and only lands the verified file', async () => {
+  const chunks = [Buffer.alloc(64 * 1024, 1), Buffer.alloc(64 * 1024, 2), Buffer.from('tail')];
+  const payload = Buffer.concat(chunks);
+  const digest = createHash('sha256').update(payload).digest('hex');
+  const total = payload.length;
+  const streamBody = () => new ReadableStream({
+    start(controller) { for (const chunk of chunks) controller.enqueue(new Uint8Array(chunk)); controller.close(); },
+  });
+  const response = () => ({ ok: true, status: 200, headers: { get: name => (name.toLowerCase() === 'content-length' ? String(total) : null) }, body: streamBody() });
+  const responses = {
+    'https://example.test/asset.zip': response(),
+    'https://example.test/SHA256.txt': { ok: true, status: 200, text: async () => `${digest}  Roomcast-0.14.3-beta.2-Windows.zip\n` },
+  };
+  const checker = createUpdateChecker({ currentVersion: '0.14.3-beta.1', fetchImpl: async url => responses[url] || { ok: false, status: 404 } });
+  const asset = { name: 'Roomcast-0.14.3-beta.2-Windows.zip', size: total, url: 'https://example.test/asset.zip' };
+  const destination = fileURLToPath(new URL('./.update-stream-test.zip', import.meta.url));
+  const progress = [];
+  try {
+    const result = await checker.download(asset, destination, 'https://example.test/SHA256.txt', update => progress.push(update));
+    assert.equal(result.bytes, total);
+    assert.equal(result.sha256, digest);
+    assert.equal(result.verified, true);
+    assert.deepEqual(await readFile(destination), payload);
+    // No partial file may survive a successful download.
+    await assert.rejects(() => readFile(`${destination}.part`));
+    assert.equal(progress[0].phase, 'connecting');
+    assert.equal(progress[0].total, total);
+    assert.equal(progress.at(-1).phase, 'verifying');
+    const lastDownload = progress.filter(item => item.phase === 'downloading').at(-1);
+    assert.equal(lastDownload.received, total);
+    assert.ok(progress.every(item => item.received <= total));
+  } finally {
+    await rm(destination, { force: true });
+    await rm(`${destination}.part`, { force: true });
+  }
+});
+
+test('a tampered streamed payload removes the partial file and keeps the destination', async () => {
+  const good = Buffer.from('original-installed-archive');
+  const destination = fileURLToPath(new URL('./.update-stream-reject.zip', import.meta.url));
+  await writeFile(destination, good);
+  const response = () => ({
+    ok: true, status: 200,
+    headers: { get: () => null },
+    body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(Buffer.from('tampered'))); controller.close(); } }),
+  });
+  const responses = {
+    'https://example.test/asset.zip': response(),
+    'https://example.test/SHA256.txt': { ok: true, status: 200, text: async () => `${'0'.repeat(64)}  Roomcast-0.14.3-beta.2-Windows.zip\n` },
+  };
+  const checker = createUpdateChecker({ currentVersion: '0.14.3-beta.1', fetchImpl: async url => responses[url] || { ok: false, status: 404 } });
+  try {
+    await assert.rejects(
+      () => checker.download({ name: 'Roomcast-0.14.3-beta.2-Windows.zip', size: 8, url: 'https://example.test/asset.zip' }, destination, 'https://example.test/SHA256.txt'),
+      /SHA256 与发布页不一致/,
+    );
+    assert.deepEqual(await readFile(destination), good);
+    await assert.rejects(() => readFile(`${destination}.part`));
+  } finally {
+    await rm(destination, { force: true });
+    await rm(`${destination}.part`, { force: true });
   }
 });

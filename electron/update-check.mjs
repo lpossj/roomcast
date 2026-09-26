@@ -1,23 +1,35 @@
 // Update check for the Windows desktop build.
 //
 // Roomcast ships a portable EXE plus a ZIP and an NSIS installer, and the builds are not
-// code signed yet. Silently downloading and executing an unsigned binary would be a
-// security downgrade, and a portable EXE cannot replace itself while it is running, so
-// this module deliberately stops at: detect a newer release, show its notes, then let the
-// user download the official asset and verify it against the release's SHA256.txt.
+// code signed yet. This module owns the network side of the update: find a newer release,
+// describe its notes and Windows assets, then download one asset while hashing it against
+// the release's SHA256.txt. Deciding whether the result may be installed, and replacing
+// the running program, is deliberately kept in update-install.mjs so that verification can
+// never be skipped by the installer.
 //
 // The release listing is unauthenticated (60 requests/hour per IP), so callers are
 // expected to cache the result instead of polling.
 
 import { createHash } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { open, rename, unlink, writeFile } from 'node:fs/promises';
 
 const RELEASE_API = 'https://api.github.com/repos/lpossj/roomcast/releases?per_page=30';
 // Always reachable fallback: even when the API check or the download times out, the user
 // must be able to open the release page and download by hand.
 export const RELEASES_PAGE = 'https://github.com/lpossj/roomcast/releases';
+// GitHub's unauthenticated API allows 60 requests per hour per IP address, which a shared,
+// proxied or VPN address can exhaust with nothing the user can do about it. Roomcast already
+// publishes a static version manifest for the fixed web entry (no quota, no API), and the
+// release workflow always uploads artifacts under predictable names, so the check can
+// continue without the API. Verification never changes: SHA256.txt is still required.
+export const VERSION_MANIFEST_URL = 'https://lpossj.github.io/roomcast/version.json';
+const RELEASE_DOWNLOAD_BASE = 'https://github.com/lpossj/roomcast/releases/download';
+const RELEASE_NOTES_BASE = 'https://raw.githubusercontent.com/lpossj/roomcast';
 const CHECK_TIMEOUT_MS = 15000;
 const DOWNLOAD_TIMEOUT_MS = 600000;
+// Progress callbacks feed an IPC channel and a progress bar; one report per 200 ms is
+// smooth enough and keeps a 220 MB download from flooding the renderer.
+const PROGRESS_INTERVAL_MS = 200;
 
 function friendlyError(error, action) {
   const name = String(error?.name || '');
@@ -120,6 +132,17 @@ function describeRelease(release, version) {
   };
 }
 
+// The installer needs exactly one artifact: the portable EXE replaces a single file, the
+// ZIP replaces a directory. Picking it here keeps the renderer from naming a file it could
+// get wrong, and keeps the "which asset" rule next to the "which assets exist" rule.
+export function selectInstallAsset(assets, kind) {
+  const pattern = kind === 'portable-exe' ? /\.exe$/i : /\.zip$/i;
+  for (const asset of Array.isArray(assets) ? assets : []) {
+    if (asset && pattern.test(String(asset.name || ''))) return asset;
+  }
+  return null;
+}
+
 export function createUpdateChecker({ currentVersion, fetchImpl, apiUrl = RELEASE_API, timeoutMs = CHECK_TIMEOUT_MS }) {
   if (typeof fetchImpl !== 'function') throw new Error('更新检查缺少网络实现。');
 
@@ -143,36 +166,129 @@ export function createUpdateChecker({ currentVersion, fetchImpl, apiUrl = RELEAS
   }
 
   async function check() {
-    const releases = await (await request(apiUrl)).json();
-    const newest = selectLatestRelease(releases, currentVersion);
-    if (!newest) return { available: false, current: currentVersion };
-    return { available: true, current: currentVersion, ...describeRelease(newest.release, newest.version) };
+    try {
+      const releases = await (await request(apiUrl)).json();
+      const newest = selectLatestRelease(releases, currentVersion);
+      if (!newest) return { available: false, current: currentVersion };
+      return { available: true, current: currentVersion, ...describeRelease(newest.release, newest.version) };
+    } catch (error) {
+      // Rate limits and transient API failures must not disable updates. Fall back to the
+      // published manifest; if that fails too, report the original API problem.
+      const fallback = await checkViaManifest().catch(() => null);
+      if (fallback) return fallback;
+      throw error;
+    }
   }
 
-  async function download(asset, destination, checksumUrl = '') {
-    const response = await request(asset.url, { timeoutMs: DOWNLOAD_TIMEOUT_MS, action: '下载更新包' });
-    let bytes;
+  // Version + asset URLs without the GitHub API. Release notes are fetched from the tagged
+  // source (also quota free); if that fails the UI says the notes are unavailable instead of
+  // pretending the release has none.
+  async function checkViaManifest() {
+    const manifest = await (await request(VERSION_MANIFEST_URL, { action: '读取版本清单' })).json();
+    const version = String(manifest?.version || '').trim().replace(/^v/i, '');
+    if (!parseVersion(version)) {
+      throw Object.assign(new Error('版本清单格式无法识别。'), { code: 'manifest' });
+    }
+    // Same rule as the API path: a stable install is never pushed onto a prerelease.
+    if (isPrereleaseVersion(version) && !isPrereleaseVersion(currentVersion)) return { available: false, current: currentVersion };
+    if (compareVersions(version, currentVersion) <= 0) return { available: false, current: currentVersion };
+    const base = `${RELEASE_DOWNLOAD_BASE}/v${version}`;
+    let notes = '';
     try {
-      bytes = Buffer.from(await response.arrayBuffer());
+      notes = String(await (await request(`${RELEASE_NOTES_BASE}/v${version}/docs/RELEASE_NOTES-${version}.md`, { action: '读取更新说明' })).text())
+        .replace(/^#\s+.*\r?\n+/, '')
+        .trim();
+    } catch { notes = ''; }
+    return {
+      available: true,
+      current: currentVersion,
+      version,
+      tag: `v${version}`,
+      name: `Roomcast ${version}`,
+      notes,
+      notesUnavailable: !notes,
+      publishedAt: '',
+      pageUrl: `${RELEASES_PAGE}/tag/v${version}`,
+      prerelease: isPrereleaseVersion(version),
+      checksumUrl: `${base}/SHA256.txt`,
+      // Sizes are unknown here; the download reports progress from content-length instead.
+      assets: [`Roomcast-${version}-Windows.exe`, `Roomcast-${version}-Windows.zip`]
+        .map(name => ({ name, size: 0, url: `${base}/${name}` })),
+      viaManifest: true,
+    };
+  }
+
+  // Streams the asset to `${destination}.part` while hashing it, so a failed or tampered
+  // download never touches the real destination path. `onProgress` receives
+  // `{ phase, received, total }` and may throw freely: it is a UI concern.
+  async function download(asset, destination, checksumUrl = '', onProgress) {
+    let lastReport = 0;
+    const report = (phase, received, total, force = false) => {
+      if (typeof onProgress !== 'function') return;
+      const now = Date.now();
+      if (!force && now - lastReport < PROGRESS_INTERVAL_MS) return;
+      lastReport = now;
+      try { onProgress({ phase, received, total }); } catch { }
+    };
+    const writeError = error => Object.assign(new Error(`无法写入下载目录：${error.message}。可以用"打开发布页"手动下载。`), { code: 'write' });
+    const declaredSize = Number(asset?.size) || 0;
+    report('connecting', 0, declaredSize, true);
+    const response = await request(asset.url, { timeoutMs: DOWNLOAD_TIMEOUT_MS, action: '下载更新包' });
+    const headerSize = Number(response.headers?.get?.('content-length'));
+    const total = Number.isFinite(headerSize) && headerSize > 0 ? headerSize : declaredSize;
+    const digest = createHash('sha256');
+    let bytes = 0;
+    const staging = `${destination}.part`;
+    let reader = null;
+    try { reader = response.body?.getReader?.() ?? null; } catch { reader = null; }
+    try {
+      if (reader) {
+        let handle;
+        try { handle = await open(staging, 'w'); } catch (error) { throw writeError(error); }
+        try {
+          for (;;) {
+            let step;
+            try { step = await reader.read(); } catch (error) { throw friendlyError(error, '下载更新包'); }
+            if (step.done) break;
+            const chunk = Buffer.from(step.value.buffer, step.value.byteOffset, step.value.byteLength);
+            digest.update(chunk);
+            bytes += chunk.length;
+            try { await handle.write(chunk); } catch (error) { throw writeError(error); }
+            report('downloading', bytes, total);
+          }
+        } finally { await handle.close().catch(() => { }); }
+      } else {
+        // Electrons/undici responses without a stream body still have to work.
+        let payload;
+        try { payload = Buffer.from(await response.arrayBuffer()); } catch (error) { throw friendlyError(error, '下载更新包'); }
+        digest.update(payload);
+        bytes = payload.length;
+        try { await writeFile(staging, payload); } catch (error) { throw writeError(error); }
+      }
+      report('downloading', bytes, total, true);
     } catch (error) {
-      throw friendlyError(error, '下载更新包');
+      await unlink(staging).catch(() => { });
+      throw error;
     }
     let expected = '';
     if (checksumUrl) {
       try { expected = findChecksum(await (await request(checksumUrl)).text(), asset.name); } catch { expected = ''; }
     }
-    const actual = createHash('sha256').update(bytes).digest('hex');
+    const actual = digest.digest('hex');
     // A published checksum that does not match is a hard failure; a release without one
-    // still downloads, but the result is reported as unverified.
+    // still downloads, but the result is reported as unverified (and cannot be installed).
     if (expected && actual !== expected) {
+      await unlink(staging).catch(() => { });
       throw Object.assign(new Error(`下载校验失败：${asset.name} 的 SHA256 与发布页不一致，文件未保存。`), { code: 'checksum' });
     }
+    report('verifying', bytes, total, true);
     try {
-      await writeFile(destination, bytes);
+      await rename(staging, destination);
     } catch (error) {
-      throw Object.assign(new Error(`无法写入下载目录：${error.message}。可以用"打开发布页"手动下载。`), { code: 'write' });
+      await unlink(staging).catch(() => { });
+      throw writeError(error);
     }
-    return { path: destination, bytes: bytes.length, sha256: actual, verified: Boolean(expected), expected };
+    return { path: destination, bytes, sha256: actual, verified: Boolean(expected), expected };
   }
 
   return { check, download };

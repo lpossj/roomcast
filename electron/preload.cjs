@@ -44,6 +44,17 @@ contextBridge.exposeInMainWorld('roomcast', {
     ipcRenderer.invoke('roomcast:update-open-page'),
   revealUpdate: filePath =>
     ipcRenderer.invoke('roomcast:update-reveal', filePath),
+  // Automatic update. The main process decides whether this install may replace itself
+  // (portable EXE, program folder, or neither) and then hands the progress UI over to a
+  // dedicated updater window, because this window is closed as the first step.
+  updateTarget: () =>
+    ipcRenderer.invoke('roomcast:update-target'),
+  startAutomaticUpdate: () =>
+    ipcRenderer.invoke('roomcast:update-start'),
+  // A replacement that fails after the app exits leaves a marker; this reads and clears it
+  // so the failure is reported exactly once instead of silently running the old version.
+  takeUpdateFailure: () =>
+    ipcRenderer.invoke('roomcast:update-last-failure'),
 
   audioSources: () =>
     ipcRenderer.invoke('roomcast:audio-sources'),
