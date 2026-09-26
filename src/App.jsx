@@ -8,6 +8,7 @@ import { fetchRelayIce, loadRelaySettings, saveRelaySettings } from './relay.js'
 import useDevices from './useDevices.js';
 import useRoom from './useRoom.js';
 import { MEDIA_RACE_BUILD_PROBE } from './media-race-manager.js';
+import { readPageInvite, roomInviteFromUrl } from './invite-entry.js';
 
 void MEDIA_RACE_BUILD_PROBE;
 
@@ -33,18 +34,7 @@ function loadShareSettings() {
   } catch { return { ...defaultShareSettings, captureBackend: window.roomcast?.desktop ? 'obs' : 'native' }; }
 }
 const params = new URLSearchParams(window.location.search);
-const fragmentInvite = new URLSearchParams(window.location.hash.slice(1)).get('room') || '';
-// Storage can throw (private mode / disabled storage). This runs at module scope, so an
-// uncaught error here would blank the whole page on the invite-link entry path.
-let rememberedInvite = '';
-try {
-  if (fragmentInvite && !window.roomcast?.desktop) {
-    sessionStorage.setItem('roomcast:invite', fragmentInvite);
-    history.replaceState(null, '', window.location.pathname + window.location.search);
-  }
-  rememberedInvite = sessionStorage.getItem('roomcast:invite') || '';
-} catch { rememberedInvite = ''; }
-const initialInvite = fragmentInvite || rememberedInvite || params.get('room') || '';
+const initialInvite = readPageInvite(window);
 const MAX_CHAT_IMAGES = 4;
 // A backgrounded page cannot answer the room handover probe, so web clients leave the
 // room after this long hidden instead of blocking the desktop owner from exiting.
@@ -202,7 +192,7 @@ function EntryModal({ mode, onClose, onEnter, busy, defaultServer, inviteRoom, c
   const [kind, setKind] = useState(canHost ? mode : 'join');
   const [form, setForm] = useState({ nickname: loadPreference('nickname', ''), name: '朋友的放映室', roomId: inviteRoom || initialInvite, createKey: '', server: params.get('server') || loadPreference('server', '') || defaultServer || window.location.origin });
   const [error, setError] = useState('');
-  const field = key => ({ value: form[key], onChange: event => setForm(value => ({ ...value, [key]: event.target.value })) });
+  const field = key => ({ value: form[key], onChange: event => setForm(value => ({ ...value, [key]: key === 'roomId' ? roomInviteFromUrl(event.target.value) || event.target.value : event.target.value })) });
   const setServer = event => {
     const value = event.target.value;
     try {
@@ -897,6 +887,23 @@ export default function App() {
   const [managedMember, setManagedMember] = useState(null);
   const [inviteRoom, setInviteRoom] = useState(initialInvite);
   useEffect(() => window.roomcast?.onInvite?.(roomId => { setInviteRoom(roomId); setModal('join'); }), []);
+  useEffect(() => {
+    const showInvite = () => {
+      const invite = readPageInvite(window, false);
+      if (!invite) return;
+      roomAction.current++;
+      if (connection === 'connecting') void leave(true);
+      setInviteRoom(invite);
+      setModal('join');
+    };
+    // Pasting a link with a new fragment can navigate within the same document.
+    window.addEventListener('hashchange', showInvite);
+    window.addEventListener('popstate', showInvite);
+    return () => {
+      window.removeEventListener('hashchange', showInvite);
+      window.removeEventListener('popstate', showInvite);
+    };
+  }, [connection, leave]);
   useEffect(() => {
     if (!desktopChrome || !window.roomcast?.setTitleBarTheme) return undefined;
     let previous = '';
