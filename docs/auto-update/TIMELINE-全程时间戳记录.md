@@ -159,6 +159,9 @@
 | **18:05–18:08** | 尝试"就地改包"以便当场验证 | 用 `@electron/asar` 把修复版 `update-install.mjs` 换进 beta.4 测试包（793 条目无增无减）→ **启动即 FATAL** |
 | 18:08 | 抓 stderr 定位 | `asar_util.cc:187 Integrity check failed for asar archive entry '<header>'`；A/B 对照：原始 asar 与官方 beta.3 目录版均正常启动 → 是重打包破坏了归档头哈希 |
 | 18:09 | 结论 | electron-builder 把归档头哈希写进 exe 的 `ElectronAsarIntegrity`；**改包不可行，验证必须用真正重新打包的构建**；已把测试包 asar 还原（`5DFE8A25…` 与应用前一致）并删除全部临时脚本 |
+| **18:14** | **用户实测：beta.4 显示「已是最新版本」，看不到 beta.5** | 取证：App 请求的 `releases?per_page=30` 未登录返回 **403**；额度 `remaining=0`，**18:41:27 重置**；站点清单仍是 `0.14.3-beta.3`（比 beta.4 旧）→ 判为已是最新 |
+| 18:15 | 定性 | **不是 beta.5 的问题**：beta.4 只有"接口 → 站点清单"两条路，缺 STEP-16 才加的 `releases.atom` 降级；beta.4 的接口逻辑本身正确（取 30 条、跳过 draft、允许测试版），额度恢复即可看到 beta.5 |
+| 18:16 | 用户决定 | 不改站点：**自己下官方 beta.4 目录版 ZIP，等 18:41:27 后点「检查更新」**（预期过程中会闪旧安装器的窗口） |
 
 > 坑：**同号重发的唯一真代价**——已运行 beta.5 的机器同版本不触发更新，需手动替换；
 > 从 beta.4 更新过来的机器会先由旧代码（可用的 beta.4 脚本）完成一次替换，之后即为修复版。
