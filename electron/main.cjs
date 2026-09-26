@@ -780,32 +780,15 @@ else {
         const [version = '', workDir = ''] = String(marker).split(/\r?\n/);
         return { version, workDir, logPath: workDir ? path.join(workDir, 'apply.log') : '' };
       });
-      ipcMain.handle('roomcast:update-download', async (event, name) => {
-        requireOwner(event, '不允许此窗口下载更新。');
-        if (!lastUpdateCheck?.available) throw new Error('请先检查更新。');
-        const asset = lastUpdateCheck.assets.find(item => item.name === name);
-        if (!asset) throw new Error('未在发布页找到该下载项。');
-        const destination = path.join(app.getPath('downloads'), path.basename(asset.name));
-        const result = await (await ensureUpdateChecker()).download(asset, destination, lastUpdateCheck.checksumUrl);
-        return { ...result, name: asset.name };
-      });
       ipcMain.handle('roomcast:update-open-page', async event => {
         requireOwner(event, '不允许此窗口打开发布页。');
         const { RELEASES_PAGE } = await import(pathToFileURL(path.join(__dirname, 'update-check.mjs')).href);
         const page = String(lastUpdateCheck?.pageUrl || '');
-        // Fall back to the repository releases page so a failed check or a timed-out
-        // download still leaves the user a manual route to the artifacts.
+        // The only manual route: everything else installs itself, so this must work even when
+        // the API check or a download timed out.
         const target = /^https:\/\/github\.com\/lpossj\/roomcast\/releases\//.test(page) ? page : RELEASES_PAGE;
         await shell.openExternal(target);
         return { ok: true, url: target };
-      });
-      ipcMain.handle('roomcast:update-reveal', (event, filePath) => {
-        requireOwner(event, '不允许此窗口打开文件位置。');
-        const downloads = path.resolve(app.getPath('downloads'));
-        const target = path.resolve(String(filePath || ''));
-        if (target !== downloads && !target.startsWith(downloads + path.sep)) throw new Error('只能打开下载目录中的文件。');
-        shell.showItemInFolder(target);
-        return { ok: true };
       });
       ipcMain.handle('roomcast:copy-image', async (event, value) => {
         if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口写入图片剪贴板。');

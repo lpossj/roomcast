@@ -365,9 +365,17 @@ export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = sp
   // script produced no log at all, in a normal shell as well as in the sandbox). Passing the
   // bare path lets Node add quotes only when the path needs them, which cmd.exe handles
   // correctly for paths with and without spaces.
+  //
+  // `detached` must stay OFF: libuv maps it to DETACHED_PROCESS, and Windows ignores
+  // CREATE_NO_WINDOW (what `windowsHide` sets) when DETACHED_PROCESS is present. The script
+  // then has no console, so every console child it runs (tasklist, ping, robocopy) allocates
+  // a NEW VISIBLE console window — users saw three console windows pop up during a real
+  // update. With `windowsHide` alone the script gets one hidden console and all children
+  // inherit it, so nothing is ever shown. Windows does not kill child processes when their
+  // parent exits, so the script still outlives the app.
+  // Measured with a visible-console counter: detached -> +1..3 windows, windowsHide only -> 0.
   const child = spawnImpl(comspec, ['/d', '/c', scriptPath], {
     cwd,
-    detached: true,
     stdio: 'ignore',
     windowsHide: true,
   });

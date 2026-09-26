@@ -37,13 +37,10 @@ contextBridge.exposeInMainWorld('roomcast', {
 
   checkForUpdates: () =>
     ipcRenderer.invoke('roomcast:update-check'),
-  // The renderer only names an asset from the last check; the main process owns the URL.
-  downloadUpdate: name =>
-    ipcRenderer.invoke('roomcast:update-download', name),
+  // Manual download is deliberately limited to opening the release page: automatic update
+  // installs by itself, and shipping per-asset download buttons only duplicated that.
   openReleasePage: () =>
     ipcRenderer.invoke('roomcast:update-open-page'),
-  revealUpdate: filePath =>
-    ipcRenderer.invoke('roomcast:update-reveal', filePath),
   // Automatic update. The main process decides whether this install may replace itself
   // (portable EXE, program folder, or neither) and then hands the progress UI over to a
   // dedicated updater window, because this window is closed as the first step.

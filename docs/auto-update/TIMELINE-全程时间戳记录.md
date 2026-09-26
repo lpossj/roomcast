@@ -109,6 +109,18 @@
 | 16:49 | 发布页正文更正 | 补记 16:42 的站点调整（原文写"网页入口未改动"）→ `gh release edit` 同步 |
 | **16:51** | 为人工观看生成 `0.14.3-beta.2` 目录版测试包 | 用当前源码 + 临时降版本号打包；附 `启动测试.cmd`（独立数据目录，不与正式版抢锁）与 `怎么测.txt`；源码版本号已还原、git 干净 |
 
+## 阶段 7 · 用户实测反馈 → 修复并发布 0.14.3-beta.4（详见 `STEP-15`）
+
+| 时间 | 事件 | 结果 |
+| --- | --- | --- |
+| **16:53–16:54** | **用户亲眼看完整自动更新** | 下载 → 校验 → 解压 → 关闭 → 覆盖（`app.asar` 变为发布版 beta.3）→ 自动重启；`apply.log` 记录 `16:53:57 update start` / `16:54:00 files replaced, restarting` |
+| 16:55 | 用户反馈两条 | ①「下载便携版 EXE / 下载 ZIP」按钮可删；②更新后冒出**三个 cmd 窗口**，正常使用不应出现 |
+| 17:2x | 定位窗口根因（对照实验） | Win32 统计可见 `ConsoleWindowClass`：基线 2 → `detached:true` 时 **3** → 仅 `windowsHide` 时 **2**（零新增） |
+| 17:2x | 修复 | `startApplyScript` 去掉 `detached`；`UpdateSection` 删除 EXE/ZIP 按钮与相关状态；删除 `downloadUpdate`/`revealUpdate`（渲染层 + preload + 两个 IPC） |
+| 17:2x | 门禁 | 构建通过；`npm test` **188/188**；死代码扫描干净 |
+| 17:2x | 版本号 → `0.14.3-beta.4` | `package.json` + `package-lock.json`（两处）+ README 链接；新增发布说明与验收清单、CHANGELOG 条目 |
+| （随后） | 提交 + 打 tag + 推送 → Release | 见 `RELEASE_CHECKLIST-0.14.3-beta.4.md` 的"真实更新验证结果" |
+
 > 坑：**本机 git 必须显式走代理**（系统代理 `127.0.0.1:7890`，git 不会自动使用），
 > 否则 `fetch/push` 表现为"连不上 github.com:443"；也正是它让首次 `main` 推送因本地
 > `origin/main` 陈旧而被拒。

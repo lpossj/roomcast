@@ -335,11 +335,17 @@ test('the apply script is launched with cmd.exe-safe quoting', () => {
   assert.deepEqual(calls[0].args, ['/d', '/c', scriptPath]);
   assert.ok(!calls[0].args.includes('/s'), '不能使用 /s');
   assert.ok(!calls[0].args.some(argument => argument.includes('"')), '不能自己给路径加引号');
-  assert.equal(calls[0].options.detached, true);
+  // Regression test for the console windows users saw during a real update: libuv maps
+  // `detached` to DETACHED_PROCESS, and Windows ignores CREATE_NO_WINDOW (from windowsHide)
+  // when DETACHED_PROCESS is present, so every console child of the script gets a NEW VISIBLE
+  // console. Measured with a window counter: detached -> +1..3 windows, windowsHide only -> 0.
+  assert.notEqual(calls[0].options.detached, true, '不能使用 detached：会让 windowsHide 失效并弹出控制台窗口');
+  assert.equal(calls[0].options.windowsHide, true);
   assert.equal(calls[0].options.stdio, 'ignore');
 });
 
-test('an unverified download is never installed', async () => {  const dir = path.join(workRoot, 'folder-install');
+test('an unverified download is never installed', async () => {
+  const dir = path.join(workRoot, 'folder-install');
   await mkdir(path.join(dir, 'resources'), { recursive: true });
   await writeFile(path.join(dir, 'resources', 'app.asar'), 'asar');
   const target = { supported: true, kind: 'directory', targetPath: dir, appDir: dir, launchPath: path.join(dir, 'Roomcast.exe') };

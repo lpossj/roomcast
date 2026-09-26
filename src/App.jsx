@@ -397,8 +397,8 @@ function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
   </Modal>;
 }
 
-function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, onDownload, onReveal, install, onAutoUpdate }) {
-  const { status, result, error, downloading, downloaded } = update;
+function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, install, onAutoUpdate }) {
+  const { status, result, error } = update;
   const [pageError, setPageError] = useState('');
   const available = Boolean(result?.available);
   const autoInstall = available && Boolean(install?.supported);
@@ -416,28 +416,21 @@ function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, onDo
     {available && notes && <p className="about-note update-notes">{notes}{String(result.notes || '').length > 320 ? '…' : ''}</p>}
     {available && !notes && result.notesUnavailable && <p className="about-note update-notes">更新内容暂时读不到（GitHub 接口受限）；可以点下面的"打开发布页"查看，或直接更新。</p>}
     {autoInstall && <div className="settings-buttons">
-      <button className="button primary small" onClick={onAutoUpdate} disabled={Boolean(downloading) || Boolean(install?.busy)}>
+      <button className="button primary small" onClick={onAutoUpdate} disabled={Boolean(install?.busy)}>
         {install?.busy ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}
         {install?.busy ? '正在准备自动更新…' : `立即更新到 ${result.version}`}
       </button>
     </div>}
-    {available && !autoInstall && <p className="about-note">当前运行方式不支持自动覆盖程序目录{install?.reason ? `：${install.reason}` : '。'}请用下面的按钮手动下载安装包。</p>}
+    {available && !autoInstall && <p className="about-note">当前运行方式不支持自动覆盖程序目录{install?.reason ? `：${install.reason}` : '。'}请用下面的「打开发布页」手动下载安装包。</p>}
     {install?.error && <div className="update-manual" role="alert"><Info size={15} /><span>{install.error}</span></div>}
-    {available && <div className="update-assets">
-      {result.assets.map(asset => <button key={asset.name} type="button" className="button secondary small" disabled={Boolean(downloading)} onClick={() => onDownload(asset.name)}>
-        {downloading === asset.name ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
-        {/\.exe$/i.test(asset.name) ? '下载便携版 EXE' : /\.zip$/i.test(asset.name) ? '下载 ZIP' : asset.name}
-        <small>{asset.size ? `${(asset.size / 1024 / 1024).toFixed(0)} MB` : ''}</small>
-      </button>)}
-    </div>}
-    {downloaded && <div className="update-downloaded"><Check size={14} />已保存 {downloaded.name}{downloaded.verified ? '（SHA256 校验通过）' : '（发布页未提供校验值）'}<button type="button" className="button subtle small" onClick={() => onReveal(downloaded.path)}>打开文件位置</button></div>}
     {failure && <div className="update-manual" role="alert"><Info size={15} /><span>{failure}</span></div>}
     <div className="settings-buttons">
       <button className="button subtle small" onClick={onCheck} disabled={status === 'checking'}>{status === 'checking' ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}检查更新</button>
-      {/* Always available: the API check or the download can time out behind a proxy. */}
+      {/* The only manual route: everything else installs itself, and the release page is always
+          reachable even when the API check or a download times out behind a proxy. */}
       <button className={`button ${failure ? 'secondary' : 'subtle'} small`} onClick={() => { setPageError(''); window.roomcast?.openReleasePage?.().catch(failure => setPageError(cleanIpcError(failure))); }}><Link size={15} />打开发布页（手动下载）</button>
     </div>
-    <p className="about-note">更新检查只向 GitHub 公开发布接口请求版本信息（不发送任何标识）。自动更新会下载官方发布包、用发布页的 SHA256.txt 校验，校验通过后关闭程序、覆盖程序目录并自动重新打开；找不到 SHA256.txt 或校验不一致时不会安装。Windows 产物未签名，校验值只能说明文件与发布页一致。网络受限时可用上面的"打开发布页"手动下载。</p>
+    <p className="about-note">更新检查只向 GitHub 公开发布接口请求版本信息（不发送任何标识）。自动更新会下载官方发布包、用发布页的 SHA256.txt 校验，校验通过后关闭程序、覆盖程序目录并自动重新打开；找不到 SHA256.txt 或校验不一致时不会安装。Windows 产物未签名，校验值只能说明文件与发布页一致。网络受限时可点「打开发布页」手动下载。</p>
   </section>;
 }
 
@@ -471,7 +464,7 @@ function UpdatePromptModal({ current, result, install, dontRemind, setDontRemind
   </Modal>;
 }
 
-function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck, onDownload, onReveal }) {
+function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck }) {
   return <>
     <section className="settings-section"><h3><Info size={17} />关于</h3>
       <div className="about-card">
@@ -494,7 +487,7 @@ function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck, on
   </>;
 }
 
-function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor, update, autoCheckUpdates, setAutoCheckUpdates, onCheckUpdates, onDownloadUpdate, updateInstall, onAutoUpdate }) {
+function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor, update, autoCheckUpdates, setAutoCheckUpdates, onCheckUpdates, updateInstall, onAutoUpdate }) {
   const [working, setWorking] = useState('');
   const [error, setError] = useState('');
   const [section, setSection] = useState('general');
@@ -526,7 +519,7 @@ function SettingsModal({ onClose, isDesktop, canShareScreen, localConfig, refres
         {active === 'service' && isDesktop && <section className="settings-section"><h3><Server size={17} />本地服务</h3><div className="diagnostic-row"><span>房间控制服务</span><span className={localConfig ? 'good-text' : 'muted-text'}>{localConfig ? <><Check size={14} />正在运行 · :{localConfig.port}</> : '无法连接'}</span></div><div className="settings-buttons"><button className="button subtle small" onClick={refresh}><RefreshCw size={15} />刷新状态</button></div></section>}
         {active === 'about' && <>
           <AboutPanel version={localConfig?.version || APP_VERSION} />
-          {isDesktop && <UpdateSection version={localConfig?.version || APP_VERSION} update={update} autoCheck={autoCheckUpdates} setAutoCheck={setAutoCheckUpdates} onCheck={onCheckUpdates} onDownload={onDownloadUpdate} install={updateInstall} onAutoUpdate={onAutoUpdate} onReveal={filePath => window.roomcast?.revealUpdate?.(filePath).catch(() => { })} />}
+          {isDesktop && <UpdateSection version={localConfig?.version || APP_VERSION} update={update} autoCheck={autoCheckUpdates} setAutoCheck={setAutoCheckUpdates} onCheck={onCheckUpdates} install={updateInstall} onAutoUpdate={onAutoUpdate} />}
         </>}
         {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
       </div>
@@ -1154,7 +1147,7 @@ export default function App() {
 
   // Desktop-only update check. The web client is served from the host's own bundle, so it
   // has nothing to update; the main process owns the request, the asset URLs and hashing.
-  const [update, setUpdate] = useState({ status: 'idle', result: null, error: '', downloading: '', downloaded: null });
+  const [update, setUpdate] = useState({ status: 'idle', result: null, error: '' });
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(() => loadPreference('autoCheckUpdates', true));
   const updateAvailable = Boolean(update.result?.available);
   const checkUpdates = useCallback(async () => {
@@ -1162,7 +1155,7 @@ export default function App() {
     setUpdate(current => ({ ...current, status: 'checking', error: '' }));
     try {
       const result = await window.roomcast.checkForUpdates();
-      setUpdate(current => ({ ...current, status: 'done', result: result || null, downloaded: null }));
+      setUpdate(current => ({ ...current, status: 'done', result: result || null }));
     } catch (error) {
       setUpdate(current => ({ ...current, status: 'done', error: cleanIpcError(error) }));
     }
@@ -1173,17 +1166,6 @@ export default function App() {
     const timer = setTimeout(() => { void checkUpdates(); }, 4000);
     return () => clearTimeout(timer);
   }, [desktopChrome, autoCheckUpdates, checkUpdates]);
-  const downloadUpdate = async name => {
-    if (!window.roomcast?.downloadUpdate) return;
-    setUpdate(current => ({ ...current, downloading: name, error: '' }));
-    try {
-      const result = await window.roomcast.downloadUpdate(name);
-      setUpdate(current => ({ ...current, downloading: '', downloaded: result || null }));
-      notify(result?.verified ? `已下载并校验通过：${result.name}` : `已下载（发布页未提供校验值）：${result?.name || name}`);
-    } catch (error) {
-      setUpdate(current => ({ ...current, downloading: '', error: cleanIpcError(error) }));
-    }
-  };
   // Automatic update. Main decides whether this install may replace itself (portable EXE,
   // program folder, or neither) and then takes over: it closes this window and shows the
   // progress in a dedicated updater window, so the renderer only has to ask and report.
@@ -1580,7 +1562,7 @@ export default function App() {
     {updatePrompt.open && update.result?.available && <UpdatePromptModal current={update.result.current || localConfig?.version || APP_VERSION} result={update.result} install={updateInstall} dontRemind={updatePrompt.dontRemind} setDontRemind={value => setUpdatePrompt(current => ({ ...current, dontRemind: value }))} onClose={closeUpdatePrompt} onUpdate={startAutoUpdate} onOpenPage={() => { window.roomcast?.openReleasePage?.().catch(() => { }); }} />}
     {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} canHost={canHostRoom} onClose={() => setModal(null)} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
     {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} />}
-    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
+    {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
     {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
     {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}
     {previewImage && <ImagePreviewOverlay key={previewImage.src} image={previewImage} onClose={() => setPreviewImage(null)} onImageContextMenu={handleImageContextMenu} onCopy={copyPreviewImage} onDownload={downloadPreviewImage} />}
