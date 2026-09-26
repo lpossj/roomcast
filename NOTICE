@@ -14,7 +14,7 @@ Notable bundled components:
 - OBS Studio 32.1.2: GPL-2.0-or-later. License text and corresponding source archive are shipped under runtime/obs-bundle and runtime/obs-source.
 - Roomcast loopback capture addon: MIT License, Copyright (c) 2025 Matin Tat. License text is shipped under runtime/loopback-capture/LICENSE.
 - Server packages and bundled renderer dependencies (including React, PeerJS, Lucide and Socket.IO client): see THIRD-PARTY-NOTICES.txt.
-- cloudflared 2026.9.2 (Cloudflare, Inc.), Apache-2.0: shipped under runtime/web-invite/ and used only for the temporary static web entry launched from "分享房间". The official Windows amd64 release binary is pinned by SHA256 in scripts/fetch-web-invite.mjs and scripts/check-licenses.mjs. The Apache-2.0 license text is included in LICENSE.
+- cloudflared 2026.9.2 (Cloudflare, Inc.), Apache-2.0: shipped under runtime/web-invite/ as a retained legacy component; fixed web invitations no longer launch it. The official Windows amd64 release binary is pinned by SHA256 in scripts/fetch-web-invite.mjs and scripts/check-licenses.mjs. The Apache-2.0 license text is included in LICENSE.
 - VDO.Ninja SDK 1.6.1: MPL-2.0. Unminified source and license are shipped in resources/app.asar under node_modules/@vdoninja/sdk/ (vdoninja-sdk.js and LICENSE). The matching source package is also available at https://registry.npmjs.org/@vdoninja/sdk/-/sdk-1.6.1.tgz. The SDK remains under MPL-2.0.
 
 The Roomcast name and marks are addressed in TRADEMARKS.md. Privacy and security boundaries are addressed in PRIVACY.md and SECURITY.md.

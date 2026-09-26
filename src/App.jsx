@@ -444,7 +444,7 @@ function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck, on
     <section className="settings-section"><h3><ShieldCheck size={17} />使用声明</h3>
       <p className="about-note">仅用于合法、知情同意的屏幕共享与聊天。禁止用于未经同意的监控、偷拍、监听、跟踪、骚扰或其他违法用途；使用者应自行遵守当地法律与平台规则。</p>
       <p className="about-note">房间状态与聊天是内存态，房间结束后释放，不写入数据库。屏幕媒体通过 WebRTC DTLS-SRTP 在成员之间传输。</p>
-      <p className="about-note">网页观看入口基于 Cloudflare Quick Tunnel（临时地址、可能变化且不保证可用性，有并发限制），仅由"分享房间"按需创建；邀请链接等同于入房凭据，请只发给预期成员。</p>
+      <p className="about-note">网页观看入口使用固定 HTTPS 站点，分享者和观看者无需注册或登录；邀请链接等同于入房凭据，请只发给预期成员。站点可访问不代表信令和媒体连接一定可用。</p>
       <p className="about-note">未使用商业代码签名，Windows SmartScreen 可能提示未知发布者；下载后请核对发布页提供的 SHA-256。</p>
     </section>
     <section className="settings-section"><h3><Palette size={17} />许可与第三方组件</h3>
@@ -513,14 +513,14 @@ function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInv
   const addresses = (localConfig?.addresses || []).map(value => typeof value === 'string' ? value : value.url).filter(Boolean);
   const loopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(server);
   const [address, setAddress] = useState(loopback ? addresses.find(value => /^https?:\/\/100\./.test(value)) || addresses.find(value => !/localhost|127\.0\.0\.1/.test(value)) || server : server);
-  const [webViewerUrl, setWebViewerUrl] = useState(window.roomcast?.desktop ? '' : window.location.origin);
+  const [webViewerUrl, setWebViewerUrl] = useState(window.roomcast?.desktop ? '' : new URL('.', window.location.href).href);
   const [webViewerError, setWebViewerError] = useState('');
   const [webViewerBusy, setWebViewerBusy] = useState(false);
   const startWebViewer = useCallback(() => {
     if (!window.roomcast?.startWebInvite) return;
     setWebViewerBusy(true);
     setWebViewerError('');
-    window.roomcast.startWebInvite().then(result => setWebViewerUrl(result.url || '')).catch(error => setWebViewerError(error.message || '网页入口连接失败。')).finally(() => setWebViewerBusy(false));
+    window.roomcast.startWebInvite().then(result => setWebViewerUrl(result.url || '')).catch(error => setWebViewerError(cleanIpcError(error))).finally(() => setWebViewerBusy(false));
   }, []);
   useEffect(() => {
     if (!isP2P || !window.roomcast?.startWebInvite) return undefined;
@@ -543,7 +543,7 @@ function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInv
     <div className="invite-room"><div className="room-symbol"><AudioLines size={27} /></div><div><strong>{room.name}</strong><span>{room.members.length} / 10 位成员在线</span></div></div>
     <label className="standalone-label">邀请链接<input value={p2pLink} readOnly onFocus={event => event.target.select()} /></label>
     <button className="button primary full" onClick={() => copy(p2pLink)}><Copy size={17} />复制邀请链接</button>
-    <><label className="standalone-label">电脑／手机网页观看链接<input value={webLink} readOnly placeholder={webViewerBusy ? '正在创建安全网页入口…' : '网页入口尚未就绪'} onFocus={event => event.target.select()} /></label>
+    <><label className="standalone-label">电脑／手机网页观看链接<input value={webLink} readOnly placeholder={webViewerBusy ? '正在生成网页观看链接…' : '网页入口尚未就绪'} onFocus={event => event.target.select()} /></label>
       <button className="button secondary full" onClick={() => copy(webLink)} disabled={!webLink}><Copy size={17} />复制网页观看链接</button>
       {webViewerError && <div className="inline-error"><Info size={16} />{webViewerError}<button className="button secondary small" onClick={startWebViewer} disabled={webViewerBusy}>重试</button></div>}</>
   </Modal>;

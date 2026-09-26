@@ -1,14 +1,14 @@
-# Roomcast 0.14.2 Beta
+# Roomcast 0.14.3 Beta
 
 Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间最多 10 人，可多人同时共享。
 
 Roomcast 只面向合法、知情同意的屏幕共享与聊天。使用前请阅读 [ACCEPTABLE_USE.md](ACCEPTABLE_USE.md)。
 
-> 当前版本是公开测试版（Beta）。Windows 桌面应用可自动生成电脑／手机网页入口，网页也可创建和加入 P2P 房间；网页建房者需要保持浏览器页面运行。手机浏览器通常不实现 `getDisplayMedia`，因此手机网页以观看和聊天为主，共享按钮会显示为"仅支持观看"。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
+> 当前版本是公开测试版（Beta）。Windows 桌面应用可立即生成固定 HTTPS 电脑／手机网页邀请，无需网站注册或登录，网页也可创建和加入 P2P 房间；网页建房者需要保持浏览器页面运行。手机浏览器通常不实现 `getDisplayMedia`，因此手机网页以观看和聊天为主，共享按钮会显示为"仅支持观看"。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
 
-[下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.3-beta.1.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
+[下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.3-beta.2.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
 
-Roomcast 0.14.2 Beta 的媒体架构是：
+Roomcast 0.14.3 Beta 的媒体架构是：
 
 ```text
 原生 Roomcast P2P (t=0)
@@ -138,3 +138,9 @@ Windows 才能证明的项目（例如 OBS Virtual Camera 注册/UAC、managed t
 - [贡献指南](CONTRIBUTING.md)
 
 Roomcast 由 D4Y0 / Roomcast 维护。项目源码采用 Apache License 2.0，详见 `LICENSE`；第三方组件与许可证见 `THIRD-PARTY-NOTICES.txt`。
+
+## 固定网页入口
+
+默认地址：https://lpossj.github.io/roomcast/ 。分享弹窗在本地生成链接，不启动临时隧道，不要求使用者登录或注册。站点只提供静态网页，房间控制和媒体沿用现有独立流程。
+
+维护者执行 `npm run build` 和 `npm run package:web` 可生成 `release/Roomcast-<version>-WebViewer/`，将其部署到 HTTPS 静态站点即可。网页包同时适配根路径和子目录。已有配置可通过 `ROOMCAST_WEB_VIEWER_URL` 指向自己的 HTTPS 网页目录。

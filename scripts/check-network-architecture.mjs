@@ -149,7 +149,7 @@ mustNotContain(
   '媒体路径不得依赖 cloudflared',
 );
 
-// The temporary web entry is intentional and must stay explicit, pinned and read-only.
+// The default entry is fixed HTTPS; legacy shipped binary stays pinned for this minimal release.
 mustContain(
   JSON.stringify(packageJson.build?.extraResources || []),
   'runtime/web-invite/cloudflared.exe',
@@ -157,7 +157,9 @@ mustContain(
 );
 
 mustContain(files.fetchWebInvite, "const version = '2026.9.2'", 'web-invite 必须固定 cloudflared 版本');
-mustContain(files.webInvite, 'const PUBLIC_FILE =', 'web-invite 必须使用显式文件白名单');
+mustContain(files.webInvite, "https://lpossj.github.io/roomcast/", '固定网页入口必须配置完整 HTTPS 路径');
+mustNotContain(files.webInvite, "require('node:child_process')", '生成网页入口不得启动隧道进程');
+mustContain(files.webInvite, 'const PUBLIC_FILE =', '本地静态测试服务必须使用显式文件白名单');
 mustContain(files.webInvite, "['GET', 'HEAD']", 'web-invite 只允许只读请求');
 mustContain(files.webInvite, "frame-ancestors 'none'", 'web-invite 必须禁止被嵌入');
 
@@ -267,4 +269,4 @@ console.log('  legacy Quick Tunnel / MediaMTX media chain residue absent');
 console.log('  MediaMTX runtime/package residue absent');
 console.log('  legacy MediaMTX room authorization/cleanup residue absent');
 console.log('  legacy Quick Tunnel maintenance artifacts absent');
-console.log('  temporary web entry is explicit, pinned and read-only');
+console.log('  fixed HTTPS web entry has no tunnel startup dependency');

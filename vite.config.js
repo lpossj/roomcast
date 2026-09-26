@@ -22,6 +22,8 @@ const browserRoomCrypto = {
   },
 };
 export default defineConfig({
+  // One build serves both loopback desktop and a static site under /roomcast/.
+  base: './',
   plugins: [react(), browserRoomCrypto],
   define: { __ROOMCAST_VERSION__: JSON.stringify(version) },
   server: { proxy: { '/api': 'http://127.0.0.1:3210', '/socket.io': { target: 'http://127.0.0.1:3210', ws: true }, '/media': 'http://127.0.0.1:3210' } },

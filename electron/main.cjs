@@ -432,8 +432,7 @@ else {
       // No persist: prefix: chat DOM, browser storage and network cache stay in memory.
       const trusted = url => { try { return new URL(url).origin === service.url; } catch { return false; } };
       webInvite = createWebInvite({
-        distDir: path.join(__dirname, '..', 'dist'),
-        executablePath: path.join(app.isPackaged ? process.resourcesPath : path.join(__dirname, '..'), 'runtime', 'web-invite', 'cloudflared.exe'),
+        viewerUrl: process.env.ROOMCAST_WEB_VIEWER_URL || undefined,
         onState: state => { if (window && !window.isDestroyed()) window.webContents.send('roomcast:web-invite-state', state); },
       });
       let playerWindowBounds = null;

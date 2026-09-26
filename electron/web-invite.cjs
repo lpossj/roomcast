@@ -1,10 +1,9 @@
 const http = require('node:http');
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.webmanifest': 'application/manifest+json' };
-const PUBLIC_URL = /https:\/\/(?:[a-z0-9]+-){2,}[a-z0-9]+\.trycloudflare\.com\b/i;
+const DEFAULT_WEB_VIEWER_URL = 'https://lpossj.github.io/roomcast/';
 const PUBLIC_FILE = /^[A-Za-z0-9_.-]+\.(?:js|css|svg|png|ico|woff|woff2|txt|webmanifest)$/;
 
 // The public entry serves only files the Vite build actually emitted, discovered at
@@ -58,83 +57,20 @@ function createStaticViewer(distDir) {
   });
 }
 
-function createWebInvite({ distDir, executablePath, onState = () => {} }) {
-  let server = null;
-  let child = null;
-  let startPromise = null;
-  let cancelStart = null;
-  let publicUrl = '';
-  let generation = 0;
-
-  async function stop() {
-    generation += 1;
-    publicUrl = '';
-    cancelStart?.();
-    if (child) { child.kill(); child = null; }
-    if (server) {
-      const closing = server;
-      server = null;
-      closing.closeAllConnections();
-      await new Promise(resolve => closing.close(resolve));
-    }
-    onState({ url: '' });
-  }
-
+// The web entry is a separately hosted static build. Creating an invite must not
+// require the host to publish a local server or connect to a tunnel edge.
+function createWebInvite({ viewerUrl = DEFAULT_WEB_VIEWER_URL, onState = () => {} } = {}) {
   async function start() {
-    if (publicUrl) return { url: publicUrl };
-    if (startPromise) return startPromise;
-    const current = ++generation;
-    startPromise = (async () => {
-      if (!fs.existsSync(executablePath)) throw new Error('网页入口组件缺失，请重新安装完整安装包。');
-      server = createStaticViewer(distDir);
-      await new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', resolve);
-      });
-      const port = server.address().port;
-      return new Promise((resolve, reject) => {
-        const process = spawn(executablePath, ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${port}`], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-        child = process;
-        let output = '';
-        let candidateUrl = '';
-        let registered = false;
-        const timeout = setTimeout(() => finish(new Error('网页入口连接超时，请检查网络后重试。')), 45000);
-        let settled = false;
-        const finish = (error, url) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          cancelStart = null;
-          if (error) reject(error);
-          else resolve({ url });
-        };
-        cancelStart = () => finish(new Error('网页入口已关闭。'));
-        const receive = chunk => {
-          output = (output + chunk.toString('utf8')).slice(-4096);
-          const match = output.match(PUBLIC_URL);
-          if (match) candidateUrl = match[0];
-          if (/registered tunnel connection/i.test(output)) registered = true;
-          if (candidateUrl && registered && current === generation && !publicUrl) {
-            publicUrl = candidateUrl;
-            onState({ url: publicUrl });
-            finish(null, publicUrl);
-          }
-        };
-        process.stdout.on('data', receive);
-        process.stderr.on('data', receive);
-        process.once('error', error => { if (!publicUrl) finish(new Error(`网页入口无法启动：${error.message}`)); });
-        process.once('exit', () => {
-          if (child !== process) return;
-          child = null;
-          if (!publicUrl) finish(new Error('网页入口连接失败，请检查网络后重试。'));
-          else void stop();
-        });
-      });
-    })().catch(async error => { if (current === generation) await stop(); throw error; }).finally(() => { startPromise = null; });
-    return startPromise;
+    let url;
+    try { url = new URL(viewerUrl); } catch { throw new Error('网页入口地址无效。'); }
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) {
+      throw new Error('网页入口必须是无账号、端口、查询和片段的 HTTPS 地址。');
+    }
+    onState({ url: url.href });
+    return { url: url.href };
   }
-
+  async function stop() { onState({ url: '' }); }
   return { start, stop };
 }
 
-module.exports = { createStaticViewer, createWebInvite };
+module.exports = { createStaticViewer, createWebInvite, DEFAULT_WEB_VIEWER_URL };

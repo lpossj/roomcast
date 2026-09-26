@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const { createStaticViewer } = require('../electron/web-invite.cjs');
+const { createStaticViewer, createWebInvite, DEFAULT_WEB_VIEWER_URL } = require('../electron/web-invite.cjs');
 
 // `npm run check` runs the unit tests before it builds dist/, and dist/ is gitignored,
 // so this test must never depend on a previous Vite build. It builds its own fixture
@@ -42,7 +42,7 @@ test('public viewer serves built assets but rejects desktop APIs and writes', as
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   const asset = (await (await fetch(base)).text()).match(/src="([^"]+\.js)"/)?.[1];
   assert.ok(asset);
-  const assetResponse = await fetch(base + asset);
+  const assetResponse = await fetch(new URL(asset, base + '/'));
   assert.equal(assetResponse.status, 200);
   assert.match(assetResponse.headers.get('content-type'), /javascript/);
   for (const route of ['/api/config', '/api/local/token', '/socket.io/', '/server/index.mjs', '/assets/../package.json']) {
@@ -88,9 +88,27 @@ test('real Vite build is servable when it is present', { skip: !existsSync(built
     const html = await page.text();
     const asset = html.match(/src="([^"]+\.js)"/)?.[1];
     assert.ok(asset, '构建产物 index.html 应引用打包后的入口 JS');
-    assert.equal((await fetch(builtBase + asset)).status, 200);
+    assert.equal((await fetch(new URL(asset, builtBase + '/'))).status, 200);
     assert.equal((await fetch(`${builtBase}/api/config`)).status, 404);
   } finally {
     await stop(built);
+  }
+});
+
+test('fixed web entry works with no local build or tunnel component', async () => {
+  const states = [];
+  const entry = createWebInvite({ distDir: 'missing-build', executablePath: 'missing-cloudflared', onState: state => states.push(state) });
+  const results = await Promise.all([entry.start(), entry.start()]);
+  assert.deepEqual(results, [{ url: DEFAULT_WEB_VIEWER_URL }, { url: DEFAULT_WEB_VIEWER_URL }]);
+  await entry.stop();
+  assert.deepEqual(states.at(-1), { url: '' });
+  assert.deepEqual(await entry.start(), { url: DEFAULT_WEB_VIEWER_URL });
+});
+
+test('fixed entry preserves its deployment path and rejects credentials or unsafe schemes', async () => {
+  const custom = createWebInvite({ viewerUrl: 'https://viewer.example.org/roomcast/' });
+  assert.equal((await custom.start()).url, 'https://viewer.example.org/roomcast/');
+  for (const viewerUrl of ['http://viewer.example.org', 'https://name:secret@viewer.example.org', 'https://viewer.example.org:8443', 'https://viewer.example.org/?secret=x', 'https://viewer.example.org/#room=x', 'invalid']) {
+    await assert.rejects(createWebInvite({ viewerUrl }).start(), /网页入口/);
   }
 });
