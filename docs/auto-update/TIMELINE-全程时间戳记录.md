@@ -141,6 +141,25 @@
 | **17:47** | 用户叫停发版 | 「你又要 release 一次？我更新 release 被你整乱了」→ 决定 **只在本地 commit**，不打 tag、不 push、不建 Release；核实线上 tag `v0.14.3-beta.1…beta.5` 与远端一一对应、无重复无错位 |
 | **17:47** | 登记结论 | **beta.4**：能更新但闪 3 个窗口；**beta.5**：无窗口但替换静默失败 → 从这两版出发无法验证成功更新（执行更新的就是旧代码本身） |
 
+## 阶段 9 · 同号重发 beta.5（覆盖原发布，不新增版本；详见 `STEP-18`）
+
+| 时间 | 事件 | 结果 |
+| --- | --- | --- |
+| **17:47** | 用户决定 | 「继续发。能不能就 beta5 的 release 修改，而不是再发 beta6」→ 采纳**同号重发** |
+| 17:48 | 文档提交 | `dc6dd2e Republish 0.14.3-beta.5 with the launcher fix instead of a new version`（发布说明/CHANGELOG/验收清单同步） |
+| 17:48 | 推送 `main` | `c296af8..dc6dd2e` |
+| 17:48 | **强推标签** | `git tag -f v0.14.3-beta.5 dc6dd2e` → `+ 820da6c...dc6dd2e (forced update)`；理由：更新界面显示的说明取自标签源码，标签必须与产物同源 |
+| 17:48 | 留证基线 | 覆盖前 `SHA256.txt` 存到 `_before/SHA256.txt`（`.exe` `A5E738D5…`、`.zip` `FCA965F2…`） |
+| **17:49:02** | **`Release` 运行 `36233912626` 启动** | 同一标签重复构建 → `gh release upload --clobber` 覆盖 6 个资产（不会新建 Release）；`CI` 运行 `36233910226` 同时启动 |
+| **18:03:13** | **覆盖构建成功** | `completed / success`、`headSha = dc6dd2e`、用时 **14 分 11 秒**；`CI` 亦 `success` |
+| 18:03 | 资产核对 | 新 `SHA256.txt`：`.exe` `0C9A3213…`、`.zip` `AFE89F3F…`、`source.zip` `0EC8AFEE…` **全部与基线不同**；`loopback-capture.zip`、`OBS-…tar.gz`、`addon.node`、`LICENSE`、`cloudflared.exe` **逐字节未变**；6 个资产 `updatedAt` = 10:03 UTC |
+| 18:04 | 内容物核对 | 标签源码含 `Start-Process … -WindowStyle Hidden` + `cmd-detached` 兜底；**发布资产 `source.zip` 内的 `electron/update-install.mjs` 同样含修复**（26 017 字节） |
+| 18:04 | 发布页正文 | `gh release edit --notes-file docs/RELEASE_NOTES-0.14.3-beta.5.md --prerelease` 同步完成（`draft=false`） |
+| 18:04 | 未做（如实登记） | 未下载 221 MB 的 `Windows.zip` 逐字节确认 `app.asar`；改用"同源构建 + `source.zip` 核对 + `verify:release` + 用户真机验收" |
+
+> 坑：**同号重发的唯一真代价**——已运行 beta.5 的机器同版本不触发更新，需手动替换；
+> 从 beta.4 更新过来的机器会先由旧代码（可用的 beta.4 脚本）完成一次替换，之后即为修复版。
+
 > 坑：**本机 git 必须显式走代理**（系统代理 `127.0.0.1:7890`，git 不会自动使用），
 > 否则 `fetch/push` 表现为"连不上 github.com:443"；也正是它让首次 `main` 推送因本地
 > `origin/main` 陈旧而被拒。
