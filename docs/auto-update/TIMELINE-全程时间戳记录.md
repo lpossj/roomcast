@@ -156,6 +156,9 @@
 | 18:04 | 内容物核对 | 标签源码含 `Start-Process … -WindowStyle Hidden` + `cmd-detached` 兜底；**发布资产 `source.zip` 内的 `electron/update-install.mjs` 同样含修复**（26 017 字节） |
 | 18:04 | 发布页正文 | `gh release edit --notes-file docs/RELEASE_NOTES-0.14.3-beta.5.md --prerelease` 同步完成（`draft=false`） |
 | 18:04 | 未做（如实登记） | 未下载 221 MB 的 `Windows.zip` 逐字节确认 `app.asar`；改用"同源构建 + `source.zip` 核对 + `verify:release` + 用户真机验收" |
+| **18:05–18:08** | 尝试"就地改包"以便当场验证 | 用 `@electron/asar` 把修复版 `update-install.mjs` 换进 beta.4 测试包（793 条目无增无减）→ **启动即 FATAL** |
+| 18:08 | 抓 stderr 定位 | `asar_util.cc:187 Integrity check failed for asar archive entry '<header>'`；A/B 对照：原始 asar 与官方 beta.3 目录版均正常启动 → 是重打包破坏了归档头哈希 |
+| 18:09 | 结论 | electron-builder 把归档头哈希写进 exe 的 `ElectronAsarIntegrity`；**改包不可行，验证必须用真正重新打包的构建**；已把测试包 asar 还原（`5DFE8A25…` 与应用前一致）并删除全部临时脚本 |
 
 > 坑：**同号重发的唯一真代价**——已运行 beta.5 的机器同版本不触发更新，需手动替换；
 > 从 beta.4 更新过来的机器会先由旧代码（可用的 beta.4 脚本）完成一次替换，之后即为修复版。
