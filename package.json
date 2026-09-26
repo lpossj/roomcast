@@ -10,7 +10,6 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "package:web": "node scripts/package-web-viewer.mjs",
     "server": "node server/index.mjs",
     "start": "electron .",
     "start:viewer": "node scripts/start-viewer.cjs",
