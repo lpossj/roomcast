@@ -146,14 +146,17 @@ for (const scenario of [
   });
   const active = peers.slice(1).filter(peer => !peer.closed);
   if (scenario.commitFailure) {
-    await assert.rejects(a.leave(), /其他成员未切换/);
-    assert.equal(a.closed, false);
-    assert.equal(a.guests.size, scenario.count - 1);
+    // A handover that never gets acknowledged must not trap the owner in the room any
+    // more: leave() reports that the room was closed instead of rejecting, and no
+    // member is moved onto an unacknowledged takeover.
+    const outcome = await a.leave();
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.closed, true);
+    assert.match(outcome.reason, /未确认接管|移交未能完成/);
+    assert.equal(a.closed, true);
+    assert.equal(a.guests.size, 0);
     for (const guest of active) {
-      assert.equal(guest.closed, false);
       assert.equal(guest.migrating, false);
-      assert.equal(guest.remote.open, true);
-      assert.equal((await guest.request('chat:send', { text: 'still in original room' })).ok, true);
     }
     assert.equal(peers[1].pendingMigrationCommit, null);
     assert.equal(peers[1].preparedMigration, null);

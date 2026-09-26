@@ -1039,17 +1039,29 @@ export default function useRoom(onError) {
   useEffect(() => {
     const unsubscribe = window.roomcast?.onBeforeClose?.(
       async () => {
+        // Exiting must never depend on the handover finishing. Give it a short budget,
+        // then report whatever happened: the main process closes the window either way,
+        // and the room server ends the room when this socket disappears.
+        let outcome = null;
         try {
-          await leave();
-          window.roomcast?.closeReady?.({ ok: true });
+          outcome = await Promise.race([
+            leave(),
+            new Promise(resolve => { setTimeout(() => resolve(null), 2000); }),
+          ]);
         } catch (error) {
           console.error(
             '关闭窗口前房间迁移失败：',
             error,
           );
-          errorRef.current?.(error.message || '房间迁移失败，请重试退出。');
-          window.roomcast?.closeReady?.({ ok: false });
+          errorRef.current?.(error.message || '移交未完成，房间已关闭。');
         }
+
+        window.roomcast?.closeReady?.({
+          ok: true,
+          migratedTo: outcome?.migratedTo || '',
+          closed: outcome?.closed === true,
+          reason: String(outcome?.reason || '').slice(0, 200),
+        });
       },
     );
 

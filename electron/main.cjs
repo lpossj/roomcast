@@ -29,6 +29,13 @@ let privateSession;
 let workerFetch;
 let forceWindowClose = false;
 let closeHandshakeTimer = null;
+// Closing the window must never depend on the room handover finishing, so the window
+// gets a short budget and then closes anyway; a second close request is an explicit
+// "quit now" that skips the wait entirely.
+const CLOSE_GRACE_MS = 2500;
+// A stuck local service close or session clear must not outlive the window either.
+const EXIT_GRACE_MS = 5000;
+let closeRequestedAt = 0;
 // Automatic update state. The updater window outlives the main window, so both are
 // tracked here, and `updaterState` is the single source of truth the progress UI reads
 // (the window may load after the download already started).
@@ -501,14 +508,33 @@ else {
 
         event.preventDefault();
 
-        if (closeHandshakeTimer) return;
+        const now = Date.now();
+
+        // Asking twice inside the grace window is an explicit "quit now": a stuck
+        // handover, a failed migration or an unresponsive renderer must never keep
+        // the program open.
+        if (closeRequestedAt && now - closeRequestedAt < CLOSE_GRACE_MS) {
+          forceWindowClose = true;
+
+          if (window && !window.isDestroyed()) window.close();
+
+          return;
+        }
+
+        closeRequestedAt = now;
 
         window.webContents.send('roomcast:before-close');
 
+        if (closeHandshakeTimer) clearTimeout(closeHandshakeTimer);
+
         closeHandshakeTimer = setTimeout(() => {
           closeHandshakeTimer = null;
-          // A timed-out migration is not permission to destroy the coordinator.
-        }, 20000);
+          // The handover has had its budget. Close regardless: the room server ends
+          // the room when the owner socket disappears without a completed migration.
+          forceWindowClose = true;
+
+          if (window && !window.isDestroyed()) window.close();
+        }, CLOSE_GRACE_MS);
       });
       ipcMain.on('roomcast:close-ready', (event, result) => {
         if (
@@ -519,7 +545,14 @@ else {
 
         clearTimeout(closeHandshakeTimer);
         closeHandshakeTimer = null;
-        if (result?.ok === false) return;
+        closeRequestedAt = 0;
+
+        // A negative report is information, not a veto: the renderer has already been
+        // told to leave, and the deadline decides when the window goes away.
+        if (result?.ok === false) {
+          console.warn('[Roomcast] 关闭窗口前房间移交未能完成：', String(result?.reason || '未说明原因').slice(0, 200));
+        }
+
         forceWindowClose = true;
 
         if (window && !window.isDestroyed()) window.close();
@@ -1200,6 +1233,13 @@ else {
     if (quitting || !service) return;
     event.preventDefault(); quitting = true;
     stopAllAudioCaptures();
-    void Promise.allSettled([service.close(), webInvite?.stop(), runObsCaptureOperation(() => closeObsCaptureEngine())]).finally(async () => { await clearChatSession(); app.quit(); });
+    // Hard stop for the quitting path: a local service close that waits on a lingering
+    // connection, or session clearing that never settles, must not prevent the exit.
+    const hardExit = setTimeout(() => app.exit(0), EXIT_GRACE_MS);
+    void Promise.allSettled([service.close(), webInvite?.stop(), runObsCaptureOperation(() => closeObsCaptureEngine())]).finally(async () => {
+      await Promise.race([clearChatSession(), new Promise(resolve => setTimeout(resolve, 1000))]).catch(() => { });
+      clearTimeout(hardExit);
+      app.exit(0);
+    });
   });
 }
