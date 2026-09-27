@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 import { waitForRoomOperation } from '../src/room-operation.js';
+import { recordLifecycle } from '../src/lifecycle-diagnostics.js';
 
 const source = await readFile(new URL('../src/useRoom.js', import.meta.url), 'utf8');
 const callbacks = source.slice(source.indexOf('  const leave ='), source.indexOf('  const command ='));
@@ -27,7 +28,7 @@ function harness({ desktop = false, fetch = async () => ({ ok: true, json: async
     leave() { return this.leaving?.promise || Promise.resolve({ ok: true }); }
   }
   const context = {
-    useCallback: callback => callback, AbortController, AbortSignal, waitForRoomOperation,
+    useCallback: callback => callback, AbortController, AbortSignal, waitForRoomOperation, performance, recordLifecycle,
     socketRef, operationRef, membersRef: { current: null }, errorRef: { current() {} },
     P2PRoom: Socket, fetch, window: { location: { origin: 'http://local' }, roomcast: { desktop } },
     console: { error() {} }, clearMessages() {}, playSound() {}, savePreference() {},

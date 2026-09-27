@@ -1,3 +1,6 @@
+import { recordLifecycle } from './lifecycle-diagnostics.js';
+export { recordLifecycle, getLifecycleDiagnostics } from './lifecycle-diagnostics.js';
+
 let tokenPromise;
 
 export async function localAction(action, payload = {}) {
@@ -63,6 +66,9 @@ async function findObsVirtualCamera(timeoutMs = 8000) {
 
 export async function startObsFixedFpsCapture({ sourceType = 'monitor', sourceId, width = 1920, height = 1080, fps = 30, microphone = false, microphoneMuted = false, inputDeviceId = '' } = {}) {
   if (!window.roomcast?.startObsCapture || !window.roomcast?.stopObsCapture) throw new Error('当前桌面版本不支持 OBS 采集。');
+  const operationStarted = performance.now();
+  recordLifecycle('capture', 'started');
+  let diagnosticPhase = 'completed';
   let stream = null;
   let microphoneStream = null;
   let removeBackendEnded = null;
@@ -81,6 +87,7 @@ export async function startObsFixedFpsCapture({ sourceType = 'monitor', sourceId
   const cleanup = () => {
     if (cleaned) return;
     cleaned = true;
+    recordLifecycle('capture', diagnosticPhase, performance.now() - operationStarted);
     removeBackendEnded?.();
     removeBackendEnded = null;
     for (const track of stream?.getTracks() || []) track.stop();
@@ -152,6 +159,7 @@ export async function startObsFixedFpsCapture({ sourceType = 'monitor', sourceId
     track.addEventListener('ended', () => { if (!cleaned) void stopBackend(); }, { once: true });
     return stream;
   } catch (error) {
+    diagnosticPhase = error?.code === 'OBS_CAPTURE_CANCELLED' ? 'cancelled' : 'failed';
     cleanup();
     throw error;
   }

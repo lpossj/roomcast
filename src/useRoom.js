@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { containsTurn, mediaIceServers } from './ice-policy.js';
-import { ack, normalizeServer } from './lib.js';
+import { ack, normalizeServer, recordLifecycle } from './lib.js';
 import { P2PRoom } from './p2p.js';
 import { waitForRoomOperation } from './room-operation.js';
 import { imageDimensionsAllowed, imageMagicMatches, MAX_IMAGE_CACHE_BYTES, readImageDimensions } from './image-policy.js';
@@ -419,11 +419,14 @@ export default function useRoom(onError) {
   }, []);
 
   const leave = useCallback(async (shutdown = false) => {
+    const started = performance.now();
+    recordLifecycle('leave', 'started');
     operationRef.current?.abort();
     const operation = new AbortController();
     operationRef.current = operation;
     const socket = socketRef.current;
     let outcome = null;
+    let failed = false;
     try {
       if (!shutdown && socket) {
         setConnection('leaving');
@@ -435,9 +438,10 @@ export default function useRoom(onError) {
         }
       }
     } catch (error) {
-      if (!operation.signal.aborted) throw error;
+      if (!operation.signal.aborted) { failed = true; throw error; }
       outcome = { cancelled: true };
     } finally {
+      recordLifecycle('leave', operation.signal.aborted ? 'cancelled' : failed ? 'failed' : 'completed', performance.now() - started);
       // A previous leave must never clear a newer room. Reset the UI even when
       // migration or transport cleanup throws; forced leave does not await either.
       if (operationRef.current === operation) {
@@ -464,10 +468,14 @@ export default function useRoom(onError) {
     const operation = new AbortController();
     operationRef.current = operation;
     const wait = task => waitForRoomOperation(task, operation.signal);
+    const started = performance.now();
+    const diagnosticOperation = mode === 'create' ? 'create' : 'join';
+    recordLifecycle(diagnosticOperation, 'started');
 
     const isP2P = details.networkMode === 'p2p';
 
     if (details.networkMode === 'public') {
+      recordLifecycle(diagnosticOperation, 'rejected', performance.now() - started);
       operationRef.current = null;
       throw new Error(
         '公网邀请已停用，请使用普通 Roomcast 邀请链接加入房间。',
@@ -610,7 +618,10 @@ export default function useRoom(onError) {
           details,
           remoteConfig,
         ));
-        if (socketRef.current !== socket) return { cancelled: true };
+        if (socketRef.current !== socket) {
+          recordLifecycle(diagnosticOperation, 'cancelled', performance.now() - started);
+          return { cancelled: true };
+        }
 
         receiveRoom(result.room);
         playSound('join');
@@ -651,6 +662,7 @@ export default function useRoom(onError) {
           details.nickname.trim(),
         );
 
+        recordLifecycle(diagnosticOperation, 'completed', performance.now() - started);
         return result;
       }
 
@@ -799,8 +811,10 @@ export default function useRoom(onError) {
         base,
       );
 
+      recordLifecycle(diagnosticOperation, 'completed', performance.now() - started);
       return result;
     } catch (error) {
+      recordLifecycle(diagnosticOperation, operation.signal.aborted ? 'cancelled' : 'failed', performance.now() - started);
       if (operation.signal.aborted) return { cancelled: true };
       if (operationRef.current === operation) await leave(true);
       throw error;

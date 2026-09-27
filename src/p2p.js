@@ -1,7 +1,7 @@
 import { Peer } from 'peerjs';
 import { io } from 'socket.io-client';
 import { createRoomcastPeerConnection, DEFAULT_STUN_ICE, mediaIceServers, turnIceServers } from './ice-policy.js';
-import { ack } from './lib.js';
+import { ack, recordLifecycle } from './lib.js';
 import { createPeerAuthProof, MAX_UNAUTHENTICATED_PEERS, PEER_AUTH_PROTOCOL, PEER_AUTH_TIMEOUT_MS, randomPeerAuthNonce, verifyPeerAuthProof } from './p2p-auth.js';
 import { encodeRelayInvite, optionalRelayIce } from './relay.js';
 import { createP2pVideoPolicy, p2pResolutionScale } from './p2p-video-policy.js';
@@ -1044,14 +1044,21 @@ export class P2PRoom {
     payload,
     timeout = 8000,
   ) {
+    if (this.closed || !connection?.open) throw new Error('P2P 连接已结束');
+    if (this.controlPending.size >= 64 || (connection.dataChannel?.bufferedAmount || 0) > 1024 * 1024) {
+      recordLifecycle('control', 'rejected');
+      throw new Error('房间协调请求积压，请稍后再试。');
+    }
     const id =
       crypto.randomUUID();
+    const started = performance.now();
+    recordLifecycle('control', 'started');
 
     return withTimeout(
       new Promise(
-        resolve => {
+        (resolve, reject) => {
           this.controlPending
-            .set(id, resolve);
+            .set(id, { connection, resolve, reject, started });
 
           connection.send({
             control,
@@ -1062,12 +1069,36 @@ export class P2PRoom {
       ),
       timeout,
       '房间协调器迁移响应超时',
-    ).finally(
+    ).catch(error => {
+      recordLifecycle('control', 'failed', performance.now() - started);
+      throw error;
+    }).finally(
       () => (
         this.controlPending
           .delete(id)
       ),
     );
+  }
+
+  finishControlReply(connection, message) {
+    const id = message?.controlReply;
+    if (typeof id !== 'string' || id.length > 96) return;
+    const pending = this.controlPending.get(id);
+    if (!pending || pending.connection !== connection) return;
+    const result = message.result;
+    if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.ok !== 'boolean') return;
+    try { if (JSON.stringify(message).length > 65536) return; } catch { return; }
+    this.controlPending.delete(id);
+    recordLifecycle('control', 'completed', performance.now() - pending.started);
+    pending.resolve(result);
+  }
+
+  failControlPending(connection = null) {
+    for (const [id, pending] of this.controlPending) {
+      if (connection && pending.connection !== connection) continue;
+      this.controlPending.delete(id);
+      pending.reject(new Error('P2P 连接已结束'));
+    }
   }
 
   failPending(
@@ -1808,6 +1839,7 @@ export class P2PRoom {
       if (closed) return;
 
       closed = true;
+      this.failControlPending(connection);
 
       clearTimeout(timeout);
       clearTimeout(presenceTimer);
@@ -2059,25 +2091,8 @@ export class P2PRoom {
       connection.on(
         'data',
         async message => {
-          if (
-            message?.controlReply
-            && this.controlPending
-              .has(
-                message.controlReply,
-              )
-          ) {
-            this.controlPending
-              .get(
-                message.controlReply,
-              )(
-                message.result,
-              );
-
-            this.controlPending
-              .delete(
-                message.controlReply,
-              );
-
+          if (message?.controlReply !== undefined) {
+            this.finishControlReply(connection, message);
             return;
           }
 
@@ -3661,17 +3676,7 @@ export class P2PRoom {
       });
     }
 
-    for (
-      const resolve
-      of this.controlPending
-        .values()
-    ) {
-      resolve({
-        ok: false,
-        error:
-          'P2P 连接已结束',
-      });
-    }
+    this.failControlPending();
 
     for (
       const pending

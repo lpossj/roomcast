@@ -1,7 +1,7 @@
 import { AppWindow, ArrowRight, AudioLines, Check, ChevronDown, ChevronRight, Copy, Download, Headphones, ImagePlus, Info, Link, LoaderCircle, LockKeyhole, LogOut, Maximize2, MessageSquare, Mic, Monitor, MonitorUp, Palette, Plus, RefreshCw, RotateCcw, RotateCw, ScreenShare, Send, Server, Settings, ShieldCheck, Square, Users, Volume2, Wifi, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ScreenPlayer from './ScreenPlayer.jsx';
-import { ack, attachNativeAudio, initials, integratedSources, nativeAudioSources, startIntegratedCapture, startObsFixedFpsCapture, timeLabel } from './lib.js';
+import { ack, attachNativeAudio, getLifecycleDiagnostics, initials, integratedSources, nativeAudioSources, startIntegratedCapture, startObsFixedFpsCapture, timeLabel } from './lib.js';
 import { readImageDimensions } from './image-policy.js';
 import { loadPreference, savePreference } from './preferences.js';
 import { fetchRelayIce, loadRelaySettings, saveRelaySettings } from './relay.js';
@@ -456,6 +456,14 @@ function UpdatePromptModal({ current, result, install, dontRemind, setDontRemind
 }
 
 function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck }) {
+  const exportDiagnostics = () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(getLifecycleDiagnostics(version), null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Roomcast-${version || 'dev'}-diagnostics.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   return <>
     <section className="settings-section"><h3><Info size={17} />关于</h3>
       <div className="about-card">
@@ -468,12 +476,14 @@ function AboutPanel({ version = '', update, autoCheck, setAutoCheck, onCheck }) 
     <section className="settings-section"><h3><ShieldCheck size={17} />使用声明</h3>
       <p className="about-note">仅用于合法、知情同意的屏幕共享与聊天。禁止用于未经同意的监控、偷拍、监听、跟踪、骚扰或其他违法用途；使用者应自行遵守当地法律与平台规则。</p>
       <p className="about-note">房间状态与聊天是内存态，房间结束后释放，不写入数据库。屏幕媒体通过 WebRTC DTLS-SRTP 在成员之间传输。</p>
+      <div className="settings-buttons"><button className="button subtle small" onClick={exportDiagnostics}><Download size={15} />导出诊断</button></div>
+      <p className="about-note">诊断仅保留本次页面会话最近 200 条操作阶段和耗时；不记录邀请、密钥、成员信息或聊天，不自动上传。</p>
       <p className="about-note">网页观看入口使用固定 HTTPS 站点，分享者和观看者无需注册或登录；邀请链接等同于入房凭据，请只发给预期成员。站点可访问不代表信令和媒体连接一定可用。</p>
       <p className="about-note">未使用商业代码签名，Windows SmartScreen 可能提示未知发布者；下载后请核对发布页提供的 SHA-256。</p>
     </section>
     <section className="settings-section"><h3><Palette size={17} />许可与第三方组件</h3>
       <p className="about-note">Roomcast 主体源码采用 Apache License 2.0。</p>
-      <p className="about-note">随包组件：OBS Studio 32.1.2（GPL-2.0-or-later，附对应源码归档）、cloudflared 2026.9.2（Apache-2.0）、Windows 系统音频 loopback 采集组件（第三方 MIT 预编译二进制）。完整清单见安装目录下的 <code>NOTICE</code> 与 <code>THIRD-PARTY-NOTICES.txt</code>，隐私与安全边界见 <code>PRIVACY.md</code> 与 <code>SECURITY.md</code>。</p>
+      <p className="about-note">随包组件：OBS Studio 32.1.2（GPL-2.0-or-later，附对应源码归档）、Windows 系统音频 loopback 采集组件（第三方 MIT 预编译二进制）。完整清单见安装目录下的 <code>NOTICE</code> 与 <code>THIRD-PARTY-NOTICES.txt</code>，隐私与安全边界见 <code>PRIVACY.md</code> 与 <code>SECURITY.md</code>。</p>
     </section>
   </>;
 }

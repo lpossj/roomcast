@@ -17,6 +17,41 @@ const source = (await readFile(new URL('../src/p2p.js', import.meta.url), 'utf8'
   .replace("from './p2p-auth.js'", `from '${new URL('../src/p2p-auth.js', import.meta.url).href}'`);
 const { P2PRoom } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
+test('control replies require the original connection and a bounded result; busy replies remain valid', async () => {
+  const room = new P2PRoom();
+  let request;
+  const connection = { open: true, send: message => { request = message; } };
+  const result = room.sendControl(connection, 'migration:probe', {}, 1000);
+  const id = request.controlId;
+  room.finishControlReply({}, { controlReply: id, result: { ok: true } });
+  room.finishControlReply(connection, { controlReply: id, result: { ok: 'true' } });
+  room.finishControlReply(connection, { controlReply: id, result: { ok: true, junk: 'x'.repeat(65536) } });
+  assert.equal(room.controlPending.size, 1);
+  room.finishControlReply(connection, { controlReply: id, result: { ok: false } });
+  assert.deepEqual(await result, { ok: false });
+  room.finishControlReply(connection, { controlReply: id, result: { ok: true } });
+  assert.equal(room.controlPending.size, 0);
+});
+
+test('closed control connections settle promptly and congestion is bounded', async () => {
+  const room = new P2PRoom();
+  const a = { open: true, send() {} }, b = { open: true, send() {} };
+  const pa = room.sendControl(a, 'migration:probe', {}, 1000);
+  const pb = room.sendControl(b, 'migration:probe', {}, 1000);
+  const rejectedA = assert.rejects(pa, /连接已结束/), rejectedB = assert.rejects(pb, /连接已结束/);
+  room.failControlPending(a);
+  assert.equal(room.controlPending.size, 1);
+  await rejectedA;
+  room.failControlPending();
+  await rejectedB;
+  a.dataChannel = { bufferedAmount: 2 * 1024 * 1024 };
+  await assert.rejects(room.sendControl(a, 'migration:probe', {}), /积压/);
+  a.dataChannel.bufferedAmount = 0;
+  for (let i = 0; i < 64; i++) room.controlPending.set(String(i), {});
+  await assert.rejects(room.sendControl(a, 'migration:probe', {}), /积压/);
+  room.controlPending.clear();
+});
+
 test('challenge HMAC is room-bound and rejects the wrong invite secret', async () => {
   const challenge = { protocol: 2, roomId: 'ABCDEF12', mode: 'invite', nonce: randomPeerAuthNonce() };
   const proof = await createPeerAuthProof('s'.repeat(43), challenge);
