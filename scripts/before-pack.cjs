@@ -1,6 +1,9 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const { VIRTUALCAM_HASHES } = require('../electron/obs-virtualcam-trust.cjs');
 
 // Packaging leaves an `ns<random>.tmp` working directory (~0.5-1.2 GB) in %TEMP% whenever a
 // build is interrupted. Clear the abandoned ones before starting another build so repeated
@@ -34,5 +37,10 @@ exports.default = async function beforePack() {
       child.once('error', reject);
       child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${name} 准备失败：${code}`)));
     });
+  }
+  for (const bit of [32, 64]) {
+    const dll = path.join(__dirname, '..', 'runtime/obs-bundle/data/obs-plugins/win-dshow', `obs-virtualcam-module${bit}.dll`);
+    const hash = createHash('sha256').update(fs.readFileSync(dll)).digest('hex');
+    if (hash !== VIRTUALCAM_HASHES[bit]) throw new Error(`OBS ${bit}-bit Virtual Camera trust check failed before packaging`);
   }
 };

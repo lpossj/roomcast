@@ -546,7 +546,7 @@ class ObsFixedFpsEngine {
       execPath: process.execPath,
     });
     this.bundleDir = this.bundleCandidates[0] || path.join(this.runtimeRoot, 'runtime', 'obs-bundle');
-    this.obsDir = path.resolve(process.env.ROOMCAST_OBS_RUNTIME || path.join(this.dataRoot, 'runtime', 'obs-fixed-fps'));
+    this.obsDir = path.resolve((allowBundleOverride && process.env.ROOMCAST_OBS_RUNTIME) || path.join(this.dataRoot, 'runtime', 'obs-fixed-fps'));
     this.exe = path.join(this.obsDir, 'bin', '64bit', 'obs64.exe');
     this.configDir = path.join(this.obsDir, 'config', 'obs-studio');
     this.embeddedVersion = '';

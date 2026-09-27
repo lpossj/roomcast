@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
+const { VIRTUALCAM_HASHES, virtualCameraTrustScript } = require('./obs-virtualcam-trust.cjs');
 
 const OBS_VIRTUAL_CAM_CLSID = '{A3FCE0F5-3493-419F-958A-ABA1250EC20B}';
 const OBS_VIRTUAL_CAM_VERSION = '32.1.2';
@@ -194,8 +195,8 @@ function registrationAssessment(status, context = {}) {
 }
 
 function stableInstallPaths() {
-  const programData = process.env.ProgramData || process.env.PROGRAMDATA || 'C:\\ProgramData';
-  const installDir = path.join(programData, 'Roomcast', 'obs-virtualcam', OBS_VIRTUAL_CAM_VERSION);
+  const programFiles = process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files';
+  const installDir = path.join(programFiles, 'Roomcast', 'obs-virtualcam', OBS_VIRTUAL_CAM_VERSION);
   return {
     installDir,
     module32: path.join(installDir, 'obs-virtualcam-module32.dll'),
@@ -223,10 +224,13 @@ function buildElevatedRegistrationScript({
     `$ResultPath = ${psSingleQuoted(resultPath)}`,
     `$Register32 = ${register32 ? '$true' : '$false'}`,
     `$Register64 = ${register64 ? '$true' : '$false'}`,
+    `$Expected32 = '${VIRTUALCAM_HASHES[32]}'`,
+    `$Expected64 = '${VIRTUALCAM_HASHES[64]}'`,
+    '$Locked32 = $null; $Locked64 = $null',
+    virtualCameraTrustScript(),
     "$Result = [ordered]@{ ok = $false; phase = 'init'; exit32 = $null; exit64 = $null; reg32Path = ''; reg64Path = ''; reg32Exe = ''; reg64Exe = ''; target32 = $Target32; target64 = $Target64; error32 = ''; error64 = ''; error = '' }",
     'function Save-Result {',
-    '  $Parent = Split-Path -Parent $ResultPath',
-    '  if ($Parent) { New-Item -ItemType Directory -Force -Path $Parent | Out-Null }',
+    '  Assert-NoReparse $ResultPath',
     '  ($Result | ConvertTo-Json -Compress) | Set-Content -LiteralPath $ResultPath -Encoding UTF8',
     '}',
     'function Get-ComPath([Microsoft.Win32.RegistryView]$View) {',
@@ -248,6 +252,7 @@ function buildElevatedRegistrationScript({
     'function Invoke-Regsvr32([string]$Exe, [string]$Dll, [int]$TimeoutMs) {',
     '  $Psi = New-Object System.Diagnostics.ProcessStartInfo',
     '  $Psi.FileName = $Exe',
+    '  $Psi.WorkingDirectory = Split-Path -Parent $Dll',
     '  $Psi.Arguments = \'/s /i "\' + $Dll + \'"\'',
     '  $Psi.UseShellExecute = $false',
     '  $Psi.CreateNoWindow = $true',
@@ -266,13 +271,19 @@ function buildElevatedRegistrationScript({
     '}',
     'try {',
     "  $Result.phase = 'validate-source'",
+    "  $TrustedBase = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Roomcast'",
+    "  $TrustedDir = Join-Path $TrustedBase 'obs-virtualcam\\32.1.2'",
+    "  if (-not (Same-Path $Target32 (Join-Path $TrustedDir 'obs-virtualcam-module32.dll')) -or -not (Same-Path $Target64 (Join-Path $TrustedDir 'obs-virtualcam-module64.dll'))) { throw 'Untrusted Virtual Camera installation target' }",
+    "  if (-not (Same-Path (Split-Path -Parent $ResultPath) $TrustedDir)) { throw 'Untrusted registration result target' }",
     "  if ($Register32 -and -not (Test-Path -LiteralPath $Source32)) { throw 'bundled 32-bit Virtual Camera DLL is missing' }",
     "  if ($Register64 -and -not (Test-Path -LiteralPath $Source64)) { throw 'bundled 64-bit Virtual Camera DLL is missing' }",
     '  $InstallDir = Split-Path -Parent $Target64',
-    '  New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null',
-    '  if ($Register32) { Copy-Item -LiteralPath $Source32 -Destination $Target32 -Force }',
-    '  if ($Register64) { Copy-Item -LiteralPath $Source64 -Destination $Target64 -Force }',
-    "  $WindowsRoot = if ($env:SystemRoot) { $env:SystemRoot } elseif ($env:WINDIR) { $env:WINDIR } else { throw 'Windows root environment variable is missing' }",
+    '  Protect-InstallDirectory $TrustedBase',
+    "  Protect-InstallDirectory (Join-Path $TrustedBase 'obs-virtualcam')",
+    '  Protect-InstallDirectory $InstallDir',
+    '  if ($Register32) { $Locked32 = Copy-VerifiedDll $Source32 $Target32 $Expected32 }',
+    '  if ($Register64) { $Locked64 = Copy-VerifiedDll $Source64 $Target64 $Expected64 }',
+    '  $WindowsRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)',
     "  $Reg32 = Join-Path $WindowsRoot 'SysWOW64\\regsvr32.exe'",
     "  $Reg64 = Join-Path $WindowsRoot 'System32\\regsvr32.exe'",
     '  $Result.reg32Exe = $Reg32',
@@ -327,8 +338,25 @@ function buildElevatedRegistrationScript({
     '  } catch { }',
     '  try { Save-Result } catch { }',
     '  exit 1',
+    '} finally {',
+    '  if ($null -ne $Locked32) { $Locked32.Dispose() }',
+    '  if ($null -ne $Locked64) { $Locked64.Dispose() }',
     '}',
     '',
+  ].join('\r\n');
+}
+
+function elevatedRegistrationCommand(script) {
+  // Carry the fixed script in the process arguments, never reopen a user-writable .ps1 as admin.
+  const encoded = encodePowerShell(script);
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$PowerShell = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)) 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'",
+    `$Arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ${encoded}'`,
+    'try {',
+    '$Process = Start-Process -FilePath $PowerShell -Verb RunAs -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden',
+    'exit $Process.ExitCode',
+    '} catch { if ($_.Exception.NativeErrorCode -eq 1223) { exit 1223 }; exit 1 }',
   ].join('\r\n');
 }
 
@@ -446,12 +474,10 @@ async function registerRoomcastVirtualCamera({
   await fsp.mkdir(tempDir, { recursive: true });
   const stable = stableInstallPaths();
   const stamp = `${process.pid}-${Date.now()}`;
-  const scriptPath = path.join(tempDir, `register-vcam-${stamp}.ps1`);
-  const resultPath = path.join(tempDir, `registration-result-${stamp}.json`);
+  const resultPath = path.join(stable.installDir, `registration-result-${stamp}.json`);
   const lastResultPath = path.join(tempDir, 'last-registration-result.json');
 
-  await fsp.rm(resultPath, { force: true }).catch(() => {});
-  await fsp.writeFile(scriptPath, `\uFEFF${buildElevatedRegistrationScript({
+  const script = buildElevatedRegistrationScript({
     module32,
     module64,
     target32: stable.module32,
@@ -459,17 +485,17 @@ async function registerRoomcastVirtualCamera({
     resultPath,
     register32,
     register64,
-  })}`, 'utf8');
+  });
 
   let launcherCode = 1;
   let result = null;
   try {
-    const command = elevatedLauncherCommand(scriptPath);
+    const command = elevatedRegistrationCommand(script);
     launcherCode = await runProcess('powershell.exe', [
       '-NoProfile',
       '-NonInteractive',
       '-ExecutionPolicy', 'Bypass',
-      '-EncodedCommand', encodePowerShell(command),
+      '-Command', command,
     ]);
 
     if (launcherCode === 1223) {
@@ -491,7 +517,7 @@ async function registerRoomcastVirtualCamera({
       throw error;
     }
   } finally {
-    await fsp.rm(scriptPath, { force: true }).catch(() => {});
+    // Result is read-only to non-admin users; leave the small diagnostic receipt in the protected directory.
     await fsp.rm(resultPath, { force: true }).catch(() => {});
   }
 
@@ -579,6 +605,7 @@ module.exports = {
   stableInstallPaths,
   buildElevatedRegistrationScript,
   elevatedLauncherCommand,
+  elevatedRegistrationCommand,
   sanitizeVirtualCameraInstaller,
   elevatedInstallerLauncherCommand,
   prepareEngineForFreshVirtualCameraRegistration,
