@@ -11,6 +11,7 @@ import { loadPreference, savePreference } from './preferences.js';
 import { playSound } from './sounds.js';
 import { openFloatingPlayer } from './floating-player.js';
 import { recordP2pNetworkStats } from './p2p-video-policy.js';
+import { playerInfo } from './player-info.js';
 
 export const FULLSCREEN_UI_HIDE_DELAY = 2000;
 const readPlaybackVolume = () => {
@@ -1671,32 +1672,19 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
     };
   }, [entered, stream.memberId, iceServers, retry, transport, playback.mode, own]);
 
-  const requested = stream.settings || {};
+  const info = playerInfo(metrics);
   const avatarColor = Number.isInteger(stream.avatarColor) && stream.avatarColor >= 0 && stream.avatarColor < 10 ? stream.avatarColor : 0;
   const floatingInfo = () => ({
     title: stream.name,
     avatarColor,
     lines: [
-      `${metrics.width && metrics.height ? `${metrics.width}×${metrics.height}` : '检测中'} · ${metrics.fps ? `${Math.round(metrics.fps)} FPS` : '— FPS'} · ${metrics.bitrate ? `${metrics.bitrate.toFixed(0)} Kbps` : '测量中'}`,
-      `媒体连接：${metrics.route}`,
-      `目标 ${requested.width || '—'}×${requested.height || '—'} / ${requested.fps || '—'} FPS / ${requested.bitrate || '自动'} Kbps`,
-      own ? metrics.encoder || '等待编码器' : `累计丢包 ${metrics.lost} · ${metrics.decoder || '检测解码器'}`,
+      `${info.resolution} · ${info.fps} · ${info.bitrate}`,
+      info.route,
     ],
   });
   useEffect(() => {
     if (floating) floatingPlayer.current?.updateInfo?.(floatingInfo());
-  }, [floating, stream.name, avatarColor, metrics.width, metrics.height, metrics.fps, metrics.bitrate, metrics.route, metrics.lost, metrics.decoder, metrics.encoder, requested.width, requested.height, requested.fps, requested.bitrate, requested.performanceMode, own]);
-  // Sharing your own screen renders the local MediaStream directly: no second P2P
-  // connection and no extra bandwidth. The numbers therefore mean two different things
-  // and say which one they are.
-  const ownShareSummary = (() => {
-    const size = metrics.width && metrics.height ? `${metrics.width}×${metrics.height}` : '检测中';
-    const rate = metrics.fps ? `${Math.round(metrics.fps)} FPS` : '— FPS';
-    if (metrics.source === 'outbound') {
-      return `实际输出 ${size} · ${rate} · ${metrics.bitrate ? `${metrics.bitrate.toFixed(0)} Kbps` : '测量中'} · ${metrics.viewers} 人观看`;
-    }
-    return `本机采集 ${size} · ${rate} · 暂无观看者`;
-  })();
+  }, [floating, stream.name, avatarColor, info.resolution, info.fps, info.bitrate, info.route]);
   const toggleFullscreen = async () => {
     try {
       if (document.fullscreenElement) { await document.exitFullscreen(); return; }
@@ -1781,13 +1769,9 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
       onBlurCapture={() => requestAnimationFrame(() => { interaction.current.focus = Boolean(containerRef.current?.contains(document.activeElement)); showUi(); })}
     >
       {!floating && <div className={`stream-parameter-bar player-info-overlay avatar-color-${avatarColor}`}>
-        <strong>{stream.name}</strong>
-        {own
-          ? <span>{ownShareSummary}</span>
-          : <span>{metrics.width && metrics.height ? `${metrics.width}×${metrics.height}` : '检测中'} · {metrics.fps ? `${Math.round(metrics.fps)} FPS` : '— FPS'} · {metrics.bitrate ? `${metrics.bitrate.toFixed(0)} Kbps` : '测量中'}</span>}
-        <span>{own && metrics.source !== 'outbound' ? '本机预览 · 不占用网络' : `媒体连接：${metrics.route}`}</span>
-        <span>目标 {requested.width || '—'}×{requested.height || '—'} / {requested.fps || '—'} FPS / {requested.bitrate || '自动'} Kbps</span>
-        <span>{own ? (metrics.encoder || (metrics.source === 'outbound' ? '等待编码器' : '本机直显，未经编码上行')) : `累计丢包 ${metrics.lost} · ${metrics.decoder || '检测解码器'}`}</span>
+        <strong title={stream.name}>{stream.name}</strong>
+        <span>{info.resolution} · {info.fps} · {info.bitrate}</span>
+        <span>{info.route}</span>
       </div>}
 
       <div className="player-stage">

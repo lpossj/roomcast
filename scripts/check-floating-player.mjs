@@ -145,8 +145,9 @@ const showFloatingUi = async child => {
       return Boolean(controls?.classList.contains('visible'))
         && !document.documentElement.classList.contains('cursor-hidden')
         && !document.documentElement.classList.contains('ui-hidden')
-        && infoStyle.display !== 'none'
-        && Number.parseFloat(infoStyle.opacity) > 0.95;
+        && (document.documentElement.classList.contains('is-fullscreen')
+          ? infoStyle.display === 'none'
+          : infoStyle.display !== 'none' && Number.parseFloat(infoStyle.opacity) > 0.95);
     }, null, { timeout: 1500 });
   } catch (error) {
     const snapshot = await floatingUiSnapshot(child).catch(() => ({ snapshotFailed: true }));
@@ -233,19 +234,19 @@ try {
         && infoBox.top < videoBox.bottom
         && infoBox.bottom > videoBox.top,
       infoMatchesPlayerWidth: Math.abs(infoBox.width - playerBox.width) < 1,
-      videoStartsBelowInfo: Math.abs(videoBox.top - infoBox.bottom) < 1,
+      videoStartsAtPlayerTop: Math.abs(videoBox.top - playerBox.top) < 1,
       videoStartsInsidePlayer: videoBox.top >= playerBox.top - 1
         && videoBox.top <= playerBox.bottom + 1,
     };
   });
   assert.equal(previewLayout.missing, false, `主播放器必要 DOM 缺失：${JSON.stringify(previewLayout)}`);
-  assert.equal(previewLayout.infoPosition, 'relative', `共享信息条必须参与正常布局，不能覆盖视频：${JSON.stringify(previewLayout)}`);
+  assert.equal(previewLayout.infoPosition, 'absolute', `共享信息条必须浮于顶部，不占画面高度：${JSON.stringify(previewLayout)}`);
   assert.equal(previewLayout.infoParentIsPlayer, true, `共享信息条必须直接挂在 screen-player 下：${JSON.stringify(previewLayout)}`);
   assert.equal(previewLayout.exitParentIsStage, true, `退出观看必须位于独立的 player-stage 媒体层，不能塞进顶部信息条：${JSON.stringify(previewLayout)}`);
   assert.equal(previewLayout.exitInsideInfo, false, `退出观看不能位于共享信息条内部：${JSON.stringify(previewLayout)}`);
-  assert.equal(previewLayout.infoOverlapsVideo, false, `共享信息条不能覆盖视频：${JSON.stringify(previewLayout)}`);
+  assert.equal(previewLayout.infoOverlapsVideo, true, `共享信息条必须位于媒体顶部的覆盖层：${JSON.stringify(previewLayout)}`);
   assert.equal(previewLayout.infoMatchesPlayerWidth, true, `共享信息条应横向占满播放器顶部：${JSON.stringify(previewLayout)}`);
-  assert.equal(previewLayout.videoStartsBelowInfo, true, `视频必须从共享信息条下方开始：${JSON.stringify(previewLayout)}`);
+  assert.equal(previewLayout.videoStartsAtPlayerTop, true, `视频不能为信息条预留高度：${JSON.stringify(previewLayout)}`);
   assert.equal(previewLayout.videoStartsInsidePlayer, true, `视频应从播放器自身区域开始：${JSON.stringify(previewLayout)}`);
   assert.equal(await page.locator('#floating-test .player-info-overlay').getAttribute('class').then(value => value.includes('avatar-color-3')), true);
   assert.equal(await page.locator('#floating-test .player-info-overlay').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(83, 59, 56)');
@@ -275,7 +276,7 @@ try {
     const videoBox = video.getBoundingClientRect();
     return {
       missing: false,
-      infoPosition: getComputedStyle(info).position,
+      infoDisplay: getComputedStyle(info).display,
       infoTop: infoBox.top,
       playerTop: playerBox.top,
       infoWidth: infoBox.width,
@@ -289,10 +290,8 @@ try {
     };
   });
   assert.equal(mainFullscreenLayout.missing, false, `主播放器全屏必要 DOM 缺失：${JSON.stringify(mainFullscreenLayout)}`);
-  assert.equal(mainFullscreenLayout.infoPosition, 'relative', `全屏信息条必须参与正常布局：${JSON.stringify(mainFullscreenLayout)}`);
-  assert.ok(Math.abs(mainFullscreenLayout.infoTop - mainFullscreenLayout.playerTop) < 1, `全屏信息条必须贴播放器顶部：${JSON.stringify(mainFullscreenLayout)}`);
-  assert.ok(Math.abs(mainFullscreenLayout.infoWidth - mainFullscreenLayout.playerWidth) < 1, `全屏信息条必须横向占满播放器：${JSON.stringify(mainFullscreenLayout)}`);
-  assert.ok(Math.abs(mainFullscreenLayout.videoTop - mainFullscreenLayout.infoBottom) < 1, `全屏视频必须从信息条下方开始：${JSON.stringify(mainFullscreenLayout)}`);
+  assert.equal(mainFullscreenLayout.infoDisplay, 'none', `全屏不显示信息条：${JSON.stringify(mainFullscreenLayout)}`);
+  assert.ok(Math.abs(mainFullscreenLayout.videoTop - mainFullscreenLayout.playerTop) < 1, `全屏视频从播放器顶部开始：${JSON.stringify(mainFullscreenLayout)}`);
   assert.equal(mainFullscreenLayout.overlap, false, `全屏信息条不能覆盖视频：${JSON.stringify(mainFullscreenLayout)}`);
   // Reset from a real mouse movement, then verify the full 2s idle cycle.
   await showMainPlayerUi(page);
@@ -355,11 +354,11 @@ try {
       appRegion: cardStyle.getPropertyValue('-webkit-app-region'),
     };
   });
-  assert.equal(floatingLayout.cardPosition, 'relative', `普通浮窗顶部信息框必须参与正常布局：${JSON.stringify(floatingLayout)}`);
+  assert.equal(floatingLayout.cardPosition, 'absolute', `普通浮窗信息框不占画面高度：${JSON.stringify(floatingLayout)}`);
   assert.ok(Math.abs(floatingLayout.cardTop) < 1, `顶部信息框必须贴 BrowserWindow content 顶部：${JSON.stringify(floatingLayout)}`);
   assert.ok(Math.abs(floatingLayout.cardWidth - floatingLayout.viewportWidth) < 1, `顶部信息框必须横向占满窗口内容区：${JSON.stringify(floatingLayout)}`);
-  assert.ok(Math.abs(floatingLayout.videoTop - floatingLayout.cardBottom) < 1, `视频必须从顶部信息框下方开始：${JSON.stringify(floatingLayout)}`);
-  assert.equal(floatingLayout.overlap, false, `普通浮窗顶部信息框不能覆盖视频：${JSON.stringify(floatingLayout)}`);
+  assert.ok(Math.abs(floatingLayout.videoTop) < 1, `视频必须从窗口顶部开始：${JSON.stringify(floatingLayout)}`);
+  assert.equal(floatingLayout.overlap, true, `普通浮窗信息框在画面顶部覆盖层：${JSON.stringify(floatingLayout)}`);
   assert.ok(Math.abs(floatingLayout.videoBottom - floatingLayout.viewportHeight) < 1, `视频区域必须填满顶部信息框以下剩余空间：${JSON.stringify(floatingLayout)}`);
   assert.equal(floatingLayout.appRegion, 'drag', `顶部信息框必须承担 frameless 窗口拖动：${JSON.stringify(floatingLayout)}`);
 
@@ -573,7 +572,7 @@ try {
     const videoBox = video.getBoundingClientRect();
     return {
       missing: false,
-      cardPosition: getComputedStyle(card).position,
+      cardDisplay: getComputedStyle(card).display,
       cardTop: cardBox.top,
       cardBottom: cardBox.bottom,
       cardWidth: cardBox.width,
@@ -588,10 +587,8 @@ try {
     };
   });
   assert.equal(floatingFullscreenLayout.missing, false, `全屏浮窗必要 DOM 缺失：${JSON.stringify(floatingFullscreenLayout)}`);
-  assert.equal(floatingFullscreenLayout.cardPosition, 'relative', `全屏浮窗信息条必须参与正常布局：${JSON.stringify(floatingFullscreenLayout)}`);
-  assert.ok(Math.abs(floatingFullscreenLayout.cardTop) < 1, `全屏浮窗信息条必须贴窗口顶部：${JSON.stringify(floatingFullscreenLayout)}`);
-  assert.ok(Math.abs(floatingFullscreenLayout.cardWidth - floatingFullscreenLayout.viewportWidth) < 1, `全屏浮窗信息条必须横向占满窗口：${JSON.stringify(floatingFullscreenLayout)}`);
-  assert.ok(Math.abs(floatingFullscreenLayout.videoTop - floatingFullscreenLayout.cardBottom) < 1, `全屏浮窗视频必须从信息条下方开始：${JSON.stringify(floatingFullscreenLayout)}`);
+  assert.equal(floatingFullscreenLayout.cardDisplay, 'none', `全屏浮窗不显示信息条：${JSON.stringify(floatingFullscreenLayout)}`);
+  assert.ok(Math.abs(floatingFullscreenLayout.videoTop) < 1, `全屏浮窗视频从窗口顶部开始：${JSON.stringify(floatingFullscreenLayout)}`);
   assert.equal(floatingFullscreenLayout.overlap, false, `全屏浮窗信息条不能覆盖视频：${JSON.stringify(floatingFullscreenLayout)}`);
   assert.ok(Math.abs(floatingFullscreenLayout.videoBottom - floatingFullscreenLayout.viewportHeight) < 1, `全屏浮窗视频必须填满信息条以下空间：${JSON.stringify(floatingFullscreenLayout)}`);
   await child.waitForFunction(() => {

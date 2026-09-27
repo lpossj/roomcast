@@ -2282,7 +2282,7 @@ select {
 }
 
 .screen-player.controls-hidden .player-info-overlay {
-    display: none
+    opacity: 0
 }
 
 /* Keep the interactive UI above the video compositor and explicitly restore

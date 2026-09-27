@@ -63,8 +63,7 @@
   flex: 0 0 auto;
 }
 
-/* In the room grid, only the media stage owns the 16:9 ratio. The outer card
-   wraps the metadata bar + media stage instead of stretching to the grid row. */
+/* Only the media stage owns the 16:9 ratio; overlays never reserve picture height. */
 .stream-view .screen-player:not(:fullscreen) .player-stage {
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -72,7 +71,7 @@
   min-height: 0;
 }
 
-/* Fullscreen still uses the whole viewport below the metadata row. */
+/* Fullscreen uses the whole viewport without a metadata row. */
 .stream-view .screen-player:fullscreen {
   width: 100vw;
   height: 100vh;
@@ -168,9 +167,12 @@
 }
 
 .screen-player .player-top {
+  top: 40px;
   right: 104px;
   z-index: 4
 }
+
+.screen-player:fullscreen .player-top { top: 15px; }
 
 .screen-player .player-top button {
   pointer-events: auto
@@ -206,13 +208,12 @@
   font-size: 9px;
 }
 
-/* Main/preview/fullscreen player metadata must sit above the picture instead
-   of overlaying and covering it. It participates in normal layout so the
-   video stage always starts below the bar. */
+/* Metadata floats over the top edge. Visibility must never resize the video. */
 .screen-player .player-info-overlay {
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
   z-index: 4;
-  flex: 0 0 auto;
   width: 100%;
   max-width: none;
   min-height: 0;
@@ -222,24 +223,46 @@
   border-bottom: 1px solid #ffffff18;
   border-radius: 0;
   overflow: hidden;
-  white-space: normal;
+  flex-wrap: nowrap;
+  gap: 6px;
+  white-space: nowrap;
   box-shadow: none;
   transition: opacity .16s ease;
   pointer-events: none;
 }
 
 .screen-player.controls-hidden .player-info-overlay {
+  opacity: 0;
+}
+
+.screen-player:fullscreen .player-info-overlay {
   display: none;
+}
+
+.player-info-overlay strong {
+  min-width: 0;
+  max-width: 35%;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-info-overlay span {
+  flex: 0 0 auto;
+  padding-left: 6px;
 }
 
 .screen-player .exit-view-button {
   position: absolute;
-  top: 12px;
+  top: 40px;
   right: 12px;
   z-index: 5;
   margin: 0;
   transition: opacity .16s ease;
 }
+
+.screen-player:fullscreen .exit-view-button { top: 12px; }
 
 .screen-player.controls-hidden .exit-view-button {
   opacity: 0;

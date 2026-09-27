@@ -59,16 +59,18 @@ export function openFloatingPlayer(source, {
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #06090c; }
     body { position: relative; display: flex; flex-direction: column; user-select: none; }
     .floating-info-card {
-      position: relative;
+      position: absolute;
+      top: 0;
+      left: 0;
       z-index: 6;
-      flex: 0 0 auto;
       width: 100%;
       max-width: none;
       min-height: 0;
       display: flex;
       align-items: center;
-      flex-wrap: wrap;
-      gap: 7px 14px;
+      flex-wrap: nowrap;
+      gap: 6px;
+      white-space: nowrap;
       padding: 7px 10px;
       border: 0;
       border-bottom: 1px solid #ffffff18;
@@ -80,22 +82,10 @@ export function openFloatingPlayer(source, {
       transition: opacity .16s ease;
       -webkit-app-region: drag;
     }
-    .floating-info-card strong { font-size: 11px; font-weight: 700; color: inherit; }
-    .floating-info-card span { color: inherit; opacity: .84; padding-left: 10px; border-left: 1px solid #ffffff18; }
-    html:not(.is-fullscreen).ui-hidden .floating-info-card { display: none; }
-    html.is-fullscreen .floating-info-card {
-      position: relative;
-      top: auto;
-      left: auto;
-      width: 100%;
-      max-width: none;
-      border: 0;
-      border-bottom: 1px solid #ffffff18;
-      border-radius: 0;
-      box-shadow: none;
-      -webkit-app-region: no-drag;
-    }
-    html.is-fullscreen.ui-hidden .floating-info-card { display: none; }
+    .floating-info-card strong { font-size: 11px; font-weight: 700; color: inherit; min-width: 0; max-width: 35%; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+    .floating-info-card span { color: inherit; opacity: .84; flex: 0 0 auto; padding-left: 6px; border-left: 1px solid #ffffff18; }
+    html.ui-hidden .floating-info-card { opacity: 0; pointer-events: none; }
+    html.is-fullscreen .floating-info-card { display: none; }
     video { position: relative; z-index: 0; flex: 1 1 0; width: 100%; height: 0; min-width: 0; min-height: 0; object-fit: contain; background: #06090c; }
     html.is-fullscreen video { position: relative; inset: auto; width: 100%; height: 0; flex: 1 1 0; }
     button, input { font: inherit; outline: none; }
@@ -163,13 +153,13 @@ export function openFloatingPlayer(source, {
   const infoCard = doc.createElement('div');
   infoCard.className = 'floating-info-card';
   const infoTitle = doc.createElement('strong');
-  const infoLines = Array.from({ length: 4 }, () => doc.createElement('span'));
+  const infoLines = Array.from({ length: 2 }, () => doc.createElement('span'));
   infoCard.append(infoTitle, ...infoLines);
 
   const infoState = {
     title: info?.title || title || '共享画面',
     avatarColor: normalizeAvatarColor(info?.avatarColor),
-    lines: Array.isArray(info?.lines) ? info.lines.slice(0, 4) : [],
+    lines: Array.isArray(info?.lines) ? info.lines.slice(0, 2) : [],
   };
 
   const renderInfo = () => {
@@ -178,6 +168,7 @@ export function openFloatingPlayer(source, {
     infoCard.style.color = foreground;
     infoCard.dataset.avatarColor = String(infoState.avatarColor);
     infoTitle.textContent = infoState.title;
+    infoTitle.title = infoState.title;
     for (let index = 0; index < infoLines.length; index += 1) {
       const value = infoState.lines[index] || '';
       infoLines[index].textContent = value;
@@ -189,7 +180,7 @@ export function openFloatingPlayer(source, {
     if (!next || disposed) return;
     if (typeof next.title === 'string' && next.title) infoState.title = next.title;
     if (Number.isInteger(next.avatarColor)) infoState.avatarColor = normalizeAvatarColor(next.avatarColor);
-    if (Array.isArray(next.lines)) infoState.lines = next.lines.slice(0, 4);
+    if (Array.isArray(next.lines)) infoState.lines = next.lines.slice(0, 2);
     renderInfo();
   };
 
