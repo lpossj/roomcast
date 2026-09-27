@@ -36,9 +36,9 @@ async function main() {
     console.log('[update-apply] 跳过：该检查只适用于 Windows。');
     return;
   }
-  const { buildApplyScript } = await import(pathToFileURL(path.join(__dirname, '..', 'electron', 'update-install.mjs')).href);
+  const { buildApplyScript, startApplyScript, waitForApplyScriptStart } = await import(pathToFileURL(path.join(__dirname, '..', 'electron', 'update-install.mjs')).href);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'roomcast-apply-check-'));
-  const install = path.join(root, 'install');
+  const install = path.join(root, '安装 副本');
   const work = path.join(root, 'work');
   const payload = path.join(work, 'payload');
   const logPath = path.join(work, 'apply.log');
@@ -57,7 +57,7 @@ async function main() {
     fs.writeFileSync(path.join(payload, 'new-only-file.dll'), 'new-file');
 
     // A process that outlives the moment the script starts, so the wait loop must be used.
-    holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2500)'], { stdio: 'ignore', windowsHide: true });
+    holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore', windowsHide: true });
     await delay(300);
 
     const script = buildApplyScript({
@@ -72,9 +72,18 @@ async function main() {
     fs.writeFileSync(scriptPath, script, 'utf8');
 
     const startedAt = Date.now();
-    const child = spawn('cmd.exe', ['/d', '/s', '/c', `"${scriptPath}"`], { stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() });
     let spawnError = null;
+    const driverPath = path.join(root, 'launcher.mjs');
+    const installerUrl = pathToFileURL(path.join(__dirname, '..', 'electron', 'update-install.mjs')).href;
+    fs.writeFileSync(driverPath, `import {startApplyScript,waitForApplyScriptStart} from ${JSON.stringify(installerUrl)};
+const result=startApplyScript(${JSON.stringify(scriptPath)});
+if(!result.pid || !await waitForApplyScriptStart(${JSON.stringify(logPath)})) process.exit(1);
+process.exit(0);`);
+    const child = spawn(process.execPath, [driverPath], { stdio: 'ignore', windowsHide: true });
     child.on('error', error => { spawnError = error; });
+    const driverExit = await new Promise(resolve => child.on('exit', resolve));
+    assert.equal(driverExit, 0, '真实启动器未收到启动确认');
+    assert.ok(!fs.existsSync(path.join(install, 'launched.txt')), '替换应在启动器父进程退出之后完成');
 
     const launched = await waitFor(() => fs.existsSync(path.join(install, 'launched.txt')) || spawnError);
     const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
@@ -95,8 +104,7 @@ async function main() {
     assert.ok(payloadGone, '成功路径没有清理解压出来的 payload');
     assert.ok(fs.existsSync(logPath), 'apply.log 必须保留下来用于排障');
     assert.ok(!fs.existsSync(path.join(install, '..', 'update-failed.txt')), '成功路径不应写失败标记');
-    child.kill();
-    console.log(`[update-apply] 通过：等待 ${elapsed}ms → 覆盖成功 → 自动重启 → 清理 payload 并保留日志。`);
+    console.log(`[update-apply] 通过：启动确认 → 启动器父进程退出 → 等待 ${elapsed}ms → 中文/空格路径覆盖成功 → 自动重启 → 清理 payload 并保留日志。`);
   } finally {
     if (holder) { try { holder.kill(); } catch { } }
     await delay(300);

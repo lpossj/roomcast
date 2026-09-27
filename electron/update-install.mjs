@@ -282,6 +282,8 @@ export function buildApplyScript({ target, payloadDir = '', assetPath = '', work
   ];
   const lines = [
     '@echo off',
+    // The script is UTF-8; select its code page before reading installation paths.
+    'chcp 65001 >NUL',
     'setlocal enabledelayedexpansion',
     `set "LOG=${logPath}"`,
     ...(failureMarkerPath ? [`set "FAIL=${failureMarkerPath}"`, 'if defined FAIL del "%FAIL%" 2>NUL'] : []),
@@ -358,18 +360,14 @@ export function buildApplyScript({ target, payloadDir = '', assetPath = '', work
   return lines.join('\r\n');
 }
 
-// Keep the replacement script alive after this process exits and hide its console.
-// On Windows, libuv adds non-detached children to its own kill-on-close job;
-// detached children skip that assignment. This does not request
-// CREATE_BREAKAWAY_FROM_JOB or guarantee escape from every external job.
-// detached and windowsHide may be set together. Windows ignores CREATE_NO_WINDOW
-// with DETACHED_PROCESS, while SW_HIDE remains a separate window setting.
-// Direct detached cmd launch previously produced visible descendant consoles.
-// Retain the measured hidden PowerShell -> hidden cmd launcher, including its
-// detached fallback; this comment correction changes no launch behavior.
+// Start a hidden replacement process through the normal PowerShell host. A detached
+// PowerShell host was measured exiting 0 without executing even `exit 7` on this
+// Windows installation. Start-Process creates an independent cmd; the start-log
+// acknowledgement must precede app exit. Native regression also exits the launcher
+// parent before the replacement completes to verify its survival.
 export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = spawn, onError, comspec = process.env.ComSpec || 'cmd.exe', powershell = 'powershell.exe' } = {}) {
-  const launch = (file, args) => {
-    const child = spawnImpl(file, args, { cwd, stdio: 'ignore', windowsHide: true, detached: true });
+  const launch = (file, args, detached = true) => {
+    const child = spawnImpl(file, args, { cwd, stdio: 'ignore', windowsHide: true, detached });
     // spawn() reports failures asynchronously; without a listener that would be an unhandled
     // 'error' event in the main process.
     child.on?.('error', error => { if (typeof onError === 'function') onError(error); });
@@ -381,8 +379,8 @@ export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = sp
   // adding them (see the /d /s /c note in git history: Node escapes them as \" and cmd.exe
   // then fails before running a single line).
   const target = /\s/.test(scriptPath) ? `"${scriptPath}"` : scriptPath;
-  const command = `Start-Process -FilePath $env:ComSpec -ArgumentList '/d','/c','${target.replace(/'/g, "''")}' -WindowStyle Hidden`;
-  const viaLauncher = launch(powershell, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command]);
+  const command = `Start-Process -FilePath '${comspec.replace(/'/g, "''")}' -ArgumentList '/d','/c','${target.replace(/'/g, "''")}' -WindowStyle Hidden`;
+  const viaLauncher = launch(powershell, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command], false);
   if (viaLauncher) return { pid: viaLauncher, via: 'powershell-hidden' };
   // PowerShell unavailable or blocked: fall back to a detached cmd.exe. Survival (the part
   // that decides whether the update happens at all) is preserved; windows may flash.

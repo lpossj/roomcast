@@ -318,7 +318,7 @@ test('the apply script start guard waits for the first log line', async () => {
   assert.equal(await waitForApplyScriptStart(emptyLog, { timeoutMs: 300, intervalMs: 50 }), false);
 });
 
-test('the apply script is launched detached through a hidden launcher', () => {
+test('the apply script uses a normal hidden PowerShell host and retains a detached cmd fallback', () => {
   // Regression coverage for the existing hidden launcher: cmd quoting, survival
   // after the app exits, and hidden descendants. On Windows, libuv adds
   // non-detached children to its own job; detached skips that assignment.
@@ -337,11 +337,11 @@ test('the apply script is launched detached through a hidden launcher', () => {
   assert.equal(calls[0].file, 'powershell.exe');
   assert.deepEqual(calls[0].args.slice(0, 4), ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden']);
   assert.equal(calls[0].args[4], '-Command');
-  assert.match(calls[0].args[5], /Start-Process -FilePath \$env:ComSpec/);
+  assert.ok(calls[0].args[5].includes("Start-Process -FilePath 'C:\\Windows\\System32\\cmd.exe'"));
   assert.match(calls[0].args[5], /-WindowStyle Hidden$/);
   assert.ok(calls[0].args[5].includes(scriptPath), '必须把脚本路径交给启动器');
   assert.ok(!calls[0].args[5].includes('/s '), '不能使用 /s');
-  assert.equal(calls[0].options.detached, true, '必须 detached，否则程序退出时脚本会被一起杀掉');
+  assert.equal(calls[0].options.detached, false, 'PowerShell detached 在实测 Windows 上未执行命令');
   assert.equal(calls[0].options.windowsHide, true);
   assert.equal(calls[0].options.stdio, 'ignore');
 
