@@ -271,6 +271,85 @@ test('closing before open promptly cleans the pending handshake', async t => {
 
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 
+test('host proof is role/client-nonce bound and rejects replay or protocol changes', async () => {
+  const secret = 's'.repeat(43);
+  const challenge = { protocol: 2, roomId: 'ABCDEF12', mode: 'invite', nonce: randomPeerAuthNonce() };
+  const host = { ...challenge, role: 'host', clientNonce: randomPeerAuthNonce() };
+  const proof = await createPeerAuthProof(secret, host);
+  assert.equal(await verifyPeerAuthProof(secret, host, proof), true);
+  assert.equal(await verifyPeerAuthProof(secret, challenge, proof), false);
+  assert.equal(await verifyPeerAuthProof(secret, { ...host, clientNonce: randomPeerAuthNonce() }, proof), false);
+  assert.equal(await verifyPeerAuthProof(secret, { ...host, nonce: randomPeerAuthNonce() }, proof), false);
+  assert.equal(await verifyPeerAuthProof(secret, { ...host, protocol: 3 }, proof), false);
+});
+
+test('viewer requires valid host proof before accepting room messages', async () => {
+  for (const valid of [true, false]) {
+    const room = new P2PRoom();
+    room.roomId = 'ABCDEF12'; room.inviteSecret = 's'.repeat(43);
+    const peer = new EventEmitter(), remote = new EventEmitter();
+    remote.open = true;
+    remote.close = () => { remote.open = false; remote.emit('close'); };
+    const challenge = { protocol: 2, roomId: room.roomId, mode: 'invite', nonce: randomPeerAuthNonce() };
+    remote.send = message => { void (async () => {
+      const hostProof = valid ? await createPeerAuthProof(room.inviteSecret, { ...challenge, role: 'host', clientNonce: message.authNonce }) : 'x'.repeat(43);
+      remote.emit('data', { authenticated: true, hostProof });
+    })(); };
+    peer.connect = () => remote; peer.destroy = () => {};
+    room.peer = peer;
+    const pending = room.connectRemote();
+    remote.emit('data', { event: 'room:state', data: { id: 'untrusted' } });
+    assert.notEqual(room.room?.id, 'untrusted');
+    remote.emit('data', { authChallenge: challenge });
+    if (valid) assert.equal(await pending, remote);
+    else await assert.rejects(pending);
+    room.disconnect();
+  }
+});
+
+test('duplicate pre-auth peers are rejected and a closed handshake releases its listener', async t => {
+  const f = pendingConnection(t, { respond: false });
+  f.connection.peer = 'repeated';
+  const duplicate = new EventEmitter();
+  duplicate.open = true; duplicate.peer = 'repeated'; duplicate.metadata = { protocol: 2, authMode: 'invite' };
+  duplicate.close = () => { duplicate.open = false; };
+  await f.room.accept(duplicate);
+  assert.equal(duplicate.open, false);
+  f.connection.open = true; f.connection.emit('open'); await flush();
+  f.connection.close(); await f.accepted;
+  assert.equal(f.connection.listenerCount('data'), 0);
+  assert.equal(f.room.unauthenticated.size, 0);
+  assert.ok(f.room.authFailures.get('repeated') > Date.now());
+});
+
+test('kick rotates the room credential, preserves admitted viewers and rejects the old invite', async t => {
+  const room = new P2PRoom();
+  room.isHost = true; room.roomId = 'ABCDEF12'; room.inviteSecret = 's'.repeat(43);
+  t.after(() => room.disconnect());
+  const kicked = await admittedGuest(room, 'kicked');
+  const healthy = await admittedGuest(room, 'healthy');
+  const messages = [];
+  const send = healthy.connection.send;
+  healthy.connection.send = message => { messages.push(message); send(message); };
+  const oldSecret = room.inviteSecret;
+  room.dispatch('room:credential-revoke', { memberId: 'kicked' });
+  assert.notEqual(room.inviteSecret, oldSecret);
+  assert.equal(kicked.connection.open, false);
+  assert.equal(healthy.connection.open, true);
+  assert.equal(healthy.disconnected(), 0);
+  assert.equal(messages.find(m => m.event === 'room:credential').data.inviteSecret, room.inviteSecret);
+  let sockets = 0;
+  room.localSocket = async () => { sockets++; throw Error('must not admit'); };
+  const rejoin = new EventEmitter(); rejoin.open = true; rejoin.metadata = { protocol: 2, authMode: 'invite' };
+  rejoin.close = () => { rejoin.open = false; rejoin.emit('close'); };
+  rejoin.send = message => { if (message.authChallenge) void createPeerAuthProof(oldSecret, message.authChallenge).then(authProof => rejoin.emit('data', { authProof })); };
+  await room.accept(rejoin);
+  assert.equal(rejoin.open, false); assert.equal(sockets, 0);
+  // A remaining viewer receives the new secret before migration/reconnect.
+  const viewer = new P2PRoom(); viewer.dispatch('room:credential', messages.find(m => m.event === 'room:credential').data);
+  assert.equal(viewer.inviteSecret, room.inviteSecret);
+});
+
 async function admittedGuest(room, id, reply = { ok: true }) {
   const socket = new EventEmitter();
   socket.data = {};

@@ -30,6 +30,8 @@ class Channel extends EventEmitter {
 }
 
 for (const scenario of [
+  { name: 'browser creates room, authenticates guests and hands over', count: 3, browserHost: true, browserSuccessor: true },
+  { name: 'kick rotates credentials before browser reconnect and host handover', count: 4, kickBefore: true },
   { name: 'browser successor', count: 3, browserSuccessor: true },
   { name: 'browser successor with delayed probe', count: 3, browserSuccessor: true, browserProbeDelay: 1500 },
   { name: 'three members', count: 3 },
@@ -75,7 +77,7 @@ for (const scenario of [
       return super.handleControl(message, connection);
     }
     async localSocket() {
-      if (scenario.browserSuccessor && this.index === 1) {
+      if ((scenario.browserSuccessor && this.index === 1) || (scenario.browserHost && this.index === 0)) {
         const { createBrowserRoomService } = await import('../src/browser-room-service.js');
         this.browserService ||= createBrowserRoomService();
         return this.browserService.connect();
@@ -124,6 +126,14 @@ for (const scenario of [
   const invite = `roomcast://join/${created.room.id}?secret=${a.inviteSecret}`;
   for (const peer of peers.slice(1)) await peer.enter('join', { roomId: invite, nickname: `guest ${peer.index}` }, {});
   assert.equal(a.guests.size, scenario.count - 1);
+  if (scenario.kickBefore) {
+    const previous = a.inviteSecret;
+    assert.equal((await a.request('member:kick', { memberId: peers.at(-1).id })).ok, true);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.notEqual(a.inviteSecret, previous);
+    assert.equal(peers.at(-1).closed, true);
+    for (const guest of peers.slice(1, -1)) assert.equal(guest.inviteSecret, a.inviteSecret);
+  }
   if (scenario.count === 10) {
     const stored = services[0].rooms.rooms.get(created.room.id);
     stored.messages = Array.from({ length: 1000 }, (_, i) => ({ id: `long-${i}`, seq: i + 1, memberId: a.id, name: 'A', text: '测'.repeat(2000), at: Date.now() }));

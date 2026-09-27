@@ -12,6 +12,7 @@ const forwarded = [
   'room:state',
   'room:kicked',
   'room:owner-token',
+  'room:credential-revoke',
   'chat:message',
   'chat:recalled',
   'image:start',
@@ -256,6 +257,7 @@ export class P2PRoom {
 
     this.relayInvite = '';
     this.inviteSecret = '';
+    this.authFailures = new Map();
 
     this.migrating = false;
     this.peerReconnectTimer = null;
@@ -306,6 +308,15 @@ export class P2PRoom {
   }
 
   dispatch(event, value) {
+    if (event === 'room:credential-revoke') {
+      if (this.isHost) this.rotateInviteCredential(value?.memberId);
+      return;
+    }
+    if (event === 'room:credential') {
+      if (!INVITE_SECRET.test(value?.inviteSecret || '')) return;
+      this.inviteSecret = value.inviteSecret;
+      if (this.pendingMigrationCommit) this.pendingMigrationCommit.inviteSecret = value.inviteSecret;
+    }
     if (event === 'room:state') {
       this.room = value;
     }
@@ -333,6 +344,23 @@ export class P2PRoom {
     ) {
       fn(value);
     }
+  }
+
+  rotateInviteCredential(kickedId) {
+    if (!kickedId || this.closed) return;
+    const kicked = this.guestMembers.get(kickedId);
+    this.guestMembers.delete(kickedId);
+    this.inviteSecret = randomSecret();
+    const admitted = new Set(this.guestMembers.values());
+    for (const connection of [...this.unauthenticated, ...this.guests]) {
+      if (connection === kicked || !admitted.has(connection)) {
+        if (connection === kicked && connection.open) connection.send({ event: 'room:kicked', data: { error: '你已被移出房间。' } });
+        connection.close();
+      } else if (connection.open) {
+        connection.send({ event: 'room:credential', data: { inviteSecret: this.inviteSecret } });
+      }
+    }
+    this.dispatch('room:credential', { inviteSecret: this.inviteSecret });
   }
 
   timeout(ms) {
@@ -874,6 +902,11 @@ export class P2PRoom {
     const peer =
       this.peer;
 
+    let authChallenge = null;
+    let authVerified = false;
+    let authResponseSeen = false;
+    const clientNonce = randomPeerAuthNonce();
+
     const failed =
       error => rejectReady(
         new Error(
@@ -915,12 +948,14 @@ export class P2PRoom {
           && data.authChallenge.mode
           === authMode
         ) {
+          if (authChallenge || data.authChallenge.roomId !== this.roomId) { remote.close(); failed(new Error('P2P 鉴权挑战无效。')); return; }
+          authChallenge = { protocol: PEER_AUTH_PROTOCOL, roomId: this.roomId, mode: authMode, nonce: data.authChallenge.nonce };
           const secret =
             this.inviteSecret;
 
           void createPeerAuthProof(
             secret,
-            data.authChallenge,
+            authChallenge,
           )
             .then(
               proof => {
@@ -928,6 +963,7 @@ export class P2PRoom {
                   remote.send({
                     authProof:
                       proof,
+                    authNonce: clientNonce,
                   });
                 }
               },
@@ -939,8 +975,21 @@ export class P2PRoom {
           data.authenticated
           === true
         ) {
-          ready();
+          if (authResponseSeen || authVerified) return;
+          if (!authChallenge) { remote.close(); failed(new Error('P2P 鉴权状态无效。')); return; }
+          authResponseSeen = true;
+          void verifyPeerAuthProof(this.inviteSecret, { ...authChallenge, role: 'host', clientNonce }, data.hostProof)
+            .then(valid => {
+              if (!valid) { remote.close(); failed(new Error('P2P 房主鉴权失败。')); return; }
+              if (!remote.open || this.closed) return;
+              authVerified = true;
+              ready();
+            }).catch(failed);
+          return;
         }
+
+        if (!authVerified) return;
+        if (data.event === 'room:credential') { this.dispatch(data.event, data.data); return; }
 
         if (data.control) {
           void this.handleControl(
@@ -1814,6 +1863,8 @@ export class P2PRoom {
       >= MAX_UNAUTHENTICATED_PEERS
       || !authMode
       || !authSecret
+      || [...this.unauthenticated].some(peer => peer.peer && peer.peer === connection.peer)
+      || (this.authFailures.get(connection.peer) || 0) > Date.now()
     ) {
       connection.close();
       return;
@@ -1834,6 +1885,8 @@ export class P2PRoom {
 
     let timeout;
     let presenceTimer;
+    let authReceive;
+    let rejectAuth;
 
     const cleanup = () => {
       if (closed) return;
@@ -1843,6 +1896,8 @@ export class P2PRoom {
 
       clearTimeout(timeout);
       clearTimeout(presenceTimer);
+      if (authReceive) connection.off('data', authReceive);
+      rejectAuth?.(new Error('P2P 连接已关闭。'));
 
       try { socket?.disconnect(); } catch { }
 
@@ -1937,6 +1992,7 @@ export class P2PRoom {
         await withTimeout(
           new Promise(
             (resolve, reject) => {
+              rejectAuth = reject;
               const receive =
                 message => {
                   authMessages += 1;
@@ -1973,11 +2029,10 @@ export class P2PRoom {
                     return;
                   }
 
-                  resolve(
-                    message.authProof,
-                  );
+                  resolve(message);
                 };
 
+              authReceive = receive;
               connection.once(
                 'data',
                 receive,
@@ -2014,13 +2069,19 @@ export class P2PRoom {
         !await verifyPeerAuthProof(
           authSecret,
           challenge,
-          proof,
+          proof.authProof,
         )
       ) {
         throw new Error(
           'P2P 鉴权失败。',
         );
       }
+
+      if (this.inviteSecret !== authSecret) throw new Error('P2P 邀请已失效。');
+      const hostProof = proof.authNonce
+        ? await createPeerAuthProof(authSecret, { ...challenge, role: 'host', clientNonce: proof.authNonce })
+        : undefined;
+      if (closed || this.inviteSecret !== authSecret) throw new Error('P2P 邀请已失效。');
 
       if (
         this.guests.size >= 9
@@ -2091,6 +2152,7 @@ export class P2PRoom {
       connection.on(
         'data',
         async message => {
+          if (socket.data.kicked || (!socket.data.admitted && this.inviteSecret !== authSecret)) { connection.close(); return; }
           if (message?.controlReply !== undefined) {
             this.finishControlReply(connection, message);
             return;
@@ -2230,6 +2292,7 @@ export class P2PRoom {
             )
             && result.ok
           ) {
+            if (closed || this.inviteSecret !== authSecret) { socket.disconnect(); connection.close(); return; }
             socket.data.admitted =
               true;
 
@@ -2263,9 +2326,15 @@ export class P2PRoom {
       ) {
         connection.send({
           authenticated: true,
+          hostProof,
         });
       }
     } catch {
+      if (!authenticated && connection.peer) {
+        this.authFailures.delete(connection.peer);
+        this.authFailures.set(connection.peer, Date.now() + 3000);
+        if (this.authFailures.size > 128) this.authFailures.delete(this.authFailures.keys().next().value);
+      }
       cleanup();
       connection.close();
     }
@@ -3708,6 +3777,7 @@ export class P2PRoom {
     this.guestMembers.clear();
     this.guests.clear();
     this.unauthenticated.clear();
+    this.authFailures.clear();
 
     this.room = null;
     this.relayInvite = '';

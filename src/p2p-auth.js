@@ -22,9 +22,12 @@ export function randomPeerAuthNonce() {
   return base64Url(crypto.getRandomValues(new Uint8Array(32)));
 }
 
-function authMessage({ roomId, nonce, mode }) {
+function authMessage({ roomId, nonce, mode, protocol = PEER_AUTH_PROTOCOL, role = 'viewer', clientNonce }) {
+  if (protocol !== PEER_AUTH_PROTOCOL) throw new Error('P2P 鉴权协议无效。');
   if (!ROOM_ID.test(roomId || '') || !NONCE.test(nonce || '') || mode !== 'invite') throw new Error('P2P 鉴权参数无效。');
-  return new TextEncoder().encode(`roomcast-peer-auth-v${PEER_AUTH_PROTOCOL}\n${roomId}\n${mode}\n${nonce}`);
+  if (!['viewer', 'host'].includes(role) || (role === 'host' && !NONCE.test(clientNonce || ''))) throw new Error('P2P 鉴权角色无效。');
+  // Preserve the v2 viewer proof; host proof is role-separated and viewer-nonce-bound.
+  return new TextEncoder().encode(`roomcast-peer-auth-v${PEER_AUTH_PROTOCOL}\n${roomId}\n${mode}\n${nonce}${role === 'host' ? `\nhost\n${clientNonce}` : ''}`);
 }
 
 async function hmacKey(secret, usage) {

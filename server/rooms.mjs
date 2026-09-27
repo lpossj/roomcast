@@ -861,6 +861,7 @@ export function attachRooms(io, {
     if (
       !room
       || !member
+      || socket.data.kicked
     ) {
       throw new Error(
         '请先加入房间。',
@@ -2856,6 +2857,9 @@ export function attachRooms(io, {
         target.socket
           .data.kicked =
           true;
+
+        // Notify only the coordinator; secrets remain outside the room service.
+        [...room.members.values()].find(item => item.role === 'owner')?.socket?.emit('room:credential-revoke', { memberId: target.id });
 
         target.socket.emit(
           'room:kicked',

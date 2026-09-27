@@ -535,6 +535,11 @@ export default function useRoom(onError) {
           );
         });
 
+        socket.on('room:credential', value => {
+          if (socketRef.current !== socket) return;
+          setConfig(current => ({ ...current, inviteSecret: value.inviteSecret }));
+        });
+
         socket.on('room:resumed', value => {
           if (socketRef.current !== socket) return;
 
