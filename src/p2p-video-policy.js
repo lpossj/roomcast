@@ -2,7 +2,7 @@ const numeric = value => typeof value === 'number' && Number.isFinite(value) ? v
 const counters = ['bytesSent', 'bytesReceived', 'packetsSent', 'packetsReceived', 'packetsLost',
   'nackCount', 'pliCount', 'firCount', 'retransmittedPacketsSent', 'retransmittedBytesSent',
   'retransmittedPacketsReceived', 'retransmittedBytesReceived', 'packetsDiscarded',
-  'framesDropped', 'framesEncoded', 'framesDecoded', 'totalPacketSendDelay'];
+  'framesDropped', 'framesEncoded', 'framesDecoded', 'totalPacketSendDelay', 'qpSum', 'totalEncodeTime'];
 const histories = new Map();
 const states = new WeakMap();
 let nextId = 1;
@@ -51,6 +51,9 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null) {
       type: stat.type, kind: stat.kind || stat.mediaType,
       ...values, delta, lossRate, fresh,
       bitrate: bytes !== null && fresh ? bytes * 8000 / elapsed : null,
+      averageQp: delta.framesEncoded > 0 && delta.qpSum !== null ? delta.qpSum / delta.framesEncoded : null,
+      encodeTimeMs: delta.framesEncoded > 0 && delta.totalEncodeTime !== null ? delta.totalEncodeTime * 1000 / delta.framesEncoded : null,
+      codec: report.get(stat.codecId)?.mimeType ?? null,
       ...Object.fromEntries(['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'jitter']
         .map(key => [key, numeric(stat[key])])),
       qualityLimitationReason: stat.qualityLimitationReason ?? null,
@@ -151,10 +154,15 @@ export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, sche
         fullRateBitrate = Math.max(fullRateBitrate, baseEquivalent);
       }
       const budget = budgetFor(tierIndex, fullRateBitrate);
-      const congested = active && (video.qualityLimitationReason === 'bandwidth'
-        || (budget > 0 && video.availableOutgoingBitrate !== null && video.availableOutgoingBitrate < budget * 0.8)
-        || (video.lossRate !== null && video.lossRate >= 0.05)
-        || (video.packetSendDelayMs !== null && video.packetSendDelayMs >= 100));
+      const bandwidthLimited = video?.qualityLimitationReason === 'bandwidth';
+      const budgetLimited = budget > 0 && video?.availableOutgoingBitrate !== null
+        && video?.availableOutgoingBitrate < budget * 0.8;
+      // A high user ceiling or a motion-complexity spike is not itself network
+      // congestion. Let Chromium handle transient encoder/BWE adjustments.
+      const networkPressure = (video?.lossRate !== null && video?.lossRate >= 0.05)
+        || (video?.packetSendDelayMs !== null && video?.packetSendDelayMs >= 100)
+        || (bandwidthLimited && budgetLimited && video?.rtt !== null && video?.rtt >= 0.3);
+      const congested = active && networkPressure;
       const nextIndex = Math.max(0, tierIndex - 1);
       const nextBudget = budgetFor(nextIndex, fullRateBitrate);
       const bitrateHealthy = nextBudget <= 0
@@ -183,6 +191,13 @@ export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, sche
           tierIndex,
           tierCount: tiers.length,
           scaleResolutionDownBy: p2pResolutionScale(sender.track, applied),
+          maxBitrate: encoding?.maxBitrate ?? null,
+          maxFramerate: encoding?.maxFramerate ?? null,
+          badSamples: bad,
+          healthySamples: good,
+          bandwidthLimited,
+          budgetLimited,
+          networkPressure,
           resolutionMatches: video?.frameWidth > 0 && video?.frameHeight > 0
             ? video.frameWidth === applied.width && video.frameHeight === applied.height : null,
           status,
