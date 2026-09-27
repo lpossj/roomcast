@@ -1,4 +1,4 @@
-# Roomcast 0.14.3 Beta
+# Roomcast 0.14.4-beta.2
 
 Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间最多 10 人，可多人同时共享。
 
@@ -6,9 +6,9 @@ Roomcast 只面向合法、知情同意的屏幕共享与聊天。使用前请�
 
 > 当前版本是公开测试版（Beta）。Windows 桌面端和支持安全连接的网页端均可创建房间，生成 HTTPS 电脑／手机网页邀请，无需网站注册或登录。网页在浏览器提供 API、页面策略允许且权限未被明确拒绝时显示摄像头或屏幕共享；不支持屏幕采集的手机不会显示屏幕入口。网页房主需保持前台，后台挂起或关闭网页可能中断协调服务，长时间使用建议桌面端主持。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
 
-[下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.3-beta.7.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
+[下载](https://github.com/lpossj/roomcast/releases/tag/v0.14.4-beta.2) · [发布说明](docs/RELEASE_NOTES-0.14.4-beta.2.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
 
-Roomcast 0.14.3 Beta 的媒体架构是：
+Roomcast 当前媒体架构是：
 
 ```text
 原生 Roomcast P2P (t=0)

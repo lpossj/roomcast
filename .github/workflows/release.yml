@@ -102,7 +102,7 @@ jobs:
         run: npm run package:runtime
 
       - name: Generate SHA256 values
-        run: node scripts/generate-checksums.mjs --strict
+        run: node scripts/generate-checksums.mjs --strict --published-only
 
       - name: Install Playwright Chromium
         run: npx playwright install chromium
@@ -148,8 +148,6 @@ jobs:
           $assets = @(
             "release/Roomcast-$env:VERSION-Windows.exe",
             "release/Roomcast-$env:VERSION-Windows.zip",
-            "release/Roomcast-$env:VERSION-source.zip",
-            "release/Roomcast-$env:VERSION-loopback-capture.zip",
             "release/SHA256.txt",
             "runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz"
           )

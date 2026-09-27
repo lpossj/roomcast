@@ -4,6 +4,7 @@ import path from 'node:path';
 
 const rootDir = process.cwd();
 const strict = process.argv.includes('--strict');
+const publishedOnly = process.argv.includes('--published-only');
 const packageInfo = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const version = packageInfo.version;
 const releaseDir = path.join(rootDir, 'release');
@@ -11,11 +12,15 @@ const releaseDir = path.join(rootDir, 'release');
 const candidates = [
   path.join(releaseDir, `Roomcast-${version}-Windows.exe`),
   path.join(releaseDir, `Roomcast-${version}-Windows.zip`),
-  path.join(releaseDir, `Roomcast-${version}-source.zip`),
-  path.join(releaseDir, `Roomcast-${version}-loopback-capture.zip`),
+  ...(!publishedOnly ? [
+    path.join(releaseDir, `Roomcast-${version}-source.zip`),
+    path.join(releaseDir, `Roomcast-${version}-loopback-capture.zip`),
+  ] : []),
   path.join(rootDir, 'runtime', 'obs-source', 'OBS-Studio-32.1.2-Sources.tar.gz'),
-  path.join(rootDir, 'runtime', 'loopback-capture', 'loopback_capture_addon.node'),
-  path.join(rootDir, 'runtime', 'loopback-capture', 'LICENSE'),
+  ...(!publishedOnly ? [
+    path.join(rootDir, 'runtime', 'loopback-capture', 'loopback_capture_addon.node'),
+    path.join(rootDir, 'runtime', 'loopback-capture', 'LICENSE'),
+  ] : []),
 ];
 
 const records = [];

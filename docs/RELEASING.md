@@ -1,137 +1,47 @@
 # Roomcast 发布流程
 
-当前发布线：0.14.x 公开测试版（Beta）。本文面向维护者，说明如何从源码构建、验证和发布。
+当前版本0.14.4-beta.2，公开测试版。package.json决定版本，Git tag为v<version>，公开版本的客户端文件和标签保持固定。不要用旧验收报告冒充本次结果。
 
-## 版本定位
+## 构建与检查
 
-- 0.x 版本是公开测试版，允许在 minor 版本中调整行为，但不承诺完整跨版本兼容。
-- 每次发布一个 tag：vMAJOR.MINOR.PATCH，例如 v0.14.2-beta.1。
-- GitHub Releases 是主发布渠道；Gitee 可以作为镜像，但必须使用同一份构建产物和 SHA256。
-- Beta 发布使用 GitHub 的 prerelease 标记，不宣称正式版或稳定版。
-
-## 发布前检查
-
-在干净源码目录运行：
+在Windows x64运行：
 
 ```powershell
 npm ci
-npm run fetch:runtime
 npm run setup
+npm run prepare:release
 npm run check
-```
-
-npm run check 会依次执行许可证检查、单元测试、Vite 构建和网络架构自检。
-
-注意 `check` 的顺序是"先测试、后构建"，所以单元测试**不得依赖 `dist/` 等构建产物**（`dist/` 被 gitignore，干净检出上不存在）。测试需要构建产物时请自建临时 fixture，否则 CI 与 Release workflow 会在测试步骤失败。
-
-如果 npm run fetch:runtime 需要的 loopback 组件 ZIP 还没有发布，可以：
-
-```powershell
-$env:ROOMCAST_LOOPBACK_ARCHIVE = "C:\path\to\roomcast-loopback-capture.zip"
-npm run fetch:runtime
-```
-
-或设置 ROOMCAST_LOOPBACK_ARCHIVE_URL 指向稳定下载地址。
-
-## 首次引导：发布 loopback 组件资产
-
-仓库不包含第三方预编译的 loopback_capture_addon.node。首次发布前需要：
-
-1. 在已有运行环境中执行 npm run package:runtime，生成 release/Roomcast-0.14.2-beta.1-loopback-capture.zip。
-2. 新建一个已发布的 runtime 资产 Release（例如 tag 为 runtime-2026.09，标题为 Roomcast Runtime Assets），把这个 ZIP 上传为公开资产。不要只放在 draft release，否则 CI 无法匿名下载。
-3. 在 GitHub 仓库 Variables 中设置 ROOMCAST_LOOPBACK_ARCHIVE_URL 为该 runtime 资产的稳定下载地址。
-4. 后续 CI 发布和源码构建都通过该地址下载并校验 SHA256。
-
-如果暂时使用网盘，也可以把直链配置到该变量，但稳定性由维护者负责。
-
-## 本地构建与打包
-
-```powershell
-npm run prepare:release   # fetch:runtime + fetch:web-invite + prepare:obs:release
 npm run release:build
-npm run package:source
-npm run package:runtime
-node scripts/generate-checksums.mjs --strict
+node scripts/generate-checksums.mjs --strict --published-only
+npm run check:obs-package
+node scripts/check-portable-lifetime.cjs release/Roomcast-0.14.4-beta.2-Windows.exe
+node scripts/check-capture-backend-switch.cjs
 npm run verify:release
 ```
 
-`npm run fetch:web-invite` 会下载并校验内置 cloudflared（固定版本 + 官方 SHA256）；`electron-builder` 的 `beforePack` 也会自动执行一次，本地无需手动重复。
+check先测试后构建，干净检出没有dist；测试自行建立夹具。实际注册/手机/公网需要补充[当前状态](STATUS.md)列出的真机范围，不能由自动检查推定。
 
-产物：
+loopback组件取自独立runtime-2026.09 Release中的稳定资产，固定SHA验证；可用ROOMCAST_LOOPBACK_ARCHIVE或ROOMCAST_LOOPBACK_ARCHIVE_URL覆盖取得路径。详见[运行时组件](LOOPBACK-CAPTURE-COMPLIANCE.md)。OBS运行时及对应源码由prepare:obs:release验证；发布许可门禁必须保留。
 
-- release/Roomcast-<version>-Windows.exe
-- release/Roomcast-<version>-Windows.zip
-- release/Roomcast-<version>-source.zip
-- release/Roomcast-<version>-loopback-capture.zip
-- release/SHA256.txt
-- runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz
+## 发布附件
 
-发布前应在干净 Windows 10/11 x64 机器上完成当前版本对应的 `docs/RELEASE_CHECKLIST-<version>.md` 验收项。若该版本还没有检查表，先按 `docs/RELEASE_CHECKLIST-0.14.3-beta.1.md` 复制一份再执行，不要沿用上一版结论。
+- Roomcast-<version>-Windows.exe：便携运行。
+- Roomcast-<version>-Windows.zip：目录版。
+- SHA256.txt：仅列两份Windows文件和OBS源码的摘要。
+- OBS-Studio-32.1.2-Sources.tar.gz：对应第三方源码交付。
 
-## 线上观看网页与 Release 附件
+Roomcast源码用GitHub自动生成的Source code ZIP/tar.gz；无需另上传重复源码ZIP、WebViewer ZIP、BUILDINFO或每版重复loopback ZIP。本地可运行package:source、package:runtime保存开发归档；默认checksums仍可核对完整本地运行时，公开附件清单使用--published-only。
 
-桌面端生成的"电脑／手机网页观看链接"指向固定站点 `https://lpossj.github.io/roomcast/`（`electron/web-invite.cjs` 的默认入口）。
-**更新线上观看网页不等于发布 WebViewer ZIP。** 自 beta.7 起，观看端有必要的修复时把当前 `dist/index.html`、`dist/assets/` 和音频 worklet 部署到 `gh-pages`，保留 `.nojekyll`，同步 `version.json`。不上传 Electron 更新窗口文件或桌面 API，也不构建/发布独立 WebViewer ZIP 附件。
+## 网页部署
 
-- 只有 Roomcast 客户端提供创建房间入口；手机网页供观看，电脑网页在加入后可按浏览器能力共享，不能创建房间。
-- `version.json` 只声明已公开版本及当前 `peerAuthProtocol`，用于版本/更新降级信息；先完成对应 Release，再更新这个声明，避免宣告尚未公开的安装包。
-- 部署后检查 Pages 构建、线上入口实际 JS、版本声明及网页加入确认；检查只读取网页文件，不重复下载 Windows 发布包。
-- 此前站点冻结在 beta.3 的记录仍作为历史保留，不能作为 beta.7 部署后的现状说明。
+默认https://roomcast-2dy.pages.dev/，桌面/网页可创建房间，浏览器按能力提供采集。运行npm run package:web生成白名单静态目录，部署index/assets/404/version/_headers，禁止上传桌面API、updater、server/electron。无需Quick Tunnel或网站账号。检查线上版本、资源、邀请、权限门控及实际入口；不重复下载Windows包。
 
-## 构建机卫生
+## GitHub Actions与手工上传
 
-electron-builder 的 portable / NSIS 目标会在 `%TEMP%` 下使用一个 `ns<random>.tmp` 工作目录，里面是完整的应用归档（`app-64.7z`，约 0.5–1.2 GB）。构建成功时它会自行清理，但构建被中断时会留下残骸，反复打包会静默占满磁盘。
+CI负责Windows项目检查；Release workflow只在v*标签或明确手工dispatch时构建、执行门禁并上传上述四项。配置ROOMCAST_LOOPBACK_ARCHIVE_URL稳定运行时地址。用户选择直接上传时，复用同代码已验收成品；先草稿核对文件/摘要/标签，再公开prerelease。
 
-```powershell
-npm run clean:build-scratch         # 只列出可回收的目录
-npm run clean:build-scratch:apply   # 实际删除
-```
+更新已有公开Release的附件说明或删重复文件，需要明确授权并先保存原清单；不覆盖EXE/ZIP，不移动已公开tag。若保持同版本重包，已安装同号版本不会自动发现，必须明确提示手动下载。
 
-清理器有四重护栏：目录必须位于临时目录根下、名字匹配 `ns*.tmp`、内部存在 `app-64.7z` 或 `7z-out/`、最近 60 分钟内没有写入（默认值，可用 `--min-age-minutes` 调整），并且**把目录改名成功**才算判定为废弃。
+## 构建机与记录
 
-最后一条是必须的：Roomcast 便携版的运行时解压目录**和打包暂存目录形状相同**（同样是 `ns*.tmp`，同样含 `app-64.7z` 和 `app\resources\app.asar`），只靠名称与内容无法区分。Windows 不允许重命名装有正在运行的 exe/DLL、或正被某进程作为工作目录的目录，所以改名探测能可靠识别"打包中"与"便携版正在运行"两种情况；探测失败就原样保留。因此该清理器不会误删正在运行的应用数据目录。
-
-`beforePack` 会在每次打包前自动执行一次。
-
-## GitHub Actions
-
-- .github/workflows/ci.yml：main 分支和 PR 的 Windows 检查。
-- .github/workflows/release.yml：推送 v* tag 或在 Actions 中手动触发，构建 Beta Release。
-- Release workflow 需要仓库变量 ROOMCAST_LOOPBACK_ARCHIVE_URL，指向 loopback 组件 ZIP 的稳定地址。
-- Release workflow 会自动执行 npm ci、npm run check、npm run fetch:runtime、npm run prepare:obs:release、许可证发布检查、构建打包、源码包、loopback 资产包、SHA256、verify:release，最后创建 GitHub prerelease 并上传资产。
-
-## 发布文案
-
-Beta 发布说明应包含：
-
-- 明确的 Beta 定位；
-- 核心变更；
-- 已知限制；
-- 未签名状态和 SHA256；
-- 第三方组件和公网服务说明；
-- 升级与回滚方式；
-- 问题与安全报告渠道。
-
-可使用 docs/RELEASE_NOTES-TEMPLATE.md 起草新版本说明，并保存为 docs/RELEASE_NOTES-<version>.md。
-
-## 回滚
-
-发布后如果发现严重问题：
-
-- 不覆盖或删除已发布的二进制资产。
-- 在 Release 中注明问题影响范围。
-- 发布新的 patch 或 beta 版本修复。
-- 必要时把 GitHub Release 标记为 prerelease 或撤回 latest 指针，但保留原资产和校验值。
-
-## 提交与打 tag
-
-发布源码包和 tag 前必须先提交所有发布改动，并确保工作区干净。推荐流程：
-
-```powershell
-git add -A
-git commit -m "Release Roomcast <version> Beta"
-git tag v<version>
-git push origin main v<version>
-```
-
-`npm run package:source` 会检查工作区是否干净，避免把未提交内容错误地排除在源码包之外。
+npm run clean:build-scratch先盘点，:apply才清理；清理器校验目录形状、年龄、占用、既存claim，保护运行中的便携目录。每步含失败持续写[时间戳记录](时间戳记录/README.md)。公开说明写变更、验证边界、未签名、升级方式和安全报告渠道；旧材料集中[历史归档](时间戳记录/历史资料-20260927.zip)。
