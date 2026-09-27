@@ -13,7 +13,7 @@ async function main() {
   if (process.argv.includes('--baseline')) {
     source = source.replace(/    \/\/ IDs belong[\s\S]*?setSettings\(current => \(\{ \.\.\.current, sourceId: '' \}\)\);\r?\n/, '');
   }
-  const imports = source.split(/\r?\n/).filter(line => /^import .*from '(lucide-react|react|\.\/lib.js|\.\/preferences.js)'/.test(line)).join('\n');
+  const imports = source.split(/\r?\n/).filter(line => /^import .*from '(lucide-react|react|\.\/lib.js|\.\/preferences.js|\.\/browser-capabilities.js)'/.test(line)).join('\n');
   const component = [
     imports,
     "import { createRoot } from 'react-dom/client';",
@@ -32,7 +32,7 @@ async function main() {
         : { monitors: [{ id: 'obs-monitor', name: 'OBS monitor' }], windows: [] },
       captureSources: async () => [{ id: 'screen:0:0', type: 'monitor', name: 'Native monitor' }],
     };
-    createRoot(document.getElementById('root')).render(<ShareModal onClose={() => {}} onStart={async options => window.starts.push(options)} busy={false} />);`,
+    createRoot(document.getElementById('root')).render(<ShareModal onClose={() => {}} onStart={async options => window.starts.push(options)} busy={false} capabilities={browserCapabilities(window)} />);`,
   ].join('\n');
   const bundle = await build({ stdin: { contents: component, loader: 'jsx', resolveDir: path.join(root, 'src') }, jsx: 'automatic', bundle: true, write: false, platform: 'browser', define: { 'process.env.NODE_ENV': '"test"' } });
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'roomcast-picker-check-'));
