@@ -1,6 +1,6 @@
-# Roomcast 0.14.4-beta.2 本地候选包
+# Roomcast 0.14.4-beta.2
 
-本轮范围：保持 Roomcast 采集、房间和媒体架构，先做安全加固并验证，再诊断视频并修正已证实的策略误判路径；按追加要求启用网页建房、按实际能力提供摄像头/屏幕共享并清理无用入口。仅本地修改和打包，没有 push、tag、Release 或线上网页部署。逐步实际时间见 [当前时间戳](时间戳记录/安全加固与动态画质-20260927.md)。
+本轮范围：保持 Roomcast 采集、房间和媒体架构，先做安全加固并验证，再诊断视频并修正已证实的策略误判路径；按追加要求启用网页建房、按实际能力提供摄像头/屏幕共享并清理无用入口。本地交付时未推送或创建Release；后续线上静态网页已更新，用户于2026-09-27明确授权push和Release，本次发布状态见[发布记录](时间戳记录/发布-0.14.4-beta.2-20260927.md)。逐步实际时间见 [当前时间戳](时间戳记录/安全加固与动态画质-20260927.md)。
 
 ## 历史待办与既有实现
 
@@ -21,7 +21,7 @@
 | Pre-auth DoS | 仍保留 6 个槽、25 秒 ICE、8 秒打开后认证，避免慢网络误杀；新增重复未认证 peer 拒绝、失败 3 秒冷却（128 项有界）、关闭时立刻释放槽/监听/等待 | 可缓解重复 peer 和失败重试；更换 peer ID 的分布式槽占用仍不能完全防住，不声称 endpoint 已不可预测 |
 | Electron / IPC / shell | 原 flags/窗口所有权/mainFrame/trusted origin 及固定 action allowlist 保留；OBS 的管理员脚本不再从可替换临时文件执行，regsvr32 使用系统路径和参数 | 不新增任意 shell/可执行文件/文件读写 IPC。未输出邀请、凭据、token、proof；未新增秘密日志 |
 | Update | checksum 和用户确认安装保留；构建仍 unsigned | SHA-256 能发现损坏/与校验文件不符，不能防发布渠道同时替换程序和校验文件。DLL 哈希修复解决低权限程序篡改 OBS runtime 后诱导管理员加载的问题，不等价完整发布者身份认证 |
-| Web / TURN | fragment 读取后 replaceState 清除、仅 sessionStorage；CSP 无 unsafe-eval，静态 route 与本地服务分离。Worker 长期 key 仍在 Electron 主进程 safeStorage，临时凭据 TTL 不变 | 线上 Viewer 目前仍 beta.1。本轮新静态产物可另行部署；旧 Viewer 留在新 Host 仍可观看，但不会消费密钥通知，重连需新邀请；旧 Viewer 接管为 Host 后不能提供新客户端要求的 Host proof。应同步更新网页和桌面再做跨版本移交。不改 TURN 取用/刷新，不增加中继不可用提示。平台级限流尚需部署配置 |
+| Web / TURN | fragment 读取后 replaceState 清除、仅 sessionStorage；CSP 无 unsafe-eval，静态 route 与本地服务分离。Worker 长期 key 仍在 Electron 主进程 safeStorage，临时凭据 TTL 不变 | 线上Viewer已于2026-09-27更新到beta.2并实测；旧 Viewer 留在新 Host 仍可观看，但不会消费密钥通知，重连需新邀请；旧 Viewer 接管为 Host 后不能提供新客户端要求的 Host proof。应同步更新网页和桌面再做跨版本移交。不改 TURN 取用/刷新，不增加中继不可用提示。平台级限流尚需部署配置 |
 
 官方 OBS 32.1.2 x64 ZIP API 摘要为 `8d97e4563bd8d22d03e63042aa7dccede1d555c9bd35ce8a9e5019b0d0201bf6`。仅从官方 HTTPS 资产读取 ZIP 目录及两个 DLL，共 561271 字节；与本机模块和编译常量相同：
 
@@ -117,4 +117,4 @@ OBS 主采集、IPv6/IPv4/既有 TURN 车道、房间主要协议、聊天逻辑
 
 仍存在DTLS通道未绑定的主动代理风险、未独立签名的更新渠道信任、持TURN key滥用等边界。真实UAC新注册、手机真机/公网网络和第三方原生二进制内部内存安全未在本轮验证。未知Electron进程号码报错没有原文，当前启动未复现，不能宣称根因已修复。
 
-已完成静态网页部署；没有push、tag、GitHub Release或Worker部署。源码ZIP及SHA256清单以release当前实际文件为准；本轮逐步骤实际时间和失败原因见[时间戳记录](时间戳记录/网页接口与目录清理-20260927.md)。
+已完成静态网页部署；本地验收阶段未push/tag/GitHub Release。本次授权发布状态见发布记录；Worker未部署变更。源码ZIP及SHA256清单以release当前实际文件为准；本轮逐步骤实际时间和失败原因见[时间戳记录](时间戳记录/网页接口与目录清理-20260927.md)。
