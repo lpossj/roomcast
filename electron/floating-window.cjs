@@ -1,12 +1,11 @@
 const { ipcMain } = require('electron');
 const { randomUUID } = require('node:crypto');
+const { ownsWindowEvent } = require('./window-owner.cjs');
 
 function installFloatingWindows(mainWindow, trusted) {
   const pending = new Map();
   const players = new Map();
-  const authorized = event => event.sender === mainWindow.webContents
-    && event.senderFrame === mainWindow.webContents.mainFrame
-    && trusted(event.senderFrame.url);
+  const authorized = event => ownsWindowEvent(event, mainWindow, trusted);
   const notify = (id, state) => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send('roomcast:floating-state', { id, state, alwaysOnTop: players.get(id)?.isAlwaysOnTop() || false });
   };

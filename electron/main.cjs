@@ -16,6 +16,7 @@ const { resolveRuntimePaths } = require('./runtime-paths.cjs');
 const { migratePreferences } = require('./preferences-migration.cjs');
 const { installFloatingWindows } = require('./floating-window.cjs');
 const { createWebInvite } = require('./web-invite.cjs');
+const { liveWebContents, ownsWindowEvent } = require('./window-owner.cjs');
 const { ObsFixedFpsEngine, validateVideoSettings, waitForObsVirtualCameraAvailable } = require('./obs-fixed-fps.cjs');
 const { ensureObsVirtualCameraRegistration, registrationStatus } = require('./obs-virtualcam-registration.cjs');
 const { cleanText: cleanAudioText, normalizeCaptureSources, windowsAudioSources } = require('./windows-sources.cjs');
@@ -454,18 +455,23 @@ else {
       };
       privateSession.setPermissionRequestHandler((contents, permission, callback, details) => {
         const mediaTypes = details.mediaTypes || [];
-        const ownWindow = contents === window?.webContents && trusted(details.requestingUrl || contents.getURL());
+        const owner = liveWebContents(window);
+        const ownWindow = Boolean(owner) && contents === owner && trusted(details.requestingUrl || contents.getURL());
         const obsVideoLease = permission === 'media'
           && mediaTypes.includes('video')
           && !mediaTypes.includes('audio')
           && Date.now() <= obsVideoPermissionUntil;
         callback(ownWindow && (permission === 'fullscreen' || permission === 'display-capture' || (permission === 'media' && (!mediaTypes.includes('video') || obsVideoLease))));
       });
-      privateSession.setPermissionCheckHandler((contents, permission, origin) => contents === window?.webContents && trusted(origin) && ['media', 'display-capture', 'fullscreen'].includes(permission));
+      privateSession.setPermissionCheckHandler((contents, permission, origin) => {
+        const owner = liveWebContents(window);
+        return Boolean(owner) && contents === owner && trusted(origin) && ['media', 'display-capture', 'fullscreen'].includes(permission);
+      });
       privateSession.setDisplayMediaRequestHandler(async (request, callback) => {
         const selection = captureSelection;
         captureSelection = null;
-        if (!selection || Date.now() - selection.at > 10000 || request.frame !== window?.webContents.mainFrame || !trusted(request.securityOrigin)) return callback(null);
+        const owner = liveWebContents(window);
+        if (!owner || !selection || Date.now() - selection.at > 10000 || request.frame !== owner.mainFrame || !trusted(request.securityOrigin)) return callback(null);
         const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } }).catch(() => []);
         const source = sources.find(item => item.id === selection.id);
         if (!source) return callback(null);
@@ -512,7 +518,7 @@ else {
       }
       window.on('close', exitImmediately);
       ipcMain.on('roomcast:system-accent-color-get', event => {
-        const allowed = event.sender === window?.webContents && event.senderFrame === window.webContents.mainFrame && trusted(event.senderFrame.url);
+        const allowed = owns(event, window);
         event.returnValue = allowed ? currentSystemAccentColor() : DEFAULT_TITLEBAR_COLOR;
       });
       const handleSystemAccentChanged = (_event, color) => {
@@ -525,9 +531,7 @@ else {
       });
       ipcMain.on('roomcast:titlebar-theme', (event, value) => {
         if (
-          event.sender !== window?.webContents ||
-          event.senderFrame !== window.webContents.mainFrame ||
-          !trusted(event.senderFrame.url) ||
+          !owns(event, window) ||
           process.platform !== 'win32'
         ) return;
         const color = normalizeTitlebarColor(value);
@@ -542,17 +546,17 @@ else {
         window.setAccentColor(false);
       });
       ipcMain.handle('roomcast:copy-text', (event, value) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口写入剪贴板。');
+        if (!owns(event, window)) throw new Error('不允许此窗口写入剪贴板。');
         if (typeof value !== 'string' || value.length < 1 || value.length > 20_000) throw new Error('复制内容格式错误。');
         clipboard.writeText(value);
         return { ok: true };
       });
       ipcMain.handle('roomcast:web-invite-start', event => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口开启网页入口。');
+        if (!owns(event, window)) throw new Error('不允许此窗口开启网页入口。');
         return webInvite.start();
       });
       ipcMain.handle('roomcast:web-invite-stop', event => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口关闭网页入口。');
+        if (!owns(event, window)) throw new Error('不允许此窗口关闭网页入口。');
         return webInvite.stop();
       });
       // Update check and automatic update. Chromium's network stack is used instead of
@@ -779,7 +783,7 @@ else {
         return { ok: true, url: target };
       });
       ipcMain.handle('roomcast:copy-image', async (event, value) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口写入图片剪贴板。');
+        if (!owns(event, window)) throw new Error('不允许此窗口写入图片剪贴板。');
         const bytes = value instanceof Uint8Array
           ? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
           : ArrayBuffer.isView(value)
@@ -803,7 +807,7 @@ else {
         return { ok: true };
       });
       ipcMain.handle('roomcast:save-image', async (event, value, suggestedName) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口保存图片。');
+        if (!owns(event, window)) throw new Error('不允许此窗口保存图片。');
         const bytes = value instanceof Uint8Array
           ? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
           : ArrayBuffer.isView(value)
@@ -828,11 +832,11 @@ else {
         return { ok: true, canceled: false };
       });
       ipcMain.handle('roomcast:audio-sources', async event => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口枚举声音来源。');
+        if (!owns(event, window)) throw new Error('不允许此窗口枚举声音来源。');
         return windowsAudioSources();
       });
       ipcMain.handle('roomcast:audio-capture-start', async (event, payload) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口捕获声音。');
+        if (!owns(event, window)) throw new Error('不允许此窗口捕获声音。');
         const mode = payload?.mode;
         const processId = Number(payload?.processId);
         if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !['system', 'application', 'exclude'].includes(mode)) throw new Error('声音捕获参数无效。');
@@ -877,14 +881,14 @@ else {
         return { captureId, sampleRate: 48000, channels: 2, sampleFormat: 's16le' };
       });
       ipcMain.handle('roomcast:audio-capture-stop', (event, captureId) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口停止声音捕获。');
+        if (!owns(event, window)) throw new Error('不允许此窗口停止声音捕获。');
         if (typeof captureId !== 'string' || !/^[a-f0-9-]{36}$/i.test(captureId)) throw new Error('声音捕获会话无效。');
         const active = audioCaptures.get(captureId);
         if (active && active.sender !== event.sender) throw new Error('声音捕获会话不属于当前窗口。');
         return { ok: stopAudioCapture(captureId) };
       });
       ipcMain.handle('roomcast:local', async (event, action, payload) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口执行本地服务操作');
+        if (!owns(event, window)) throw new Error('不允许此窗口执行本地服务操作');
         if (typeof action !== 'string' || action.length > 64 || (payload !== undefined && (!payload || typeof payload !== 'object' || Array.isArray(payload)))) throw new Error('IPC 请求格式错误');
         if (payload && JSON.stringify(payload).length > 96_000) throw new Error('IPC 请求过大');
         if (action === 'relay:ice') {
@@ -912,7 +916,7 @@ else {
         throw new Error('不允许的本地服务操作');
       });
       ipcMain.on('roomcast:theme-settings-get', event => {
-        const allowed = event.sender === window?.webContents && event.senderFrame === window.webContents.mainFrame && trusted(event.senderFrame.url);
+        const allowed = owns(event, window);
         if (!allowed) return void (event.returnValue = { mode: 'custom', color: DEFAULT_TITLEBAR_COLOR });
         event.returnValue = {
           mode: themePreferences.themeMode === 'windows' ? 'windows' : 'custom',
@@ -920,7 +924,7 @@ else {
         };
       });
       ipcMain.on('roomcast:theme-settings-set', (event, payload) => {
-        const allowed = event.sender === window?.webContents && event.senderFrame === window.webContents.mainFrame && trusted(event.senderFrame.url);
+        const allowed = owns(event, window);
         if (!allowed || !payload || typeof payload !== 'object' || Array.isArray(payload)) return void (event.returnValue = false);
         const nextMode = payload.mode === 'windows' ? 'windows' : 'custom';
         const nextColor = normalizeTitlebarColor(payload.color);
@@ -934,7 +938,7 @@ else {
         event.returnValue = saved;
       });
       ipcMain.on('roomcast:preference-get', (event, key) => {
-        const allowed = event.sender === window?.webContents && event.senderFrame === window.webContents.mainFrame && trusted(event.senderFrame.url) && preferenceKeys.has(key);
+        const allowed = owns(event, window) && preferenceKeys.has(key);
         if (!allowed) return void (event.returnValue = undefined);
         if (key === 'relaySettings' && preferences[key] && typeof preferences[key] === 'object') {
           const { accessKey, ...safe } = preferences[key];
@@ -943,7 +947,7 @@ else {
         event.returnValue = preferences[key];
       });
       ipcMain.on('roomcast:preference-set', (event, payload) => {
-        const allowed = event.sender === window?.webContents && event.senderFrame === window.webContents.mainFrame && trusted(event.senderFrame.url)
+        const allowed = owns(event, window)
           && payload && preferenceKeys.has(payload.key);
         if (!allowed) return void (event.returnValue = false);
         try {
@@ -958,14 +962,14 @@ else {
         } catch { event.returnValue = false; }
       });
       ipcMain.handle('roomcast:capture-sources', async event => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口枚举屏幕');
+        if (!owns(event, window)) throw new Error('不允许此窗口枚举屏幕');
         const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } });
         const normalized = normalizeCaptureSources(sources);
         captureSources = new Map(normalized.map(item => [item.id, sources.find(source => source.id === item.id)]));
         return normalized;
       });
       ipcMain.handle('roomcast:obs-capture-sources', async (event, payload = {}) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口枚举 OBS 采集源。');
+        if (!owns(event, window)) throw new Error('不允许此窗口枚举 OBS 采集源。');
         const settings = validateVideoSettings(payload);
         return runObsCaptureOperation(async () => {
           const engine = getObsCaptureEngine();
@@ -995,7 +999,7 @@ else {
         });
       });
       ipcMain.handle('roomcast:obs-capture-start', async (event, payload = {}) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口启动 OBS 采集。');
+        if (!owns(event, window)) throw new Error('不允许此窗口启动 OBS 采集。');
         const settings = validateVideoSettings(payload);
         const type = payload?.sourceType === 'monitor' ? 'monitor' : payload?.sourceType === 'window' ? 'window' : '';
         const id = typeof payload?.sourceId === 'string' ? payload.sourceId.trim().slice(0, 4096) : '';
@@ -1121,13 +1125,13 @@ else {
         });
       });
       ipcMain.handle('roomcast:obs-capture-stop', async (event, payload = {}) => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口停止 OBS 采集。');
+        if (!owns(event, window)) throw new Error('不允许此窗口停止 OBS 采集。');
         const requestedCaptureId = normalizeObsCaptureId(payload?.captureId);
         return runObsCaptureOperation(() => closeObsCaptureEngine({ captureId: requestedCaptureId }));
       });
       ipcMain.handle('roomcast:obs-capture-status', async event => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口读取 OBS 状态。');
-        return runObsCaptureOperation(async () => {
+        if (!owns(event, window)) throw new Error('不允许此窗口读取 OBS 状态。');
+        return runObsCaptureOperation(async assertCurrent => {
           if (!obsCaptureEngine) {
             return { prepared: false, running: false, connected: false, active: false, phase: obsCapturePhase, captureId: null };
           }
@@ -1137,13 +1141,13 @@ else {
       });
 
       ipcMain.handle('roomcast:fullscreen-prepare', event => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口切换全屏。');
+        if (!owns(event, window)) throw new Error('不允许此窗口切换全屏。');
         const bounds = window.getBounds();
         playerWindowBounds = !window.isMaximized() && !window.isFullScreen() && validPlayerBounds(bounds) ? bounds : defaultPlayerBounds();
         return true;
       });
       ipcMain.handle('roomcast:fullscreen-finish', event => {
-        if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || !trusted(event.senderFrame.url)) throw new Error('不允许此窗口恢复尺寸。');
+        if (!owns(event, window)) throw new Error('不允许此窗口恢复尺寸。');
         const bounds = validPlayerBounds(playerWindowBounds) ? playerWindowBounds : defaultPlayerBounds();
         playerWindowBounds = null;
         setTimeout(() => {
@@ -1155,7 +1159,7 @@ else {
         return true;
       });
       ipcMain.on('roomcast:capture-select', (event, payload) => {
-        const allowed = event.sender === window?.webContents && event.senderFrame === window.webContents.mainFrame && trusted(event.senderFrame.url) && payload && captureSources.has(payload.id);
+        const allowed = owns(event, window) && payload && captureSources.has(payload.id);
         captureSelection = allowed ? { id: payload.id, audio: payload.audio === true, at: Date.now() } : null;
         event.returnValue = allowed;
       });
