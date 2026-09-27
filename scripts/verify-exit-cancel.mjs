@@ -5,9 +5,10 @@ import path from 'node:path';
 import { _electron as electron, chromium } from 'playwright';
 
 const root = process.cwd();
+const { version } = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const closeMessage = process.env.ROOMCAST_EXIT_MESSAGE === 'SC_CLOSE' ? 'SC_CLOSE' : 'WM_CLOSE';
 const report = { closeMessage, startedAt: new Date().toISOString(), testMode: false, checks: [] };
-const output = path.join(root, `.test/exit-cancel-${process.env.ROOMCAST_SMOKE_EXE ? 'packaged' : 'dev'}-${closeMessage}`);
+const output = path.join(root, `.test/exit-cancel-${process.env.ROOMCAST_SMOKE_EXE ? 'packaged' : 'dev'}-${version}-${closeMessage}`);
 await mkdir(output, { recursive: true });
 let app, browser;
 const record = (name, data = true) => { report.checks.push({ name, data }); console.log(name, JSON.stringify(data)); };
@@ -37,7 +38,7 @@ try {
     // installation during an exit-only test. No user's preferences are read.
     const encrypted = await app.evaluate(({ safeStorage }) => safeStorage.encryptString(JSON.stringify({ shareSettings: { captureBackend: 'native' }, autoCheckUpdates: false })).toString('base64'));
     for (const message of ['WM_CLOSE', 'SC_CLOSE']) {
-      const dir = path.join(root, `.test/exit-cancel-packaged-${message}/profile`);
+      const dir = path.join(root, `.test/exit-cancel-packaged-${version}-${message}/profile`);
       await mkdir(dir, { recursive: true });
       await writeFile(path.join(dir, 'preferences.bin'), Buffer.from(encrypted, 'base64'));
     }

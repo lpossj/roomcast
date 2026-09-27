@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.webmanifest': 'application/manifest+json' };
-const DEFAULT_WEB_VIEWER_URL = 'https://lpossj.github.io/roomcast/';
+const DEFAULT_WEB_VIEWER_URL = 'https://roomcast-2dy.pages.dev/';
 const PUBLIC_FILE = /^[A-Za-z0-9_.-]+\.(?:js|css|svg|png|ico|woff|woff2|txt|webmanifest)$/;
 
 // The public entry serves only files the Vite build actually emitted, discovered at

@@ -134,9 +134,7 @@ for (const residue of [
   );
 }
 
-// The retired Quick Tunnel / MediaMTX MEDIA chain must never come back. cloudflared itself
-// is a supported component since 0.14.2-beta.4 (the temporary web entry), so the media
-// path is checked on its own instead of by a repository-wide token ban.
+// Keep retired tunnel components out of both media code and new packages.
 mustNotContain(
   [files.p2p, files.screen, files.vdo, files.publisher, files.viewer, files.race].join('\n'),
   'trycloudflare',
@@ -149,30 +147,19 @@ mustNotContain(
   '媒体路径不得依赖 cloudflared',
 );
 
-// The default entry is fixed HTTPS; legacy shipped binary stays pinned for this minimal release.
-mustContain(
+// The fixed HTTPS entry does not need a bundled tunnel executable.
+mustNotContain(
   JSON.stringify(packageJson.build?.extraResources || []),
   'runtime/web-invite/cloudflared.exe',
-  '打包资源必须显式包含 web-invite 的 cloudflared',
+  '固定网页入口不得打包闲置的 cloudflared',
 );
 
-mustContain(files.fetchWebInvite, "const version = '2026.9.2'", 'web-invite 必须固定 cloudflared 版本');
-mustContain(files.webInvite, "https://lpossj.github.io/roomcast/", '固定网页入口必须配置完整 HTTPS 路径');
+mustNotContain(files.fetchWebInvite, 'fetch(', '固定网页入口不得下载隧道运行时');
+mustContain(files.webInvite, "https://roomcast-2dy.pages.dev/", '固定网页入口必须配置已部署的完整 HTTPS 路径');
 mustNotContain(files.webInvite, "require('node:child_process')", '生成网页入口不得启动隧道进程');
 mustContain(files.webInvite, 'const PUBLIC_FILE =', '本地静态测试服务必须使用显式文件白名单');
 mustContain(files.webInvite, "['GET', 'HEAD']", 'web-invite 只允许只读请求');
 mustContain(files.webInvite, "frame-ancestors 'none'", 'web-invite 必须禁止被嵌入');
-
-const pinnedCloudflared = files.fetchWebInvite.match(/const expected = '([0-9a-f]{64})'/)?.[1] || '';
-const checkedCloudflared = files.licenseCheck.match(/\['runtime\/web-invite\/cloudflared\.exe', '([0-9a-f]{64})'\]/)?.[1] || '';
-
-assert.ok(pinnedCloudflared.length === 64, 'web-invite 缺少 cloudflared SHA256 固定值');
-
-assert.equal(
-  pinnedCloudflared,
-  checkedCloudflared,
-  'fetch-web-invite 与 check-licenses 的 cloudflared SHA256 必须一致',
-);
 
 // VDO direct lane must never silently become relay.
 mustContain(files.vdo, 'turnServers: false', 'VDO TURN 未明确关闭');

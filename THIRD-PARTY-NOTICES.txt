@@ -2811,6 +2811,6 @@ Copyright (c) 2010 passive.ly LLC
 
 ----------------------------------------------------------------
 
-cloudflared 2026.9.2 (Cloudflare, Inc.) is distributed with the Windows app under Apache-2.0. Source: https://github.com/cloudflare/cloudflared/tree/2026.9.2 . Its official Windows amd64 release binary SHA256 is 214f5d74f66941d147d054f6cc9d821c60ff6a9b2d5355f6c854c6bee217c548. The Apache-2.0 license text is included in LICENSE.
+cloudflared 2026.9.2 (Cloudflare, Inc.) was distributed through beta.7 under Apache-2.0; it is not included starting with beta.8. Source: https://github.com/cloudflare/cloudflared/tree/2026.9.2 . Its historical Windows amd64 binary SHA256 is 214f5d74f66941d147d054f6cc9d821c60ff6a9b2d5355f6c854c6bee217c548. The Apache-2.0 license text is retained in LICENSE.
 
 End of third-party notices.

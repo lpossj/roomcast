@@ -23,7 +23,6 @@ exports.default = async function beforePack() {
   }
   await cleanAbandonedBuildScratch();
   for (const [name, args] of [
-    ['fetch-web-invite.mjs', []],
     ['prepare-embedded-obs.mjs', ['--release']],
   ]) {
     await new Promise((resolve, reject) => {

@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.3-beta.7",
+  "version": "0.14.4-beta.1",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -35,7 +35,7 @@
     "check:network": "node scripts/check-network-architecture.mjs",
     "prepare:obs": "node scripts/prepare-embedded-obs.mjs",
     "prepare:obs:release": "node scripts/prepare-embedded-obs.mjs --release",
-    "prepare:release": "npm run fetch:runtime && npm run fetch:web-invite && npm run prepare:obs:release",
+    "prepare:release": "npm run fetch:runtime && npm run prepare:obs:release",
     "check:obs-bridge": "electron scripts/check-obs-electron-bridge.cjs",
     "check:obs-virtualcam-wait": "node scripts/check-obs-virtualcam-wait.cjs",
     "check:obs-transition": "electron scripts/check-obs-static-motion.cjs",
@@ -84,10 +84,6 @@
       "package.json"
     ],
     "extraResources": [
-      {
-        "from": "runtime/web-invite/cloudflared.exe",
-        "to": "runtime/web-invite/cloudflared.exe"
-      },
       {
         "from": "runtime/obs-bundle",
         "to": "runtime/obs-bundle",
