@@ -41,7 +41,7 @@ function makeZip(files) {
     local.writeUInt16LE(dosDate, 12);
     local.writeUInt32LE(checksum, 14);
     local.writeUInt32LE(data.length, 18);
-    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt32LE(file.declaredSize ?? raw.length, 22);
     local.writeUInt16LE(name.length, 26);
     local.writeUInt16LE(0, 28);
     chunks.push(local, name, data);
@@ -55,7 +55,7 @@ function makeZip(files) {
     header.writeUInt16LE(dosDate, 14);
     header.writeUInt32LE(checksum, 16);
     header.writeUInt32LE(data.length, 20);
-    header.writeUInt32LE(raw.length, 24);
+    header.writeUInt32LE(file.declaredSize ?? raw.length, 24);
     header.writeUInt16LE(name.length, 28);
     header.writeUInt16LE(0, 30);
     header.writeUInt16LE(0, 32);
@@ -82,6 +82,28 @@ function makeZip(files) {
 let workRoot;
 test.before(async () => { workRoot = await mkdtemp(path.join(os.tmpdir(), 'roomcast-install-test-')); });
 test.after(async () => { await rm(workRoot, { recursive: true, force: true }); });
+
+test('malformed archives cannot exceed declared inflate sizes or extraction budgets', async () => {
+  const cases = [
+    [{ name: 'bomb', content: 'x'.repeat(1024 * 1024), deflate: true, declaredSize: 1 }],
+    [{ name: 'zero', content: 'x'.repeat(4096), deflate: true, declaredSize: 0 }],
+    [{ name: 'stored', content: '123', declaredSize: 0 }],
+    [{ name: 'oversize', content: '', declaredSize: 512 * 1024 * 1024 + 1 }],
+    Array.from({ length: 5 }, (_, i) => ({ name: `total-${i}`, content: '', declaredSize: 512 * 1024 * 1024 })),
+  ];
+  for (let i = 0; i < cases.length; i++) {
+    const zip = path.join(workRoot, `bounded-${i}.zip`);
+    const target = path.join(workRoot, `bounded-${i}`);
+    await writeFile(zip, makeZip(cases[i]));
+    await assert.rejects(() => extractZip(zip, target), error => error.code === 'archive');
+    assert.deepEqual(await import('node:fs/promises').then(fs => fs.readdir(target).catch(() => [])), []);
+  }
+  const incomplete = makeZip([{ name: 'a', content: 'valid' }]);
+  incomplete.writeUInt16LE(2, incomplete.length - 12);
+  const zip = path.join(workRoot, 'incomplete.zip');
+  await writeFile(zip, incomplete);
+  await assert.rejects(() => extractZip(zip, path.join(workRoot, 'incomplete')), /中央目录条目不完整/);
+});
 
 test('install target detection refuses development and unknown layouts', () => {
   const development = describeInstallTarget({ platform: 'win32', isPackaged: false, execPath: 'C:\\dev\\node_modules\\electron\\dist\\electron.exe' });

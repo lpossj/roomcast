@@ -8,7 +8,6 @@ const { setTimeout: delay } = require('node:timers/promises');
 const SCENE = 'Roomcast Fixed FPS';
 const EMBEDDED_OBS_VERSION = '32.1.2';
 const EMBEDDED_MARKERS = Object.freeze(['roomcast-embedded-obs.json', '.roomcast-embedded-obs.json']);
-const EMBEDDED_MARKER = EMBEDDED_MARKERS[1];
 const WORK_MARKER = '.roomcast-fixed-fps.json';
 const CAPTURE_INPUT = 'Roomcast Capture';
 const PROBE_PREFIX = 'Roomcast Probe ';

@@ -1,12 +1,37 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeWorkerOrigin, trustedWorkerOrigin, validPublicInviteLink } from '../electron/worker-origin.mjs';
+import { normalizeWorkerOrigin, normalizeRelaySettings } from '../electron/worker-origin.mjs';
+import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
+
+test('actual settings IPC never forwards a hidden saved Worker key to a different origin', async () => {
+  const source = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+  const start = source.indexOf("      ipcMain.on('roomcast:preference-set',");
+  const end = source.indexOf("      ipcMain.handle('roomcast:capture-sources',", start);
+  const preferences = { relaySettings: { enabled: true, endpoint: 'https://trusted.example.com', accessKey: 'secret-not-exposed-to-renderer' } };
+  let handler;
+  vm.runInNewContext(source.slice(start, end), {
+    ipcMain: { on: (_, callback) => { handler = callback; } }, window: {}, owns: () => true,
+    preferenceKeys: new Set(['relaySettings']), preferences, normalizeRelaySettings, savePreferences: () => true,
+  });
+  const write = (endpoint, accessKey = '') => {
+    const event = {};
+    handler(event, { key: 'relaySettings', value: { enabled: true, endpoint, accessKey } });
+    assert.equal(event.returnValue, true);
+    return preferences.relaySettings.accessKey;
+  };
+  assert.equal(write('https://TRUSTED.example.com/'), 'secret-not-exposed-to-renderer');
+  assert.equal(write('https://other.example.com'), '');
+  assert.equal(write('https://other.example.com', 'explicit-new-key'), 'explicit-new-key');
+  assert.equal(write('invalid'), '');
+  assert.equal(normalizeRelaySettings({ enabled: false, endpoint: 'https://other.example.com' }, { endpoint: 'https://other.example.com', accessKey: 'keep-on-toggle' }).accessKey, 'keep-on-toggle');
+});
 
 test('custom HTTPS Worker root origins are normalized and legacy workers.dev remains compatible', () => {
   assert.equal(normalizeWorkerOrigin(' https://roomcast.example.com/ '), 'https://roomcast.example.com');
-  assert.equal(trustedWorkerOrigin('https://roomcast.example.com', 'https://roomcast.example.com/'), 'https://roomcast.example.com');
-  assert.equal(trustedWorkerOrigin('https://legacy.account.workers.dev'), 'https://legacy.account.workers.dev');
-  assert.equal(trustedWorkerOrigin('https://unconfigured.example.com', 'https://roomcast.example.com'), '');
+  assert.equal(normalizeWorkerOrigin('https://ROOMCAST.example.com/'), 'https://roomcast.example.com');
+  assert.equal(normalizeWorkerOrigin('https://legacy.account.workers.dev'), 'https://legacy.account.workers.dev');
+
 });
 
 test('Worker origins reject HTTP, credentials, ports, paths, query, hash, IP and local names', () => {
@@ -17,10 +42,12 @@ test('Worker origins reject HTTP, credentials, ports, paths, query, hash, IP and
   ]) assert.equal(normalizeWorkerOrigin(value), '', value);
 });
 
-test('public invite links must use the configured or legacy Worker origin and exact shape', () => {
+test('retired Worker join URLs are not accepted as TURN root endpoints', () => {
   const token = 'j'.repeat(43);
-  assert.equal(validPublicInviteLink(`https://roomcast.example.com/join/A1B2C3D4#j=${token}`, 'https://roomcast.example.com'), true);
-  assert.equal(validPublicInviteLink(`https://legacy.account.workers.dev/join/A1B2C3D4#j=${token}`), true);
-  assert.equal(validPublicInviteLink(`https://other.example.com/join/A1B2C3D4#j=${token}`, 'https://roomcast.example.com'), false);
-  assert.equal(validPublicInviteLink(`https://roomcast.example.com/join/A1B2C3D4?x=1#j=${token}`, 'https://roomcast.example.com'), false);
+  for (const value of [
+    `https://roomcast.example.com/join/A1B2C3D4#j=${token}`,
+    `https://legacy.account.workers.dev/join/A1B2C3D4#j=${token}`,
+    `https://other.example.com/join/A1B2C3D4#j=${token}`,
+    `https://roomcast.example.com/join/A1B2C3D4?x=1#j=${token}`,
+  ]) assert.equal(normalizeWorkerOrigin(value), '', value);
 });

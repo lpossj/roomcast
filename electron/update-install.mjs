@@ -34,6 +34,13 @@ const LOCAL_HEADER_LENGTH = 30;
 // releases are ~2 100 entries and well under 4 GB, so refusing is honest and safe.
 const ZIP64_MARKER = 0xffffffff;
 const ZIP64_COUNT_MARKER = 0xffff;
+// Explicit budgets keep a malformed, even checksum-verified, release from
+// allocating unlimited memory or filling the disk during extraction.
+const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
+const MAX_CENTRAL_BYTES = 16 * 1024 * 1024;
+const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
+const MAX_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_ENTRIES = 20000;
 // robocopy exit codes 0-7 mean success (1 = files copied, 2 = extra files, 4 = mismatches);
 // 8 and above mean at least one file failed.
 const ROBOCOPY_FAILURE_CODE = 8;
@@ -151,6 +158,9 @@ async function readExactly(handle, length, position) {
 }
 
 export async function readZipEntries(handle, fileSize) {
+  if (!Number.isSafeInteger(fileSize) || fileSize < EOCD_MIN_LENGTH || fileSize > MAX_ARCHIVE_BYTES) {
+    throw Object.assign(new Error('更新包大小超出安全限制。'), { code: 'archive' });
+  }
   const tailLength = Math.min(fileSize, EOCD_MIN_LENGTH + MAX_COMMENT_LENGTH);
   const tail = await readExactly(handle, tailLength, fileSize - tailLength);
   let eocd = -1;
@@ -164,6 +174,9 @@ export async function readZipEntries(handle, fileSize) {
   if (total === ZIP64_COUNT_MARKER || centralSize === ZIP64_MARKER || centralOffset === ZIP64_MARKER) {
     throw Object.assign(new Error('更新包使用 ZIP64 格式，当前版本不支持自动解压。'), { code: 'archive' });
   }
+  if (total > MAX_ENTRIES || centralSize > MAX_CENTRAL_BYTES) {
+    throw Object.assign(new Error('更新包条目数或中央目录大小超出安全限制。'), { code: 'archive' });
+  }
   // A corrupt file that happens to contain an end-of-central-directory signature must not
   // be able to make this process allocate an arbitrary buffer.
   if (centralSize > fileSize || centralOffset > fileSize || centralOffset + centralSize > fileSize) {
@@ -174,10 +187,12 @@ export async function readZipEntries(handle, fileSize) {
     throw Object.assign(new Error('更新包中央目录不完整，文件可能已损坏。'), { code: 'archive' });
   }
   const entries = [];
+  let expandedBytes = 0;
   let cursor = 0;
   while (cursor + CENTRAL_HEADER_LENGTH <= central.length && entries.length < total) {
     if (central.readUInt32LE(cursor) !== CENTRAL_SIGNATURE) break;
     const method = central.readUInt16LE(cursor + 10);
+    const flags = central.readUInt16LE(cursor + 8);
     const compressedSize = central.readUInt32LE(cursor + 20);
     const uncompressedSize = central.readUInt32LE(cursor + 24);
     const nameLength = central.readUInt16LE(cursor + 28);
@@ -185,6 +200,13 @@ export async function readZipEntries(handle, fileSize) {
     const commentLength = central.readUInt16LE(cursor + 32);
     const externalAttributes = central.readUInt32LE(cursor + 38);
     const localOffset = central.readUInt32LE(cursor + 42);
+    const nextCursor = cursor + CENTRAL_HEADER_LENGTH + nameLength + extraLength + commentLength;
+    expandedBytes += uncompressedSize;
+    if (flags & 1 || nextCursor > central.length || compressedSize > MAX_ENTRY_BYTES
+      || uncompressedSize > MAX_ENTRY_BYTES || expandedBytes > MAX_EXPANDED_BYTES
+      || localOffset + LOCAL_HEADER_LENGTH + compressedSize > centralOffset) {
+      throw Object.assign(new Error('更新包条目损坏或超出安全大小限制。'), { code: 'archive' });
+    }
     const name = central.toString('utf8', cursor + CENTRAL_HEADER_LENGTH, cursor + CENTRAL_HEADER_LENGTH + nameLength);
     // Unix mode lives in the high 16 bits; 0xA000 marks a symlink, which we never extract.
     const unixMode = (externalAttributes >>> 16) & 0xffff;
@@ -196,8 +218,12 @@ export async function readZipEntries(handle, fileSize) {
       localOffset,
       isDirectory: name.endsWith('/'),
       isSymlink: (unixMode & 0xf000) === 0xa000,
+      centralOffset,
     });
-    cursor += CENTRAL_HEADER_LENGTH + nameLength + extraLength + commentLength;
+    cursor = nextCursor;
+  }
+  if (entries.length !== total || cursor !== central.length) {
+    throw Object.assign(new Error('更新包中央目录条目不完整。'), { code: 'archive' });
   }
   if (!entries.length) throw Object.assign(new Error('更新包内容为空。'), { code: 'archive' });
   return entries;
@@ -209,21 +235,28 @@ async function readZipEntry(handle, entry) {
     throw Object.assign(new Error(`更新包条目损坏：${entry.name}`), { code: 'archive' });
   }
   const dataOffset = entry.localOffset + LOCAL_HEADER_LENGTH + header.readUInt16LE(26) + header.readUInt16LE(28);
+  if (header.readUInt16LE(6) & 1 || header.readUInt16LE(8) !== entry.method
+    || dataOffset + entry.compressedSize > entry.centralOffset) {
+    throw Object.assign(new Error(`更新包条目数据越界或不一致：${entry.name}`), { code: 'archive' });
+  }
   const raw = await readExactly(handle, entry.compressedSize, dataOffset);
   if (raw.length !== entry.compressedSize) {
     throw Object.assign(new Error(`更新包条目读取不完整：${entry.name}`), { code: 'archive' });
   }
-  if (entry.method === 0) return raw;
+  if (entry.method === 0) {
+    if (raw.length !== entry.uncompressedSize) throw Object.assign(new Error(`更新包条目大小不符：${entry.name}`), { code: 'archive' });
+    return raw;
+  }
   if (entry.method !== 8) {
     throw Object.assign(new Error(`更新包使用了不支持的压缩方式（${entry.method}）：${entry.name}`), { code: 'archive' });
   }
   let inflated;
   try {
-    inflated = inflateRawSync(raw);
+    inflated = inflateRawSync(raw, { maxOutputLength: Math.max(1, entry.uncompressedSize) });
   } catch (error) {
     throw Object.assign(new Error(`更新包条目解压失败：${entry.name}（${error.message}）`), { code: 'archive' });
   }
-  if (entry.uncompressedSize && inflated.length !== entry.uncompressedSize) {
+  if (inflated.length !== entry.uncompressedSize) {
     throw Object.assign(new Error(`更新包条目解压大小不符：${entry.name}`), { code: 'archive' });
   }
   return inflated;

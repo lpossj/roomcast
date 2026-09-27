@@ -97,21 +97,24 @@ OBS 主采集、IPv6/IPv4/既有 TURN 车道、房间主要协议、聊天逻辑
 - 摄像头用 `getUserMedia`，优先前/后置选项为 ideal，不承诺设备一定有两枚摄像头；质量/帧率受硬件和浏览器能力限制。摄像头声音仅加入麦克风。屏幕用 `getDisplayMedia`，由浏览器选择来源和可允许的声音。
 - 不按手机型号假设屏幕 API。安全上下文、Permissions Policy、可用 API 决定入口；查询到摄像头 denied 时隐藏入口，权限变动可恢复。Safari 若不支持权限查询，按 API/策略显示，实际点击时由系统授权；拒绝或无设备显示具体失败并清理采集。
 - 网页删除“所选程序声音”和“排除所选程序”，旧保存模式自动归一；摄像头不显示系统声音。Windows 对应功能仍有调用，保留。麦克风设置、观看音量、浮窗、聊天沿用原逻辑。
-- 154 个源码/脚本/测试文件的接口引用审查删除 `lib.localAction/tokenPromise`、`obsCaptureStatus` 的 preload/main 对和未使用 `EntryModal.setServer`。独立本地 HTTP 管理入口、OBS engine.status、脚本调用的注册辅助没有删除。旧关闭回调为静态候选，配套 closeReady 仍有浮窗安全工具调用，未扩大删除退出契约。扫描不等于动态调用的形式化证明。
-- 白名单网页包为 `release/Roomcast-0.14.4-beta.2-WebViewer/`，含 index/assets、404/version/_headers；不部署 updater/桌面 API。线上站点尚未更新，需同步部署此包后用户才能看到新网页功能。
+- 154 个源码/脚本/测试文件的接口引用审查删除 `lib.localAction/tokenPromise`、`obsCaptureStatus` 的 preload/main 对和未使用 `EntryModal.setServer`。独立本地 HTTP 管理入口、OBS engine.status、脚本调用的注册辅助没有删除。本轮确认旧onBeforeClose/closeReady均无主进程handler，删除并把浮窗安全工具改为验证接口不再暴露；正常退出/更新等待保留。纯写OBS阶段和两个退役Worker公链export也已清理。扫描不等于动态调用的形式化证明。
+- 白名单网页包为 `release/Roomcast-0.14.4-beta.2-WebViewer/`，含 index/assets、404/version/_headers；不部署 updater/桌面 API。线上主域已于2026-09-27更新到beta.2，实际共享弹窗确认无两项原生声音按钮；主脚本SHA256与本地包一致。
 
 验证：能力/权限/旧偏好/清理定向8/8；HTTPS模型站点使用真实 Chromium 假摄像头与真实 WebRTC，通过网页建房、邀请、双向认证加入、datachannel聊天、观看端1920×1080解码、停止后的轨道释放/播放器移除及拒绝权限入口隐藏，0 pageerror。另有浏览器初始房主移交回归通过。最终全量245项中243通过、1因旧测试行尾拼接失败、1旧条件跳过；修正仅测试拼接换行后相关8项通过，合并同代码有效结果为244通过/0待处理失败/1跳过。最终生产构建及网络架构自检通过。
 
 没有手机真机、真实摄像头硬件或公网连通验证，不将假设备测试称为真机上线保证。接口依据：[W3C Screen Capture](https://www.w3.org/TR/screen-capture/)、[WebKit WebRTC](https://webkit.org/blog/7763/a-closer-look-into-webrtc/)。
 
-## 本地交付
+## 2026-09-27 同版本重新交付
 
-一次最终 Windows 打包完成，未重复下载完整 OBS 发布包：
+版本仍为0.14.4-beta.2。本轮依据用户的线上截图、目录清理和安全审查要求重新生成Windows包，旧beta.2交付保留于release/重打包前-beta2-20260927/；请使用release根目录的新包。
 
-- `release/Roomcast-0.14.4-beta.2-Windows.exe`（136946274 字节）
-- `release/Roomcast-0.14.4-beta.2-Windows.zip`（203935173 字节）
-- `release/Roomcast-0.14.4-beta.2-WebViewer/`（可部署静态目录，线上未部署）
+- Windows.exe：136953194字节，SHA256 20124F8E8DC75F14C755099C090332A4ED5866087F691F2A1710EB102859937B。
+- Windows.zip：203935472字节，SHA256 A926657C08912314E66E3375977CA84E62236255BA58D1898D2E25963CF80DB2。
+- release/Roomcast-0.14.4-beta.2-WebViewer/及同名ZIP：实际部署到https://roomcast-2dy.pages.dev，beta.2与完整静态安全响应头生效，桌面API路径404。线上建房/聊天/假摄像头1080p观看、停止清理、权限门控和两项音频按钮缺席验证通过，0pageerror；测试隔离了PeerJS信令，不是公网媒体/真机质量保证。
+- 修复Worker旧key跨域复用、query邀请密钥残留、ZIP解压资源限额、清理脚本既存claim误删和CI输入模板注入；网页无Windows强调色假按钮及不支持setSinkId时的扬声器切换。详情见[代码安全与清理审查](代码安全与清理审查-20260927.md)。
+- 当前全量249项248通过/0失败/1历史ZIP不存在跳过；最后删除退役公链helper后相关4项再次通过，其他未受影响检查沿用；生产构建、架构、许可证通过。最终EXE实际隔离启动、版本/资源检查通过，28个electron/server/dist文件与成品asar逐字节相同；新ZIP真实读取成功（2099条目），asar及两枚vcam DLL与成品unpacked摘要一致。
+- 项目和父级迁移备份仅删除9处与保留ZIP逐文件SHA256匹配且无占用的重复解压副本，释放3818600287字节（3.56GiB）；日志、源码、Git、个人配置、唯一压缩包、其他项目保留，恢复说明与旧失败记录保留。旧win-unpacked与ZIP未完全匹配，归档保留未删。
 
-实际新版 EXE 欢迎页、desktop bridge、版本、许可证及音频/OBS源码哈希检查通过；打包内 OBS 720p60 初始化/显示器枚举和 portable 资源路径 preflight 通过。28个 electron/server/dist 文件与当前构建输入逐字节相同；Windows ZIP内 app.asar 和两个 Virtual Camera DLL 摘要同已核对的 unpacked 包。真实 UAC 新注册仍未验证。
+仍存在DTLS通道未绑定的主动代理风险、未独立签名的更新渠道信任、持TURN key滥用等边界。真实UAC新注册、手机真机/公网网络和第三方原生二进制内部内存安全未在本轮验证。未知Electron进程号码报错没有原文，当前启动未复现，不能宣称根因已修复。
 
-用户原 Electron 进程号码报错缺原文，原因仍未知；本轮新版启动检查没有复现，不据此宣称该问题已被彻底修复。旧 beta.1 产物和失败时间记录保留。没有 push、tag、Release 或部署 Worker/线上网页。
+已完成静态网页部署；没有push、tag、GitHub Release或Worker部署。源码ZIP及SHA256清单以release当前实际文件为准；本轮逐步骤实际时间和失败原因见[时间戳记录](时间戳记录/网页接口与目录清理-20260927.md)。

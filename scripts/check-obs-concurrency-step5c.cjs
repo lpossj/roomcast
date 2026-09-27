@@ -46,7 +46,6 @@ async function main() {
         if ('active' in value) obsCaptureActive = value.active;
         if ('permissionUntil' in value) obsVideoPermissionUntil = value.permissionUntil;
         if ('sessionId' in value) obsCaptureSessionId = value.sessionId;
-        if ('phase' in value) obsCapturePhase = value.phase;
       },
       state() {
         return {
@@ -54,7 +53,6 @@ async function main() {
           active: obsCaptureActive,
           permissionUntil: obsVideoPermissionUntil,
           sessionId: obsCaptureSessionId,
-          phase: obsCapturePhase,
         };
       },
     };
@@ -83,7 +81,7 @@ async function main() {
 
   let closeCount = 0;
   const currentEngine = { close: async () => { closeCount += 1; } };
-  api.setState({ engine: currentEngine, active: true, sessionId: 'new_session_123', phase: 'active', permissionUntil: Date.now() + 10000 });
+  api.setState({ engine: currentEngine, active: true, sessionId: 'new_session_123', permissionUntil: Date.now() + 10000 });
 
   const stale = await api.closeObsCaptureEngine({ captureId: 'old_session_456' });
   assert.equal(stale.stale, true, 'old cleanup must be marked stale');
@@ -97,13 +95,12 @@ async function main() {
   assert.equal(api.state().engine, null);
   assert.equal(api.state().active, false);
   assert.equal(api.state().sessionId, '');
-  assert.equal(api.state().phase, 'idle');
 
   // A late cleanup from an older stream must not even close a newly prewarmed
   // OBS engine when no active capture session exists yet.
   let prewarmCloseCount = 0;
   const prewarmEngine = { close: async () => { prewarmCloseCount += 1; } };
-  api.setState({ engine: prewarmEngine, active: false, sessionId: '', phase: 'idle' });
+  api.setState({ engine: prewarmEngine, active: false, sessionId: '' });
   const staleAgainstPrewarm = await api.closeObsCaptureEngine({ captureId: 'old_session_789' });
   assert.equal(staleAgainstPrewarm.stale, true);
   assert.equal(prewarmCloseCount, 0, 'stale stream cleanup must not kill a prewarmed next engine');
@@ -127,16 +124,15 @@ async function main() {
   // from an obsolete engine must not touch a newer session.
   sent.length = 0;
   const crashEngine = { close: async () => {} };
-  api.setState({ engine: crashEngine, active: true, sessionId: 'crash_session_1', phase: 'active' });
+  api.setState({ engine: crashEngine, active: true, sessionId: 'crash_session_1' });
   api.handleObsCaptureUnexpectedExit(crashEngine, { code: 23, signal: 'SIGTERM' });
   assert.equal(sent.length, 1);
   assert.equal(sent[0].channel, 'roomcast:obs-capture-ended');
   assert.equal(sent[0].payload.captureId, 'crash_session_1');
   assert.equal(api.state().active, false);
-  assert.equal(api.state().phase, 'idle');
 
   const newerEngine = { close: async () => {} };
-  api.setState({ engine: newerEngine, active: true, sessionId: 'newer_session_2', phase: 'active' });
+  api.setState({ engine: newerEngine, active: true, sessionId: 'newer_session_2' });
   api.handleObsCaptureUnexpectedExit(crashEngine, { code: 99 });
   assert.equal(api.state().engine, newerEngine, 'obsolete engine exit must not clear newer engine');
   assert.equal(api.state().sessionId, 'newer_session_2');

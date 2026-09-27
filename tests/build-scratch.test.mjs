@@ -119,3 +119,16 @@ test('build scratch cleanup reports nothing for a directory it cannot read', () 
   assert.deepEqual(result.removed, []);
   assert.equal(result.bytes, 0);
 });
+
+test('build scratch cleanup preserves a pre-existing claim and the original candidate', () => {
+  const root = fixture();
+  const claimed = path.join(root, 'nsAAAA11.tmp.roomcast-claim');
+  mkdirSync(claimed);
+  writeFileSync(path.join(claimed, 'preserve.txt'), 'another run');
+  try {
+    const result = cleanBuildScratch({ tempDir: root, apply: true });
+    assert.ok(existsSync(path.join(claimed, 'preserve.txt')));
+    assert.ok(existsSync(path.join(root, 'nsAAAA11.tmp', 'app-64.7z')));
+    assert.deepEqual(result.inUse.map(item => item.name), ['nsAAAA11.tmp']);
+  } finally { removeTree(root); }
+});

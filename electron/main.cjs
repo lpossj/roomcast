@@ -42,7 +42,6 @@ let obsCaptureIdleTimer = null;
 let obsCaptureActive = false;
 let obsVideoPermissionUntil = 0;
 let obsCaptureSessionId = '';
-let obsCapturePhase = 'idle';
 let obsCaptureOperationTail = Promise.resolve();
 let obsCaptureOperationGeneration = 0;
 const obsCaptureOperations = new Set();
@@ -96,14 +95,12 @@ async function closeObsCaptureEngine({ expectedEngine = null, captureId = '', ca
   obsCaptureIdleTimer = null;
   const engine = obsCaptureEngine;
   const closedCaptureId = obsCaptureSessionId;
-  obsCapturePhase = engine ? 'stopping' : 'idle';
   obsCaptureActive = false;
   obsVideoPermissionUntil = 0;
   obsCaptureSessionId = '';
   obsCaptureEngine = null;
   engine?.retire?.();
   const result = engine ? await engine.close().catch(() => ({ ok: false })) : null;
-  if (!obsCaptureEngine) obsCapturePhase = 'idle';
   return { ok: result?.ok !== false, stale: false, captureId: closedCaptureId || null };
 }
 
@@ -117,7 +114,6 @@ function handleObsCaptureUnexpectedExit(engine, details = {}) {
   obsCaptureActive = false;
   obsVideoPermissionUntil = 0;
   obsCaptureSessionId = '';
-  obsCapturePhase = 'idle';
   obsCaptureEngine = null;
   if (!wasActive || !window || window.isDestroyed() || window.webContents.isDestroyed()) return;
   window.webContents.send('roomcast:obs-capture-ended', {
@@ -443,7 +439,7 @@ else {
       if (!process.env.ROOMCAST_TEST_MODE) window.show();
       startupMark('service-import-start');
       const { startServer } = await import(pathToFileURL(path.join(__dirname, '..', 'server', 'index.mjs')).href);
-      const { normalizeWorkerOrigin } = await import(pathToFileURL(path.join(__dirname, 'worker-origin.mjs')).href);
+      const { normalizeWorkerOrigin, normalizeRelaySettings } = await import(pathToFileURL(path.join(__dirname, 'worker-origin.mjs')).href);
       startupMark('service-import-end');
       // The desktop UI is a local service. Let Windows assign a free port unless
       // an explicit PORT is supplied for development or automated testing.
@@ -602,7 +598,6 @@ else {
       // The updater window outlives the main window, so neither check may touch a destroyed
       // window: reading `webContents` off a destroyed BrowserWindow throws, which would make
       // every updater-window call (status/retry/open page) fail once the main window is gone.
-      const windowAlive = candidate => Boolean(candidate) && !candidate.isDestroyed();
       const owns = (event, candidate) => ownsWindowEvent(event, candidate, trusted);
       const requireOwner = (event, reason) => {
         if (!owns(event, window) && !owns(event, updaterWindow)) throw new Error(reason);
@@ -984,7 +979,7 @@ else {
           if (payload.key === 'relaySettings') {
             const previous = preferences.relaySettings && typeof preferences.relaySettings === 'object' ? preferences.relaySettings : {};
             const next = payload.value && typeof payload.value === 'object' && !Array.isArray(payload.value) ? payload.value : {};
-            preferences.relaySettings = { enabled: next.enabled === true, endpoint: String(next.endpoint || '').trim().slice(0, 2048), accessKey: String(next.accessKey || previous.accessKey || '').slice(0, 512) };
+            preferences.relaySettings = normalizeRelaySettings(next, previous);
           } else preferences[payload.key] = payload.value;
           event.returnValue = savePreferences();
         } catch { event.returnValue = false; }
@@ -1057,7 +1052,6 @@ else {
 
           const engine = getObsCaptureEngine();
           obsCaptureSessionId = requestedCaptureId;
-          obsCapturePhase = 'starting';
           let startPhase = 'registration';
           try {
             startPhase = 'registration';
@@ -1114,7 +1108,6 @@ else {
               throw new Error('OBS 采集启动已被取消。');
             }
             obsCaptureActive = true;
-            obsCapturePhase = 'active';
             obsVideoPermissionUntil = Date.now() + 30_000;
             startPhase = 'verify';
             const status = await engine.status();

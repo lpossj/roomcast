@@ -14,9 +14,16 @@ export function readPageInvite(page, useRemembered = true) {
   if (invite) {
     try { page.sessionStorage.setItem('roomcast:invite', invite); } catch { }
     // Storage denial must not discard the invitation or prevent showing the form.
-    if (new URLSearchParams(page.location.hash.slice(1)).has('room')) {
-      try { page.history.replaceState(null, '', page.location.pathname + page.location.search); } catch { }
-    }
+    try {
+      const clean = new URL(page.location.href);
+      const fragment = new URLSearchParams(clean.hash.slice(1));
+      if (clean.searchParams.has('room') || fragment.has('room')) {
+        clean.searchParams.delete('room');
+        fragment.delete('room');
+        clean.hash = fragment.toString();
+        page.history.replaceState(null, '', clean.pathname + clean.search + clean.hash);
+      }
+    } catch { }
     return invite;
   }
   if (useRemembered) {

@@ -64,7 +64,8 @@ function isScratchDirectory(tempDir, entry) {
 // Roomcast instance is still using it.
 function claim(dir) {
   const claimed = `${dir}${CLAIM_SUFFIX}`;
-  if (existsSync(claimed)) rmSync(claimed, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  // An existing claim belongs to another run; never delete it without its own checks.
+  if (existsSync(claimed)) return '';
   try {
     renameSync(dir, claimed);
     return claimed;

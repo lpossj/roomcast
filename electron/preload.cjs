@@ -172,21 +172,4 @@ contextBridge.exposeInMainWorld('roomcast', {
       );
   },
 
-  onBeforeClose: callback => {
-    const listener = () => callback();
-
-    ipcRenderer.on(
-      'roomcast:before-close',
-      listener,
-    );
-
-    return () =>
-      ipcRenderer.removeListener(
-        'roomcast:before-close',
-        listener,
-      );
-  },
-
-  closeReady: (result) =>
-    ipcRenderer.send('roomcast:close-ready', result),
 });

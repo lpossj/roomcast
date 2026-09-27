@@ -1,4 +1,3 @@
-const LEGACY_WORKERS_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.workers\.dev$/i;
 const DNS_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 
 export function normalizeWorkerOrigin(value) {
@@ -10,19 +9,13 @@ export function normalizeWorkerOrigin(value) {
   return url.origin;
 }
 
-export function trustedWorkerOrigin(value, configuredEndpoint = '') {
-  const origin = normalizeWorkerOrigin(value);
-  if (!origin) return '';
-  const hostname = new URL(origin).hostname;
-  if (LEGACY_WORKERS_HOST.test(hostname)) return origin;
-  const configured = normalizeWorkerOrigin(configuredEndpoint);
-  return configured && configured === origin ? origin : '';
+// A hidden saved key may only be reused for the same valid origin. Otherwise an
+// endpoint edit could forward a key the renderer is not allowed to read.
+export function normalizeRelaySettings(next = {}, previous = {}) {
+  const endpoint = String(next.endpoint || '').trim().slice(0, 2048);
+  const origin = normalizeWorkerOrigin(endpoint);
+  const sameOrigin = origin && origin === normalizeWorkerOrigin(previous.endpoint);
+  const accessKey = String(next.accessKey || (sameOrigin ? previous.accessKey : '') || '').slice(0, 512);
+  return { enabled: next.enabled === true, endpoint, accessKey };
 }
 
-export function validPublicInviteLink(value, configuredEndpoint = '') {
-  let url;
-  try { url = new URL(String(value || '')); } catch { return false; }
-  if (!trustedWorkerOrigin(url.origin, configuredEndpoint) || url.username || url.password || url.search) return false;
-  if (!/^\/join\/[A-F0-9]{8}$/.test(url.pathname)) return false;
-  return /^#j=[A-Za-z0-9_-]{43}$/.test(url.hash);
-}

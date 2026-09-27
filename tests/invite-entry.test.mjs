@@ -19,8 +19,15 @@ test('fresh fragment and query invites override a remembered room', () => {
     const page = pageFor(`https://viewer.example/roomcast/${separator}room=${encodeURIComponent(newInvite)}`);
     assert.equal(readPageInvite(page), newInvite);
     assert.equal(page.sessionStorage.getItem('roomcast:invite'), newInvite);
-    if (separator === '#') assert.equal(page.location.hash, '');
+    assert.equal(page.location.hash, '');
+    assert.equal(page.location.searchParams.has('room'), false);
   }
+});
+
+test('invite cleanup removes query and fragment secrets but preserves other URL fields', () => {
+  const page = pageFor(`https://viewer.example/entry?room=${encodeURIComponent(oldInvite)}&lang=zh#room=${encodeURIComponent(newInvite)}&tab=chat`);
+  assert.equal(readPageInvite(page), newInvite);
+  assert.equal(page.location.href, 'https://viewer.example/entry?lang=zh#tab=chat');
 });
 
 test('an explicit navigation without an invite does not reopen a remembered room', () => {

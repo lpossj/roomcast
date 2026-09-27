@@ -435,7 +435,7 @@ try {
 
   await child.evaluate(() => {
     window.open('about:blank', 'roomcast-nested-test');
-    window.roomcast.closeReady();
+    if ('closeReady' in window.roomcast || 'onBeforeClose' in window.roomcast) throw new Error('obsolete close bridge exposed');
   });
 
   assert.deepEqual(security, {
