@@ -563,6 +563,9 @@ class ObsFixedFpsEngine {
     this.removedOwnedInputs = new Set();
     this.capture = null;
     this.closing = false;
+    this.retired = false;
+    this.lifecycleGeneration = 0;
+    this.closePromise = null;
     this.onUnexpectedExit = typeof onUnexpectedExit === 'function' ? onUnexpectedExit : null;
   }
 
@@ -742,14 +745,32 @@ class ObsFixedFpsEngine {
     }
   }
 
+  retire() {
+    this.retired = true;
+    this.lifecycleGeneration += 1;
+  }
+
   async launch({ width = 1920, height = 1080, fps = 60 } = {}) {
+    const generation = this.lifecycleGeneration;
+    const assertCurrent = () => {
+      if (this.retired || this.closing || generation !== this.lifecycleGeneration) {
+        const error = new Error('OBS 采集操作已取消。');
+        error.code = 'OBS_CAPTURE_CANCELLED';
+        throw error;
+      }
+    };
+    assertCurrent();
     if (this.process && this.client.ready) return this.status();
     await this.prepare();
-    if (await portOccupied(this.port)) {
+    assertCurrent();
+    const occupied = await portOccupied(this.port);
+    assertCurrent();
+    if (occupied) {
       throw new Error(`OBS 本地控制端口 ${this.port} 已被占用。请先关闭旧的 Roomcast OBS 测试实例。`);
     }
     const settings = validateVideoSettings({ width, height, fps });
     await this.#writeConfig(settings);
+    assertCurrent();
 
     const args = [
       '--portable', '--multi', '--profile', SCENE, '--collection', SCENE,
@@ -767,9 +788,12 @@ class ObsFixedFpsEngine {
 
     let lastError;
     for (let attempt = 0; attempt < 50 && this.process; attempt++) {
+      assertCurrent();
       try {
         await this.client.connect(`ws://127.0.0.1:${this.port}`, this.password);
+        assertCurrent();
         const version = await this.client.request('GetVersion');
+        assertCurrent();
         const required = [
           'SetVideoSettings',
           'GetVideoSettings',
@@ -794,8 +818,10 @@ class ObsFixedFpsEngine {
           throw new Error(`Roomcast OBS Runtime 版本不一致：期望 ${EMBEDDED_OBS_VERSION}，实际 ${this.version || 'unknown'}。`);
         }
         await this.configureVideo(settings);
+        assertCurrent();
         return this.status();
       } catch (error) {
+        if (error?.code === 'OBS_CAPTURE_CANCELLED') throw error;
         lastError = error;
         await this.client.close().catch(() => {});
         await delay(300);
@@ -1157,27 +1183,71 @@ class ObsFixedFpsEngine {
     };
   }
 
-  async close({ terminateTimeoutMs = 5000, fallbackTimeoutMs = 1500, terminateProcess = terminateManagedObsProcess, delayFn = delay } = {}) {
+  close({ cleanupTimeoutMs = 3000, forceTimeoutMs = 1500, terminateTimeoutMs = 1000, fallbackTimeoutMs = 500, terminateProcess = terminateManagedObsProcess, delayFn = delay } = {}) {
+    if (this.closePromise) return this.closePromise;
+    this.lifecycleGeneration += 1;
     this.closing = true;
     let probeCleanup = { removed: [], remaining: [] };
     let processResult = { exited: true, forced: false, managed: true, processTreeRequested: false };
     const child = this.process;
-    try {
+    let cleanupTimer;
+    let forcing = false;
+    let forcedCleanup;
+    let termination;
+    const terminate = () => {
+      if (termination) return termination;
+      termination = (async () => {
+        if (!child || childHasExited(child)) return processResult;
+        let forceTimer;
+        try {
+          return await Promise.race([
+            terminateProcess(child, { timeoutMs: terminateTimeoutMs, fallbackTimeoutMs }),
+            new Promise(resolve => {
+              forceTimer = setTimeout(async () => {
+                // The helper itself may stall; fall back only to our captured child.
+                try { child.kill(); } catch { }
+                const result = await waitForChildExit(child, fallbackTimeoutMs);
+                resolve({ ...result, forced: true, managed: true, timedOut: true });
+              }, forceTimeoutMs);
+            }),
+          ]);
+        } finally { clearTimeout(forceTimer); }
+      })();
+      return termination;
+    };
+    const forceStop = reason => {
+      if (forcedCleanup) return forcedCleanup;
+      forcing = true;
+      this.retired = true;
+      this.capture = null;
+      this.probes.clear();
+      void this.client.close().catch(() => {});
+      forcedCleanup = (async () => {
+        processResult = await terminate().catch(() => ({ exited: childHasExited(child), forced: true, managed: true }));
+        return { ok: processResult.exited === true, forced: true, reason, probeCleanup, process: processResult };
+      })();
+      return forcedCleanup;
+    };
+    const cleanup = async () => {
       if (this.client.ready) {
         // OBS is an internal capture worker, not a user-facing OBS session.
         // First stop the virtual camera and release every Roomcast-owned WGC
         // source through the supported websocket API. This gives capture worker
         // threads time to unwind before the process is terminated.
         await this.stopVirtualCamera().catch(() => {});
+        if (forcing) return forcedCleanup;
         await this.removeOwnedInput(CAPTURE_INPUT).catch(() => {});
+        if (forcing) return forcedCleanup;
         this.capture = null;
         probeCleanup = await this.cleanupProbeInputs({ timeoutMs: 3000, pollMs: 100, settleMs: 500, delayFn });
+        if (forcing) return forcedCleanup;
 
         // Ensure the OBS main thread has processed the removals before severing
         // control. We intentionally do NOT request a normal OBS frontend exit
         // afterwards: the clean-machine log showed a crash-on-exit at
         // `Freeing OBS context data`, after all normal shutdown stages began.
         await this.client.request('GetStats').catch(() => {});
+        if (forcing) return forcedCleanup;
         await delayFn(250);
       } else {
         this.probes.clear();
@@ -1185,25 +1255,32 @@ class ObsFixedFpsEngine {
       }
 
       await this.client.close().catch(() => {});
+      if (forcing) return forcedCleanup;
       await delayFn(100);
 
       if (child && !childHasExited(child)) {
-        processResult = await terminateProcess(child, {
-          timeoutMs: terminateTimeoutMs,
-          fallbackTimeoutMs,
-        });
+        processResult = await terminate();
       }
       if (this.process === child && childHasExited(child)) this.process = null;
       return {
-        ok: true,
+        ok: processResult.exited === true,
         probeCleanup,
         process: processResult,
       };
-    } finally {
+    };
+    // Establish the deadline before the first cleanup request, including sources
+    // enumeration and websocket shutdown. A hung request cannot block Stop.
+    const deadline = new Promise(resolve => {
+      cleanupTimer = setTimeout(() => { void forceStop('cleanup-timeout').then(resolve); }, cleanupTimeoutMs);
+    });
+    this.closePromise = Promise.race([cleanup().catch(() => forceStop('cleanup-failed')), deadline]).finally(() => {
+      clearTimeout(cleanupTimer);
       if (this.process === child && childHasExited(child)) this.process = null;
       this.capture = null;
       this.closing = false;
-    }
+      this.closePromise = null;
+    });
+    return this.closePromise;
   }
 
 }

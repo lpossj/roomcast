@@ -19,10 +19,10 @@ async function main() {
 
   // Integration guards: these checks make sure the tested helper block is actually
   // wired into the Electron IPC and renderer capture lifecycle.
-  mustContain(mainText, "return runObsCaptureOperation(async () => {", 'OBS IPC serialization');
+  mustContain(mainText, "return runObsCaptureOperation(async assertCurrent => {", 'OBS IPC serialization');
   mustContain(mainText, "const requestedCaptureId = normalizeObsCaptureId(payload?.captureId) || randomUUID();", 'start capture id');
   mustContain(mainText, "return { ok: true, captureId: requestedCaptureId, status };", 'start response capture id');
-  mustContain(mainText, "closeObsCaptureEngine({ captureId: requestedCaptureId })", 'capture-scoped stop');
+  mustContain(mainText, "return closeObsCaptureEngine({ captureId: requestedCaptureId, cancelPending: true });", 'stop bypasses queue and cancels old operations');
   mustContain(mainText, "window.webContents.on('did-start-navigation'", 'renderer reload cleanup');
   mustContain(preloadText, "stopObsCapture: captureId =>", 'preload capture-scoped stop');
   mustContain(libText, "captureId: requestedCaptureId", 'renderer start id');

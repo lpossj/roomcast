@@ -44,11 +44,38 @@ let obsVideoPermissionUntil = 0;
 let obsCaptureSessionId = '';
 let obsCapturePhase = 'idle';
 let obsCaptureOperationTail = Promise.resolve();
+let obsCaptureOperationGeneration = 0;
+const obsCaptureOperations = new Set();
 
-function runObsCaptureOperation(task) {
-  const run = obsCaptureOperationTail.then(task, task);
+function runObsCaptureOperation(task, { captureId = '' } = {}) {
+  const generation = obsCaptureOperationGeneration;
+  const operation = { captureId, cancelled: false };
+  const assertCurrent = () => {
+    if (operation.cancelled || generation !== obsCaptureOperationGeneration) {
+      const error = new Error('OBS 采集操作已取消。');
+      error.code = 'OBS_CAPTURE_CANCELLED';
+      throw error;
+    }
+  };
+  const cancelled = new Promise((resolve, reject) => {
+    operation.cancel = () => { operation.cancelled = true; try { assertCurrent(); } catch (error) { reject(error); } };
+  });
+  obsCaptureOperations.add(operation);
+  const execute = () => { assertCurrent(); return task(assertCurrent); };
+  const run = Promise.race([obsCaptureOperationTail.then(execute, execute), cancelled])
+    .finally(() => obsCaptureOperations.delete(operation));
   obsCaptureOperationTail = run.catch(() => {});
   return run;
+}
+
+function cancelObsCaptureOperations(captureId = '') {
+  if (!captureId) {
+    obsCaptureOperationGeneration += 1;
+    obsCaptureOperationTail = Promise.resolve();
+  }
+  for (const operation of obsCaptureOperations) {
+    if (!captureId || operation.captureId === captureId) operation.cancel();
+  }
 }
 
 function normalizeObsCaptureId(value) {
@@ -56,13 +83,15 @@ function normalizeObsCaptureId(value) {
   return /^[A-Za-z0-9_-]{8,96}$/.test(captureId) ? captureId : '';
 }
 
-async function closeObsCaptureEngine({ expectedEngine = null, captureId = '' } = {}) {
+async function closeObsCaptureEngine({ expectedEngine = null, captureId = '', cancelPending = false } = {}) {
   if (expectedEngine && obsCaptureEngine !== expectedEngine) return { ok: true, stale: true };
   const requestedCaptureId = normalizeObsCaptureId(captureId);
   if (requestedCaptureId && requestedCaptureId !== obsCaptureSessionId) {
+    if (cancelPending) cancelObsCaptureOperations(requestedCaptureId);
     return { ok: true, stale: true, activeCaptureId: obsCaptureSessionId || null };
   }
 
+  if (cancelPending) cancelObsCaptureOperations();
   clearTimeout(obsCaptureIdleTimer);
   obsCaptureIdleTimer = null;
   const engine = obsCaptureEngine;
@@ -72,13 +101,15 @@ async function closeObsCaptureEngine({ expectedEngine = null, captureId = '' } =
   obsVideoPermissionUntil = 0;
   obsCaptureSessionId = '';
   obsCaptureEngine = null;
-  if (engine) await engine.close().catch(() => {});
+  engine?.retire?.();
+  const result = engine ? await engine.close().catch(() => ({ ok: false })) : null;
   if (!obsCaptureEngine) obsCapturePhase = 'idle';
-  return { ok: true, stale: false, captureId: closedCaptureId || null };
+  return { ok: result?.ok !== false, stale: false, captureId: closedCaptureId || null };
 }
 
 function handleObsCaptureUnexpectedExit(engine, details = {}) {
   if (obsCaptureEngine !== engine) return;
+  cancelObsCaptureOperations();
   const wasActive = obsCaptureActive;
   const endedCaptureId = obsCaptureSessionId;
   clearTimeout(obsCaptureIdleTimer);
@@ -480,11 +511,11 @@ else {
       installFloatingWindows(window, trusted);
       window.webContents.on('render-process-gone', () => {
         stopAllAudioCaptures();
-        void runObsCaptureOperation(() => closeObsCaptureEngine());
+        void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
       });
       window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
         if (isMainFrame && !isInPlace && obsCaptureEngine) {
-          void runObsCaptureOperation(() => closeObsCaptureEngine());
+          void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
         }
       });
       window.webContents.on('will-navigate', (event, url) => { if (!trusted(url)) event.preventDefault(); });
@@ -572,10 +603,7 @@ else {
       // window: reading `webContents` off a destroyed BrowserWindow throws, which would make
       // every updater-window call (status/retry/open page) fail once the main window is gone.
       const windowAlive = candidate => Boolean(candidate) && !candidate.isDestroyed();
-      const owns = (event, candidate) => windowAlive(candidate)
-        && event.sender === candidate.webContents
-        && event.senderFrame === candidate.webContents.mainFrame
-        && trusted(event.senderFrame.url);
+      const owns = (event, candidate) => ownsWindowEvent(event, candidate, trusted);
       const requireOwner = (event, reason) => {
         if (!owns(event, window) && !owns(event, updaterWindow)) throw new Error(reason);
       };
@@ -971,7 +999,7 @@ else {
       ipcMain.handle('roomcast:obs-capture-sources', async (event, payload = {}) => {
         if (!owns(event, window)) throw new Error('不允许此窗口枚举 OBS 采集源。');
         const settings = validateVideoSettings(payload);
-        return runObsCaptureOperation(async () => {
+        return runObsCaptureOperation(async assertCurrent => {
           const engine = getObsCaptureEngine();
           try {
             // Merely selecting the OBS backend must not require Virtual Camera
@@ -979,8 +1007,11 @@ else {
             // runtime + websocket control. Registration is deferred until the
             // user actually starts an OBS share.
             await engine.prepare();
+            assertCurrent();
             await engine.launch(settings);
+            assertCurrent();
             const value = await engine.sources();
+            assertCurrent();
             scheduleObsCaptureIdleClose();
             return {
               ok: true,
@@ -1005,13 +1036,14 @@ else {
         const id = typeof payload?.sourceId === 'string' ? payload.sourceId.trim().slice(0, 4096) : '';
         if (!type || !id) throw new Error('OBS 采集源无效。');
         const requestedCaptureId = normalizeObsCaptureId(payload?.captureId) || randomUUID();
-        return runObsCaptureOperation(async () => {
+        return runObsCaptureOperation(async assertCurrent => {
           clearTimeout(obsCaptureIdleTimer);
           obsCaptureIdleTimer = null;
 
           if (obsCaptureActive) {
             if (obsCaptureSessionId === requestedCaptureId && obsCaptureEngine) {
               const status = await obsCaptureEngine.status();
+              assertCurrent();
               return { ok: true, reused: true, captureId: obsCaptureSessionId, status };
             }
             return {
@@ -1030,6 +1062,7 @@ else {
           try {
             startPhase = 'registration';
             const registration = await ensureObsVirtualCameraRegistration({ engine, dataRoot: app.getPath('userData') });
+            assertCurrent();
 
             // If registration had to happen after BrowserWindow/Chromium already
             // started, do not poll a camera list that may remain stale for this
@@ -1053,6 +1086,7 @@ else {
             // connection.
             startPhase = 'launch';
             await engine.launch(settings);
+            assertCurrent();
 
             // Do not treat the first 604 immediately after a fresh OBS launch as
             // permanent unavailability. On slower Windows machines the frontend
@@ -1062,15 +1096,20 @@ else {
               timeoutMs: registration?.installedByRoomcast ? 15000 : 8000,
               pollMs: 200,
             });
+            assertCurrent();
 
             startPhase = 'clear-source';
             await engine.clearSource();
+            assertCurrent();
             startPhase = 'configure-video';
             await engine.configureVideo(settings);
+            assertCurrent();
             startPhase = 'select-source';
             await engine.selectSource({ type, id, cursor: payload.cursor !== false, clientArea: payload.clientArea !== false });
+            assertCurrent();
             startPhase = 'start-virtual-camera';
             await engine.startVirtualCamera();
+            assertCurrent();
             if (obsCaptureEngine !== engine || obsCaptureSessionId !== requestedCaptureId) {
               throw new Error('OBS 采集启动已被取消。');
             }
@@ -1079,11 +1118,15 @@ else {
             obsVideoPermissionUntil = Date.now() + 30_000;
             startPhase = 'verify';
             const status = await engine.status();
+            assertCurrent();
             if (!status.running || !status.connected || !status.virtualCamActive) {
               throw new Error('OBS 采集进程未保持运行状态。');
             }
             return { ok: true, captureId: requestedCaptureId, status };
           } catch (error) {
+            if (error?.code === 'OBS_CAPTURE_CANCELLED' || engine.retired) {
+              return { ok: false, phase: startPhase, code: 'OBS_CAPTURE_CANCELLED', message: 'OBS 采集启动已取消。' };
+            }
             // Registration failures already include regsvr32/UAC/registry diagnostics.
             // For virtual-camera readiness failures, add the two COM registry
             // views explicitly. OBS 32.1.2 win-dshow needs Registry32 to expose
@@ -1122,12 +1165,12 @@ else {
               message: `OBS 启动阶段 ${startPhase} 失败：${String(error?.message || 'OBS 采集启动失败。')}${diagnostics ? `\n${diagnostics}` : ''}`,
             };
           }
-        });
+        }, { captureId: requestedCaptureId });
       });
       ipcMain.handle('roomcast:obs-capture-stop', async (event, payload = {}) => {
         if (!owns(event, window)) throw new Error('不允许此窗口停止 OBS 采集。');
         const requestedCaptureId = normalizeObsCaptureId(payload?.captureId);
-        return runObsCaptureOperation(() => closeObsCaptureEngine({ captureId: requestedCaptureId }));
+        return closeObsCaptureEngine({ captureId: requestedCaptureId, cancelPending: true });
       });
       ipcMain.handle('roomcast:obs-capture-status', async event => {
         if (!owns(event, window)) throw new Error('不允许此窗口读取 OBS 状态。');
@@ -1136,6 +1179,7 @@ else {
             return { prepared: false, running: false, connected: false, active: false, phase: obsCapturePhase, captureId: null };
           }
           const status = await obsCaptureEngine.status();
+          assertCurrent();
           return { ...status, active: obsCaptureActive, phase: obsCapturePhase, captureId: obsCaptureSessionId || null };
         });
       });
