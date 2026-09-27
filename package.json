@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.4-beta.1",
+  "version": "0.14.4-beta.2",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -43,7 +43,8 @@
     "check:obs-package": "node scripts/check-packaged-obs-step5d.cjs",
     "check:auto-update": "node scripts/check-auto-update.cjs",
     "check:update-apply": "node scripts/check-update-apply.cjs",
-    "dist:obs-verified": "npm run dist && npm run check:obs-package && npm run verify:release"
+    "dist:obs-verified": "npm run dist && npm run check:obs-package && npm run verify:release",
+    "package:web": "node scripts/prepare-viewer-site.mjs --release"
   },
   "engines": {
     "node": ">=22"
