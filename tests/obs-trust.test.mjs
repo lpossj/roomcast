@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 const require = createRequire(import.meta.url);
 const { VIRTUALCAM_HASHES, virtualCameraTrustScript } = require('../electron/obs-virtualcam-trust.cjs');
@@ -33,7 +34,7 @@ test('locally prepared official bundle matches pinned hashes', { skip: !existsSy
 });
 
 test('Windows trust helpers reject tampering, reparse paths and lock verified targets before loading', { skip: process.platform !== 'win32' }, () => {
-  const dir = mkdtempSync(path.resolve('.test/obs-trust-'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'roomcast-obs-trust-'));
   const source = path.join(dir, 'source.dll');
   writeFileSync(source, 'benign test fixture, never executed');
   writeFileSync(path.join(dir, '.roomcast-fixed-fps.json'), '{"embeddedVersion":"32.1.2"}');
