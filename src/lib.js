@@ -1,27 +1,6 @@
 import { recordLifecycle } from './lifecycle-diagnostics.js';
 export { recordLifecycle, getLifecycleDiagnostics } from './lifecycle-diagnostics.js';
 
-let tokenPromise;
-
-export async function localAction(action, payload = {}) {
-  if (window.roomcast?.localAction) return window.roomcast.localAction(action, payload);
-  if (!window.roomcast?.desktop) throw new Error('本地媒体操作仅在桌面应用中可用。');
-  if (!tokenPromise) tokenPromise = fetch('/api/local/token').then(async response => {
-    const value = await response.json();
-    if (!response.ok || !value.token) throw new Error(value.error || '请使用桌面客户端或本机地址执行本地媒体操作');
-    return value.token;
-  }).catch(error => { tokenPromise = undefined; throw error; });
-  const token = await tokenPromise;
-  const response = await fetch(`/api/local/${action}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Roomcast-Local': token },
-    body: JSON.stringify(payload),
-  });
-  const result = await response.json();
-  if (!response.ok || result.ok === false) throw new Error(result.error || '本地媒体操作失败');
-  return result;
-}
-
 export async function integratedSources({ backend = 'native', width = 1920, height = 1080, fps = 30 } = {}) {
   if (backend === 'obs') {
     if (!window.roomcast?.obsCaptureSources) throw new Error('当前桌面版本不支持 OBS 采集。');
@@ -190,7 +169,7 @@ export function startIntegratedCapture({ sourceId, width = 1920, height = 1080, 
       // Chromium may still suppress unchanged desktop frames even when this
       // constraint is satisfied, so the fixed outbound cadence is enforced
       // separately below rather than relying on this constraint alone.
-      await track.applyConstraints({ frameRate: { min: targetFps, ideal: targetFps, max: targetFps } });
+      await track.applyConstraints({ frameRate: window.roomcast?.desktop ? { min: targetFps, ideal: targetFps, max: targetFps } : { ideal: targetFps, max: targetFps } });
     } catch (error) {
       stream.getTracks().forEach(item => item.stop());
       throw new Error(`无法锁定 ${targetFps} FPS：${error.message}`);
@@ -234,6 +213,11 @@ export function startIntegratedCapture({ sourceId, width = 1920, height = 1080, 
     //      the pixels are identical to the previous frame.
     // This keeps the encoder warm at 15/30/60 FPS without redrawing a full
     // desktop-sized canvas on every duplicate frame.
+    if (!window.roomcast?.desktop) {
+      const previousCleanup = stream.roomcastCleanup;
+      stream.roomcastCleanup = () => { previousCleanup?.(); stream.getTracks().forEach(item => item.stop()); };
+      return stream;
+    }
     const video = document.createElement('video');
     video.muted = true;
     video.playsInline = true;

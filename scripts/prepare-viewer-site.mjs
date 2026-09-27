@@ -5,7 +5,10 @@ import path from 'node:path';
 const root = process.cwd();
 const dist = path.join(root, 'dist');
 const { version } = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-const output = path.join(root, '.test', `viewer-site-${version}-${Date.now()}`);
+const releasePackage = process.argv.includes('--release');
+const output = releasePackage
+  ? path.join(root, 'release', `Roomcast-${version}-WebViewer`)
+  : path.join(root, '.test', `viewer-site-${version}-${Date.now()}`);
 await mkdir(path.dirname(output), { recursive: true });
 await mkdir(output, { recursive: false });
 const allowed = /\.(?:js|css|svg|png|ico|woff|woff2|txt|webmanifest)$/;

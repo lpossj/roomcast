@@ -4,7 +4,7 @@ Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间�
 
 Roomcast 只面向合法、知情同意的屏幕共享与聊天。使用前请阅读 [ACCEPTABLE_USE.md](ACCEPTABLE_USE.md)。
 
-> 当前版本是公开测试版（Beta）。创建房间（当房主）只由 Windows 桌面客户端发起，桌面端可立即生成固定 HTTPS 电脑／手机网页邀请，无需网站注册或登录；观看者用邀请链接在浏览器里加入观看，**电脑浏览器在房间里也可以共享屏幕**，手机浏览器通常不实现 `getDisplayMedia`，因此手机网页以观看和聊天为主（共享按钮显示为"仅支持观看"）。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
+> 当前版本是公开测试版（Beta）。Windows 桌面端和支持安全连接的网页端均可创建房间，生成 HTTPS 电脑／手机网页邀请，无需网站注册或登录。网页在浏览器提供 API、页面策略允许且权限未被明确拒绝时显示摄像头或屏幕共享；不支持屏幕采集的手机不会显示屏幕入口。网页房主需保持前台，后台挂起或关闭网页可能中断协调服务，长时间使用建议桌面端主持。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
 
 [下载](https://github.com/lpossj/roomcast/releases) · [发布说明](docs/RELEASE_NOTES-0.14.3-beta.7.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
 
@@ -27,7 +27,7 @@ OBS Studio 32.1.2 只作为可选的 **固定帧率 Capture Layer**。OBS 负责
 ## 使用
 
 1. 启动 `Roomcast.exe`。
-2. 在 Windows 桌面应用点击“创建房间”，填写昵称和房名；电脑和手机网页使用邀请加入。
+2. 在 Windows 桌面应用或支持的 HTTPS 网页点击“创建房间”，填写昵称和房名；其他成员使用邀请加入。
 3. 点击“邀请朋友”，复制 `roomcast://join/...` 邀请。
 4. 好友可运行 Roomcast 并打开 `roomcast://` 邀请，也可以直接打开房间的 HTTPS 网页链接。
 5. 点击“共享屏幕”，选择 OBS 或原生采集、显示器/窗口、分辨率、FPS、目标码率以及音频选项。
@@ -141,6 +141,6 @@ Roomcast 由 D4Y0 / Roomcast 维护。项目源码采用 Apache License 2.0，�
 
 ## 固定网页入口
 
-默认地址：https://lpossj.github.io/roomcast/ 。分享弹窗在本地生成链接，不启动临时隧道，不要求使用者登录或注册。站点只提供静态网页，房间控制和媒体沿用现有独立流程。
+默认地址：https://roomcast-2dy.pages.dev/ 。分享弹窗在本地生成链接，不启动临时隧道，不要求使用者登录或注册。站点只提供静态网页，房间控制和媒体沿用现有独立流程。
 
 维护者执行 `npm run build` 和 `npm run package:web` 可生成 `release/Roomcast-<version>-WebViewer/`，将其部署到 HTTPS 静态站点即可。网页包同时适配根路径和子目录。已有配置可通过 `ROOMCAST_WEB_VIEWER_URL` 指向自己的 HTTPS 网页目录。

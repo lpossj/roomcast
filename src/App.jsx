@@ -1,10 +1,12 @@
-import { AppWindow, ArrowRight, AudioLines, Check, ChevronDown, ChevronRight, Copy, Download, Headphones, ImagePlus, Info, Link, LoaderCircle, LockKeyhole, LogOut, Maximize2, MessageSquare, Mic, Monitor, MonitorUp, Palette, Plus, RefreshCw, RotateCcw, RotateCw, ScreenShare, Send, Server, Settings, ShieldCheck, Square, Users, Volume2, Wifi, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { AppWindow, ArrowRight, AudioLines, Camera, Check, ChevronDown, ChevronRight, Copy, Download, Headphones, ImagePlus, Info, Link, LoaderCircle, LockKeyhole, LogOut, Maximize2, MessageSquare, Mic, Monitor, MonitorUp, Palette, Plus, RefreshCw, RotateCcw, RotateCw, ScreenShare, Send, Server, Settings, ShieldCheck, Square, Users, Volume2, Wifi, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ScreenPlayer from './ScreenPlayer.jsx';
 import { ack, attachNativeAudio, getLifecycleDiagnostics, initials, integratedSources, nativeAudioSources, startIntegratedCapture, startObsFixedFpsCapture, timeLabel } from './lib.js';
 import { readImageDimensions } from './image-policy.js';
 import { loadPreference, savePreference } from './preferences.js';
 import { fetchRelayIce, loadRelaySettings, saveRelaySettings } from './relay.js';
+import { browserCapabilities, normalizeBrowserShareSettings } from './browser-capabilities.js';
+import { startCameraCapture } from './browser-capture.js';
 import useDevices from './useDevices.js';
 import useRoom from './useRoom.js';
 import { MEDIA_RACE_BUILD_PROBE } from './media-race-manager.js';
@@ -17,7 +19,7 @@ const presets = [
   { id: '720p30', label: '720p', detail: '30 FPS · 节省带宽', width: 1280, height: 720, fps: 30, bitrate: 2500 },
   { id: '1080p60', label: '1080p', detail: '60 FPS · 更流畅', width: 1920, height: 1080, fps: 60, bitrate: 6500 },
 ];
-const defaultShareSettings = { captureBackend: 'obs', sourceType: 'monitor', sourceId: '', preset: '1080p30', width: 1920, height: 1080, fps: 30, bitrate: 6500, audioMode: 'none', audioSourceId: '', applicationMuted: false, microphoneMuted: false, systemAudio: false, microphone: false, compatibilityCanvas: false, performanceMode: 'quality' };
+const defaultShareSettings = { captureBackend: 'obs', sourceType: 'monitor', sourceId: '', preset: '1080p30', width: 1920, height: 1080, fps: 30, bitrate: 6500, audioMode: 'none', audioSourceId: '', applicationMuted: false, microphoneMuted: false, systemAudio: false, microphone: false, compatibilityCanvas: false, performanceMode: 'quality', facingMode: 'user' };
 const avatarClass = color => `avatar-color-${Number.isInteger(color) && color >= 0 && color < 10 ? color : 0}`;
 function loadShareSettings() {
   try {
@@ -30,7 +32,7 @@ function loadShareSettings() {
     clean.audioMode = ['none', 'system', 'application', 'exclude', 'microphone', 'system-microphone', 'application-microphone', 'exclude-microphone'].includes(saved.audioMode) ? saved.audioMode : legacyAudioMode;
     clean.performanceMode = 'quality';
     clean.compatibilityCanvas = false;
-    return clean;
+    return window.roomcast?.desktop ? clean : normalizeBrowserShareSettings({ ...clean, sourceType: saved.sourceType }, browserCapabilities(window));
   } catch { return { ...defaultShareSettings, captureBackend: window.roomcast?.desktop ? 'obs' : 'native' }; }
 }
 const params = new URLSearchParams(window.location.search);
@@ -193,15 +195,6 @@ function EntryModal({ mode, onClose, onEnter, busy, defaultServer, inviteRoom, c
   const [form, setForm] = useState({ nickname: loadPreference('nickname', ''), name: '朋友的放映室', roomId: inviteRoom || initialInvite, createKey: '', server: params.get('server') || loadPreference('server', '') || defaultServer || window.location.origin });
   const [error, setError] = useState('');
   const field = key => ({ value: form[key], onChange: event => setForm(value => ({ ...value, [key]: key === 'roomId' ? roomInviteFromUrl(event.target.value) || event.target.value : event.target.value })) });
-  const setServer = event => {
-    const value = event.target.value;
-    try {
-      const url = new URL(value);
-      const room = new URLSearchParams(url.hash.slice(1)).get('room') || url.searchParams.get('room');
-      if (room) { setKind('join'); setForm(current => ({ ...current, server: url.searchParams.get('server') || url.origin, roomId: room })); return; }
-    } catch { }
-    setForm(current => ({ ...current, server: value }));
-  };
   const submit = async event => {
     event.preventDefault();
     setError('');
@@ -222,12 +215,14 @@ function EntryModal({ mode, onClose, onEnter, busy, defaultServer, inviteRoom, c
       <label>你的昵称<input {...field('nickname')} autoComplete="nickname" placeholder="大家怎么称呼你？" required maxLength={24} disabled={busy} /></label>
       <label>{kind === 'create' ? '房间名称' : '邀请链接'}<input {...field(kind === 'create' ? 'name' : 'roomId')} placeholder={kind === 'create' ? '例如：周末放映室' : '粘贴 roomcast://join/…'} required maxLength={kind === 'create' ? 40 : 7000} disabled={busy} /></label>
       {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
+      {kind === 'create' && !window.roomcast?.desktop && <p className="setting-inline-note">请保持房主网页在前台。关闭网页或手机进入后台可能中断房间，长时间使用建议由桌面端主持。</p>}
       <button className="button primary full" type="submit" disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : kind === 'create' ? <Plus size={17} /> : <ArrowRight size={17} />}{busy ? '正在连接…' : kind === 'create' ? '创建并进入房间' : '进入房间'}</button>
     </form>
   </Modal>;
 }
 
-function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
+function ShareModal({ onClose, onStart, busy, audioDevices, capabilities, editing = false }) {
+  const desktop = window.roomcast?.desktop === true;
   const [settings, setSettings] = useState(loadShareSettings);
   const backend = settings.captureBackend === 'native' ? 'native' : 'obs';
   const type = settings.sourceType;
@@ -263,6 +258,11 @@ function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
   }, []);
 
   const load = async (overrides = {}) => {
+    if (!desktop) {
+      setSettings(current => normalizeBrowserShareSettings({ ...current, ...overrides }, capabilities));
+      setLoading(false);
+      return;
+    }
     const generation = ++refreshGeneration.current;
     const currentRequest = () => mounted.current && generation === refreshGeneration.current;
     const requested = { ...settings, ...overrides };
@@ -317,10 +317,11 @@ function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
     return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
   }, [busy, refreshAudioSources]);
   useEffect(() => { savePreference('shareSettings', settings); }, [settings]);
+  useEffect(() => { if (!desktop) setSettings(current => normalizeBrowserShareSettings(current, capabilities)); }, [desktop, capabilities.screen, capabilities.camera, capabilities.microphone]);
   const items = (type === 'monitor' ? sources.monitors : sources.windows) || [];
   const update = patch => setSettings(current => ({ ...current, ...patch }));
   const switchBackend = next => { update({ captureBackend: next, sourceId: '' }); void load({ captureBackend: next, sourceId: '' }); };
-  const switchType = next => { const nextItems = next === 'monitor' ? sources.monitors : sources.windows; update({ sourceType: next, sourceId: nextItems?.[0]?.id == null ? '' : String(nextItems[0].id) }); };
+  const switchType = next => { if (!desktop) { update(normalizeBrowserShareSettings({ ...settings, sourceType: next }, capabilities)); return; } const nextItems = next === 'monitor' ? sources.monitors : sources.windows; update({ sourceType: next, sourceId: nextItems?.[0]?.id == null ? '' : String(nextItems[0].id) }); };
   const selectPreset = item => update({ preset: item.id, width: item.width, height: item.height, fps: item.fps, bitrate: item.bitrate });
   const numeric = (key, value) => update({ preset: 'custom', [key]: value === '' ? '' : Number(value) });
   const currentAudioMode = settings.audioMode || 'none';
@@ -349,39 +350,45 @@ function ShareModal({ onClose, onStart, busy, audioDevices, editing = false }) {
     if (backend === 'obs' && (width % 2 || height % 2)) return setError('OBS 模式要求宽高为偶数。');
     if (!Number.isInteger(fps) || fps < 1 || fps > 120) return setError('帧率范围为 1–120 FPS。');
     if (!Number.isInteger(bitrate) || (bitrate !== 0 && (bitrate < 200 || bitrate > 50000))) return setError('码率请输入 0，或 200–50000 Kbps。');
-    const audioMode = settings.audioMode || 'none';
+    const effective = desktop ? settings : normalizeBrowserShareSettings(settings, capabilities);
+    if (!desktop && !(effective.sourceType === 'camera' ? capabilities.camera : capabilities.screen)) return setError('当前浏览器或页面权限不支持此共享来源。');
+    const audioMode = effective.audioMode || 'none';
     if ((audioMode.includes('application') || audioMode.includes('exclude')) && !processAudioAvailable) return setError('当前环境不支持按应用捕获或排除声音。');
     if ((audioMode.includes('application') || audioMode.includes('exclude')) && !settings.audioSourceId) return setError(audioMode.includes('exclude') ? '请选择要从系统声音中排除的软件。' : '请选择要捕获声音的软件。');
     const systemAudio = audioMode === 'system' || audioMode === 'system-microphone';
     const microphone = audioMode === 'microphone' || audioMode.endsWith('-microphone');
     try {
-      await onStart({ ...settings, width, height, fps, bitrate, audioMode, systemAudio, microphone });
+      await onStart({ ...effective, width, height, fps, bitrate, audioMode, systemAudio, microphone });
     } catch (failure) {
       // OBS start errors stay on OBS. The user can switch to native manually,
       // but Roomcast must not hide the failing phase by changing modes itself.
       setError(failure.message);
     }
   };
-  return <Modal title="屏幕共享" onClose={onClose} wide busy={busy || loading}>
+  return <Modal title={desktop ? "屏幕共享" : "画面共享"} onClose={onClose} wide busy={busy || loading}>
     {window.roomcast?.desktop && <div className="segmented" role="group" aria-label="采集引擎"><button type="button" className={backend === 'obs' ? 'selected' : ''} onClick={() => switchBackend('obs')} disabled={busy || loading}>OBS</button><button type="button" className={backend === 'native' ? 'selected' : ''} onClick={() => switchBackend('native')} disabled={busy || loading}>原生采集</button></div>}
-    <div className="source-tabs"><button className={type === 'monitor' ? 'active' : ''} onClick={() => switchType('monitor')} disabled={busy}><Monitor size={17} />整个屏幕</button><button className={type === 'window' ? 'active' : ''} onClick={() => switchType('window')} disabled={busy}><AppWindow size={17} />应用窗口</button><button className="icon-button refresh-sources" title="刷新采集来源" aria-label="刷新采集来源" onClick={() => load()} disabled={loading || busy}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button></div>
-    <div className="source-grid">{loading ? <div className="source-empty"><LoaderCircle className="spin" />正在读取本机采集来源…</div> : items.length ? items.map(source => <button key={source.id} className={`source-card ${settings.sourceId === String(source.id) ? 'selected' : ''}`} onClick={() => update({ sourceId: String(source.id) })} disabled={busy}><div className="source-art">{type === 'monitor' ? <Monitor size={38} strokeWidth={1.1} /> : <AppWindow size={38} strokeWidth={1.1} />}<span className="source-check">{settings.sourceId === String(source.id) && <Check size={13} />}</span></div><span title={source.name}>{source.name}</span></button>) : <div className="source-empty"><Monitor size={30} /><strong>还没有可用的采集来源</strong><span>请打开要共享的应用窗口，然后刷新来源。</span></div>}</div>
+    {desktop ? <><div className="source-tabs"><button className={type === 'monitor' ? 'active' : ''} onClick={() => switchType('monitor')} disabled={busy}><Monitor size={17} />整个屏幕</button><button className={type === 'window' ? 'active' : ''} onClick={() => switchType('window')} disabled={busy}><AppWindow size={17} />应用窗口</button><button className="icon-button refresh-sources" title="刷新采集来源" aria-label="刷新采集来源" onClick={() => load()} disabled={loading || busy}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button></div>
+    <div className="source-grid">{loading ? <div className="source-empty"><LoaderCircle className="spin" />正在读取本机采集来源…</div> : items.length ? items.map(source => <button key={source.id} className={`source-card ${settings.sourceId === String(source.id) ? 'selected' : ''}`} onClick={() => update({ sourceId: String(source.id) })} disabled={busy}><div className="source-art">{type === 'monitor' ? <Monitor size={38} strokeWidth={1.1} /> : <AppWindow size={38} strokeWidth={1.1} />}<span className="source-check">{settings.sourceId === String(source.id) && <Check size={13} />}</span></div><span title={source.name}>{source.name}</span></button>) : <div className="source-empty"><Monitor size={30} /><strong>还没有可用的采集来源</strong><span>请打开要共享的应用窗口，然后刷新来源。</span></div>}</div></> : <>
+      <div className="source-tabs">{capabilities.screen && <button className={type === 'monitor' ? 'active' : ''} onClick={() => switchType('monitor')} disabled={busy}><Monitor size={17} />屏幕或窗口</button>}{capabilities.camera && <button className={type === 'camera' ? 'active' : ''} onClick={() => switchType('camera')} disabled={busy}><Camera size={17} />摄像头</button>}</div>
+      <p className="setting-inline-note">{type === 'camera' ? '开始共享时，浏览器会请求摄像头权限。实际画质和帧率受设备能力限制。' : '开始共享时，由浏览器选择屏幕、窗口或标签页。可共享的声音由浏览器决定。'}</p>
+      {type === 'camera' && <Dropdown label="摄像头方向" value={settings.facingMode || 'user'} onChange={value => update({ facingMode: value })} disabled={busy} options={[{ value: 'user', label: '前置摄像头（优先）' }, { value: 'environment', label: '后置摄像头（优先）' }]} />}
+    </>}
     <label className="section-label">画面质量</label><div className="quality-options">{presets.map(item => <button key={item.id} className={settings.preset === item.id ? 'selected' : ''} onClick={() => selectPreset(item)} disabled={busy}><strong>{item.label}</strong><span>{item.detail}</span>{settings.preset === item.id && <Check size={14} />}</button>)}</div>
     <div className="custom-parameters"><label>宽度<input aria-label="共享宽度" type="number" min="320" max="7680" value={settings.width} onChange={event => numeric('width', event.target.value)} /></label><span>×</span><label>高度<input aria-label="共享高度" type="number" min="240" max="4320" value={settings.height} onChange={event => numeric('height', event.target.value)} /></label><label>帧率<input aria-label="共享帧率" type="number" min="1" max="120" value={settings.fps} onChange={event => numeric('fps', event.target.value)} /><small>FPS</small></label><label>码率<input aria-label="共享码率" type="number" min="0" max="50000" step="100" value={settings.bitrate} onChange={event => numeric('bitrate', event.target.value)} /><small>Kbps · 0=自动</small></label></div>
     <div className="share-parameter-summary"><strong>将使用的共享参数</strong><span>{settings.width || '—'} × {settings.height || '—'} · {settings.fps || '—'} FPS · {Number(settings.bitrate) === 0 ? '码率自动（不设应用上限）' : `${settings.bitrate || '—'} Kbps 上限`}</span><span>WebRTC / DTLS-SRTP · P2P 每位观看者占用一份上行带宽</span></div>
     <label className="section-label">共享声音</label>
     <div className="audio-mode-options" role="radiogroup" aria-label="共享声音来源">
       <label className={currentAudioMode === 'none' || currentAudioMode === 'microphone' ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={currentAudioMode === 'none' || currentAudioMode === 'microphone'} onChange={() => toggleAudioSource('', false)} disabled={busy} /><span><strong>不共享声音</strong><small>只共享画面</small></span></label>
-      <label className={sharesSystemAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={sharesSystemAudio} onChange={() => toggleAudioSource('system', true)} disabled={busy} /><span><strong>全部应用声音</strong><small>包括游戏和播放器</small></span></label>
-      <label className={sharesApplicationAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={sharesApplicationAudio} onChange={() => toggleAudioSource('application', true)} disabled={busy || !processAudioAvailable} /><span><strong>所选程序声音</strong><small>推荐，避免通话回声</small></span></label>
-      <label className={excludesApplicationAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={excludesApplicationAudio} onChange={() => toggleAudioSource('exclude', true)} disabled={busy || !processAudioAvailable} /><span><strong>排除所选程序</strong><small>本机可听，观看者听不到</small></span></label>
+      {(desktop || type !== 'camera') && <label className={sharesSystemAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={sharesSystemAudio} onChange={() => toggleAudioSource('system', true)} disabled={busy} /><span><strong>{desktop ? '全部应用声音' : '浏览器允许的声音'}</strong><small>{desktop ? '包括游戏和播放器' : '取决于浏览器与共享来源'}</small></span></label>}
+      {desktop && <label className={sharesApplicationAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={sharesApplicationAudio} onChange={() => toggleAudioSource('application', true)} disabled={busy || !processAudioAvailable} /><span><strong>所选程序声音</strong><small>推荐，避免通话回声</small></span></label>}
+      {desktop && <label className={excludesApplicationAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={excludesApplicationAudio} onChange={() => toggleAudioSource('exclude', true)} disabled={busy || !processAudioAvailable} /><span><strong>排除所选程序</strong><small>本机可听，观看者听不到</small></span></label>}
     </div>
     {backendNotice && <div className="setting-inline-note" role="status">{backendNotice}</div>}
     {audioLoading && <div className="setting-inline-note">正在读取可按应用处理的声音来源…</div>}
     {audioError && <div className="setting-inline-note" role="status" title={audioError}>应用声音列表暂不可用；仍可正常共享画面、全部应用声音或麦克风。Roomcast 会自动重试。</div>}
     {(sharesApplicationAudio || excludesApplicationAudio) && <Dropdown label={excludesApplicationAudio ? '从系统声音中排除' : '选择游戏或应用'} value={settings.audioSourceId || ''} onChange={value => update({ audioSourceId: value })} disabled={busy} options={[...(!settings.audioSourceId ? [{ value: '', label: '请选择应用' }] : []), ...(sources.applications || []).map(item => ({ value: String(item.id), label: audioApplicationLabel(item) }))]} />}
     {(sharesSystemAudio || sharesApplicationAudio || excludesApplicationAudio) && <label className="switch-row compact-audio-switch"><span><Volume2 size={18} /><span>静音共享声音</span></span><input type="checkbox" checked={settings.applicationMuted === true} onChange={event => update({ applicationMuted: event.target.checked })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
-    <label className="switch-row"><span><Mic size={18} /><span>加入麦克风<small>{audioDevices?.preferences.inputId ? '使用设置中选择的麦克风，可与共享声音分别静音。' : '使用系统默认麦克风，可与共享声音分别静音。'}</small></span></span><input type="checkbox" checked={sharesMicrophone} onChange={event => update({ audioMode: composeAudioMode(sharesSystemAudio ? 'system' : sharesApplicationAudio ? 'application' : excludesApplicationAudio ? 'exclude' : '', event.target.checked) })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>
+    {(desktop || capabilities.microphone) && <label className="switch-row"><span><Mic size={18} /><span>加入麦克风<small>{audioDevices?.preferences.inputId ? '使用设置中选择的麦克风，可与共享声音分别静音。' : '使用系统默认麦克风，可与共享声音分别静音。'}</small></span></span><input type="checkbox" checked={sharesMicrophone} onChange={event => update({ audioMode: composeAudioMode(sharesSystemAudio ? 'system' : sharesApplicationAudio ? 'application' : excludesApplicationAudio ? 'exclude' : '', event.target.checked) })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
     {sharesMicrophone && <label className="switch-row"><span><Mic size={18} /><span>静音共享麦克风<small>保留麦克风音轨，但暂时不发送声音。</small></span></span><input type="checkbox" checked={settings.microphoneMuted === true} onChange={event => update({ microphoneMuted: event.target.checked })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
     {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
     <footer className="modal-actions"><button className="button secondary" onClick={onClose} disabled={busy || loading}>取消</button><button className="button primary" onClick={submit} disabled={!settings.sourceId || busy || loading}>{busy ? <LoaderCircle size={17} className="spin" /> : <ScreenShare size={17} />}{busy ? editing ? '正在应用设置…' : '正在建立共享…' : editing ? '应用并重新共享' : '开始共享'}</button></footer>
@@ -841,23 +848,31 @@ function ImagePreviewOverlay({ image, onClose, onImageContextMenu, onCopy, onDow
   </div>;
 }
 
-function EmptyScreen({ room, onShare, onCreate, onJoin }) {
+function EmptyScreen({ room, onShare, onCreate, onJoin, desktop }) {
   return <div className="empty-screen">
     <div className="empty-grid" aria-hidden="true" />
     <div className="screen-illustration" aria-hidden="true"><div className="illustration-orbit orbit-one" /><div className="illustration-orbit orbit-two" /><div className="floating-tile tile-a"><AudioLines size={23} /></div><div className="floating-tile tile-b"><MessageSquare size={20} /></div><div className="monitor-assembly"><div className="illustration-monitor"><div className="illustration-title"><i /><i /><i /><span /></div><div className="illustration-content"><div className="share-glyph"><ScreenShare size={36} strokeWidth={1.35} /></div><div className="illustration-line" /><div className="illustration-line short" /></div><div className="illustration-cursor"><ArrowRight size={17} /></div></div><div className="monitor-neck" /><div className="monitor-foot" /></div></div>
-    <div className="empty-copy"><span className="eyebrow">A LITTLE CLOSER, EVEN FROM AFAR</span><h1>{room ? onShare ? '你的屏幕，就是聚会的开始' : '等待朋友共享屏幕' : <>分享一个屏幕，<br />一起多待一会儿。</>}</h1><div className="empty-actions">{room ? onShare ? <button className="button primary" onClick={onShare}><ScreenShare size={18} />开始屏幕共享<ArrowRight size={16} /></button> : <p className="setting-description">当前浏览器不支持屏幕采集，可以观看和聊天。</p> : <>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={18} />创建房间</button>}<button className={onCreate ? 'button secondary' : 'button primary'} onClick={onJoin}><Link size={17} />加入房间</button></>}</div></div>
+    <div className="empty-copy"><span className="eyebrow">A LITTLE CLOSER, EVEN FROM AFAR</span><h1>{room ? onShare ? '你的屏幕，就是聚会的开始' : '等待朋友共享屏幕' : <>分享一个屏幕，<br />一起多待一会儿。</>}</h1><div className="empty-actions">{room ? onShare ? <button className="button primary" onClick={onShare}><ScreenShare size={18} />{desktop ? '开始屏幕共享' : '开始画面共享'}<ArrowRight size={16} /></button> : <p className="setting-description">当前浏览器未提供可用的画面采集权限，可以观看和聊天。</p> : <>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={18} />创建房间</button>}<button className={onCreate ? 'button secondary' : 'button primary'} onClick={onJoin}><Link size={17} />加入房间</button></>}</div></div>
     <span className="stage-corner top-left" /><span className="stage-corner top-right" /><span className="stage-corner bottom-left" /><span className="stage-corner bottom-right" />
   </div>;
 }
 
 export default function App() {
   const desktopChrome = window.roomcast?.desktop === true;
-  const canShareScreen = desktopChrome || typeof navigator.mediaDevices?.getDisplayMedia === 'function';
-  // Hosting a room is the desktop application's job. A browser page used to be able to host
-  // by acting as its own room service; that path is unused in practice and made the web
-  // client a second, weaker host. Web clients now only join an invite link and watch —
-  // a desktop browser may still publish a screen share once it is inside a room.
-  const canHostRoom = desktopChrome;
+  const [cameraPermission, setCameraPermission] = useState('prompt');
+  const capabilities = browserCapabilities(window, cameraPermission);
+  const canShareScreen = desktopChrome || capabilities.screen || capabilities.camera;
+  const canHostRoom = desktopChrome || capabilities.host;
+  useEffect(() => {
+    if (desktopChrome || !navigator.permissions?.query) return undefined;
+    let active = true, status;
+    const changed = () => { if (active) setCameraPermission(status.state); };
+    navigator.permissions.query({ name: 'camera' }).then(value => {
+      if (!active) return;
+      status = value; changed(); status.addEventListener('change', changed);
+    }).catch(() => { /* Safari may not implement the camera permission query. */ });
+    return () => { active = false; status?.removeEventListener('change', changed); };
+  }, [desktopChrome]);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
   const notify = useCallback(text => { clearTimeout(toastTimer.current); setToast({ text }); toastTimer.current = setTimeout(() => setToast(null), 8500); }, []);
@@ -1278,7 +1293,7 @@ export default function App() {
     const captureOptions = { ...options, inputDeviceId: audioDevices.preferences.inputId, outputDeviceId: audioDevices.preferences.outputId };
     const nativeShareAudio = Boolean(window.roomcast?.startAudioCapture && /(?:system|application|exclude)/.test(String(options.audioMode || '')));
     const captureRequest = nativeShareAudio ? { ...captureOptions, systemAudio: false, microphone: false } : captureOptions;
-    const captureFactory = options.captureBackend === 'obs' ? startObsFixedFpsCapture : startIntegratedCapture;
+    const captureFactory = options.sourceType === 'camera' ? startCameraCapture : options.captureBackend === 'obs' ? startObsFixedFpsCapture : startIntegratedCapture;
     const capturePromise = captureFactory(captureRequest).then(stream => ({ stream }), error => ({ error }));
     setShareBusy(true);
     try {
@@ -1343,7 +1358,7 @@ export default function App() {
   };
   const openShare = () => {
     if (!room) { setModal(canHostRoom ? 'create' : 'join'); return; }
-    if (!canShareScreen) { notify('当前浏览器不支持屏幕采集，可以观看和聊天。'); return; }
+    if (!canShareScreen) { notify('当前浏览器未提供可用的画面采集权限，可以观看和聊天。'); return; }
     if (!self?.canShare && !ownShare) { notify('管理员已关闭你的屏幕共享权限。'); return; }
     setModal('share');
   };
@@ -1575,7 +1590,7 @@ export default function App() {
 
     <main className="main-content"><header className="room-header">{room && <div className="room-header-title"><Volume2 size={22} /><h2>{room.name}</h2></div>}<div className="room-header-actions"><span className={`connection-pill ${room ? 'connected' : ''}`}><span className="status-dot" />房间连接：{room ? config?.roomConnection || 'P2P' : '未连接'}</span>{!desktopChrome && <button className={`icon-button mobile-members-toggle ${showMembers ? 'toggled' : ''}`} title={showMembers ? '收起成员' : '查看成员'} aria-label={showMembers ? '收起成员' : '查看成员'} onClick={() => { setShowChat(false); setShowMembers(value => !value); }}><Users size={19} /></button>}<button className={`icon-button ${showChat ? 'toggled' : ''}`} title={showChat ? '收起聊天' : '展开聊天'} aria-label={showChat ? '收起聊天' : '展开聊天'} onClick={() => { setShowMembers(false); setShowChat(value => !value); }}><MessageSquare size={19} /></button></div></header>
       <div className="content-columns"><section className="stage-column"><div className="stage-heading"><div><span className="small-icon-box"><Monitor size={17} /></span><h3>共享屏幕</h3><span className="stage-state">{streams.length ? `${streams.length} 路共享` : '等待分享'}</span></div></div>
-        <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>{streams.length ? <div ref={screenGridRef} className={`screen-grid count-${streams.length}`} data-preview-scale={previewScale.toFixed(1)} style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}>{streams.map(stream => <ScreenPlayer key={[stream.memberId, stream.startedAt].join("-")} stream={stream} iceServers={config?.mediaIceServers} outputDeviceId={audioDevices.preferences.outputId} viewerMemberId={selfId} deafened={false} transport={socketRef.current?.mediaP2P ? socketRef.current : undefined} reportViewing={reportViewing} initiallyEntered={watchingStreams.current.has(stream.memberId)} onViewingChange={rememberViewing} />)}</div> : <EmptyScreen room={room} onShare={canShareScreen ? openShare : null} onCreate={canHostRoom ? () => setModal('create') : null} onJoin={() => setModal('join')} />}</div>
+        <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>{streams.length ? <div ref={screenGridRef} className={`screen-grid count-${streams.length}`} data-preview-scale={previewScale.toFixed(1)} style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}>{streams.map(stream => <ScreenPlayer key={[stream.memberId, stream.startedAt].join("-")} stream={stream} iceServers={config?.mediaIceServers} outputDeviceId={audioDevices.preferences.outputId} viewerMemberId={selfId} deafened={false} transport={socketRef.current?.mediaP2P ? socketRef.current : undefined} reportViewing={reportViewing} initiallyEntered={watchingStreams.current.has(stream.memberId)} onViewingChange={rememberViewing} />)}</div> : <EmptyScreen desktop={desktopChrome} room={room} onShare={canShareScreen ? openShare : null} onCreate={canHostRoom ? () => setModal('create') : null} onJoin={() => setModal('join')} />}</div>
       </section>
         {showChat && <aside className={`chat-panel ${chatDragActive ? 'chat-drag-active' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}><header><h3><MessageSquare size={17} />房间聊天</h3></header><div className="chat-messages" ref={chatList} onScroll={scrollChat} role="log" aria-label="房间聊天记录" aria-live="polite">{room && (historyLoading || hasOlderMessages) && <div className="chat-history-status">{historyLoading ? <><LoaderCircle size={13} className="spin" />正在加载消息…</> : '向上滚动加载更早消息'}</div>}{messages.length > 0 && <div className="chat-date"><span />今天<span /></div>}{messages.map(message => <ChatItem key={message.seq} message={message} selfId={selfId} onRecall={recall} onPreview={setPreviewImage} onImageContextMenu={handleImageContextMenu} />)}<div ref={chatEnd} /></div><form className="chat-compose" onSubmit={sendChat}>
           <input ref={imageInput} className="visually-hidden" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" onChange={chooseImage} />
@@ -1595,11 +1610,11 @@ export default function App() {
         </form></aside>}
       </div>
 
-      <footer className="voice-dock">{canShareScreen && <div className="dock-controls"><button className="button share-button" onClick={openShare} disabled={shareBusy || (!!room && !self?.canShare && !ownShare)}>{shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={19} />}<span>{ownShare ? '修改共享设置' : '共享屏幕'}</span></button>{ownShare && <button className="control-button leave-button" onClick={stopShare} disabled={shareBusy} title="停止共享" aria-label="停止共享"><Square size={16} /></button>}</div>}</footer>
+      <footer className="voice-dock">{canShareScreen && <div className="dock-controls"><button className="button share-button" onClick={openShare} disabled={shareBusy || (!!room && !self?.canShare && !ownShare)}>{shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={19} />}<span>{ownShare ? '修改共享设置' : desktopChrome ? '共享屏幕' : '共享画面'}</span></button>{ownShare && <button className="control-button leave-button" onClick={stopShare} disabled={shareBusy} title="停止共享" aria-label="停止共享"><Square size={16} /></button>}</div>}</footer>
     </main>
     {updatePrompt.open && update.result?.available && <UpdatePromptModal current={update.result.current || localConfig?.version || APP_VERSION} result={update.result} install={updateInstall} dontRemind={updatePrompt.dontRemind} setDontRemind={value => setUpdatePrompt(current => ({ ...current, dontRemind: value }))} onClose={closeUpdatePrompt} onUpdate={startAutoUpdate} onOpenPage={() => { window.roomcast?.openReleasePage?.().catch(() => { }); }} />}
     {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} canHost={canHostRoom} onClose={cancelEntry} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
-    {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} />}
+    {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} capabilities={capabilities} />}
     {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
     {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
     {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}

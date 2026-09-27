@@ -1172,18 +1172,6 @@ else {
         const requestedCaptureId = normalizeObsCaptureId(payload?.captureId);
         return closeObsCaptureEngine({ captureId: requestedCaptureId, cancelPending: true });
       });
-      ipcMain.handle('roomcast:obs-capture-status', async event => {
-        if (!owns(event, window)) throw new Error('不允许此窗口读取 OBS 状态。');
-        return runObsCaptureOperation(async assertCurrent => {
-          if (!obsCaptureEngine) {
-            return { prepared: false, running: false, connected: false, active: false, phase: obsCapturePhase, captureId: null };
-          }
-          const status = await obsCaptureEngine.status();
-          assertCurrent();
-          return { ...status, active: obsCaptureActive, phase: obsCapturePhase, captureId: obsCaptureSessionId || null };
-        });
-      });
-
       ipcMain.handle('roomcast:fullscreen-prepare', event => {
         if (!owns(event, window)) throw new Error('不允许此窗口切换全屏。');
         const bounds = window.getBounds();

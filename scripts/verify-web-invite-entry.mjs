@@ -26,9 +26,10 @@ try {
   // Reuse an already loaded document as a phone does when only the fragment changes.
   await page.goto(base);
   await page.locator('.empty-actions').getByRole('button', { name: '加入房间', exact: true }).waitFor();
-  assert.equal(await page.getByRole('button', { name: '创建房间', exact: true }).count(), 0);
+  assert.equal(await page.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).count(), 1);
   assert.equal(await page.getByRole('button', { name: '共享屏幕', exact: true }).count(), 0);
-  report.checks.push('phone without capture API: join only, no create or share');
+  assert.equal(await page.getByRole('button', { name: '共享画面', exact: true }).count(), 1);
+  report.checks.push('phone without display API: browser creation and camera entry remain available; no screen-only button');
   await page.evaluate(() => { window.roomcastEntryMarker = 'same-document'; });
   const first = 'roomcast://join/ABCDEF12?secret=' + 'a'.repeat(43);
   const second = 'roomcast://join/DEADBEEF?secret=' + 'b'.repeat(43);
@@ -67,12 +68,12 @@ try {
   desktopPage.on('pageerror', error => report.errors.push(error.message));
   await desktopPage.goto(base);
   await desktopPage.locator('.empty-actions').getByRole('button', { name: '加入房间', exact: true }).waitFor();
-  assert.equal(await desktopPage.getByRole('button', { name: '创建房间', exact: true }).count(), 0);
-  await desktopPage.getByRole('button', { name: '共享屏幕', exact: true }).click();
+  assert.equal(await desktopPage.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).count(), 1);
+  await desktopPage.getByRole('button', { name: '共享画面', exact: true }).click();
   await desktopPage.getByRole('dialog').waitFor();
-  assert.equal(await desktopPage.getByRole('heading', { name: '加入房间', exact: true }).count(), 1);
-  assert.equal(await desktopPage.getByRole('button', { name: '创建并进入房间', exact: true }).count(), 0);
-  report.checks.push('desktop browser retains share action, requests join first, cannot create');
+  assert.equal(await desktopPage.getByRole('heading', { name: '创建房间', exact: true }).count(), 1);
+  assert.equal(await desktopPage.getByRole('button', { name: '创建并进入房间', exact: true }).count(), 1);
+  report.checks.push('desktop browser offers publishing and creates a room before sharing when outside a room');
   await desktopPage.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click();
   await desktopPage.getByRole('button', { name: '设置', exact: true }).click();
   await desktopPage.getByRole('button', { name: '关于', exact: true }).click();

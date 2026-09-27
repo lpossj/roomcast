@@ -103,9 +103,6 @@ contextBridge.exposeInMainWorld('roomcast', {
   stopObsCapture: captureId =>
     ipcRenderer.invoke('roomcast:obs-capture-stop', captureId ? { captureId } : {}),
 
-  obsCaptureStatus: () =>
-    ipcRenderer.invoke('roomcast:obs-capture-status'),
-
   onObsCaptureEnded: callback => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('roomcast:obs-capture-ended', listener);

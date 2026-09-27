@@ -158,7 +158,7 @@ test('the existing leave action forces cleanup on its first invocation', async (
   const joined = h.enter('join', details); await tick();
   const socket = h.sockets[0]; socket.entry.resolve(result('old')); await joined;
   socket.leave = () => { throw Error('must not start a handover'); };
-  const handleLeave = vm.runInNewContext(app.slice(start, end) + '; handleLeave;', {
+  const handleLeave = vm.runInNewContext(app.slice(start, end) + '\n; handleLeave;', {
     roomAction: { current: 0 }, setModal() {}, socketRef: h.socketRef,
     ownsCapture: { current: false }, leave: h.leave, setChat() {}, refresh() {}, notify() {},
   });
