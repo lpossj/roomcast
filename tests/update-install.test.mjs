@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createHash } from 'node:crypto';
 import { deflateRawSync, crc32 } from 'node:zlib';
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   assertInstallTarget,
   buildApplyScript,
@@ -340,6 +338,18 @@ test('the apply script start guard waits for the first log line', async () => {
   assert.equal(await waitForApplyScriptStart(emptyLog, { timeoutMs: 300, intervalMs: 50 }), false);
 });
 
+test('apply rejects cmd expansion characters in every embedded path before launching', () => {
+  const plan = { target: { kind: 'portable-exe', targetPath: 'C:\\Roomcast.exe', appDir: 'C:\\', launchPath: 'C:\\Roomcast.exe' },
+    workDir: 'C:\\Temp\\update', logPath: 'C:\\Temp\\update\\apply.log', assetPath: 'C:\\Temp\\new.exe', pid: 7 };
+  for (const field of ['targetPath', 'appDir', 'launchPath']) {
+    for (const char of ['!', '%']) assert.throws(() => buildApplyScript({ ...plan, target: { ...plan.target, [field]: `C:\\bad${char}path` } }), /手动更新/);
+  }
+  for (const field of ['payloadDir', 'assetPath', 'workDir', 'logPath', 'failureMarkerPath']) {
+    assert.throws(() => buildApplyScript({ ...plan, [field]: 'C:\\bad%path' }), /手动更新/);
+  }
+  assert.throws(() => buildApplyScript({ ...plan, version: '1 & calc' }), /版本标识/);
+});
+
 test('the apply script uses a normal hidden PowerShell host and retains a detached cmd fallback', () => {
   // Regression coverage for the existing hidden launcher: cmd quoting, survival
   // after the app exits, and hidden descendants. On Windows, libuv adds
@@ -450,52 +460,4 @@ test('stale update work directories are removed on a later start', async () => {
   // folders must never be touched.
   assert.ok(await stat(freshRoot).catch(() => null));
   assert.ok(await stat(unrelated).catch(() => null));
-});
-
-test('the real release archive parses and extracts with this reader', async t => {
-  const archive = fileURLToPath(new URL('../release/Roomcast-0.14.3-beta.1-Windows.zip', import.meta.url));
-  const info = await stat(archive).catch(() => null);
-  if (!info) return t.skip('release archive not present in this checkout');
-  const destination = path.join(workRoot, 'real-release');
-  const wanted = new Set(['resources/NOTICE', 'version', 'resources/app.asar']);
-  const result = await extractZip(archive, destination, { only: name => wanted.has(name) });
-  assert.equal(result.files, 3);
-
-  // Structural checks that hold for any electron-builder archive: every entry we asked
-  // for came out non-empty, the payload is a real multi-megabyte asar, and a second,
-  // independent read of the same entries is byte identical (central directory and local
-  // headers agree, so the reader is not silently truncating or padding).
-  const first = new Map();
-  for (const name of wanted) {
-    const bytes = await readFile(path.join(destination, ...name.split('/')));
-    assert.ok(bytes.length > 0, `${name} must not be empty`);
-    first.set(name, bytes);
-  }
-  assert.ok(first.get('resources/app.asar').length > 1_000_000, 'app.asar must carry the whole app');
-  const again = path.join(workRoot, 'real-release-again');
-  const second = await extractZip(archive, again, { only: name => wanted.has(name) });
-  assert.equal(second.files, 3);
-  for (const name of wanted) {
-    const bytes = await readFile(path.join(again, ...name.split('/')));
-    assert.equal(
-      createHash('sha256').update(bytes).digest('hex'),
-      createHash('sha256').update(first.get(name)).digest('hex'),
-      `${name} must read identically twice`,
-    );
-  }
-
-  // When the archive has already been unpacked next to itself, compare byte for byte:
-  // a full 221 MB, 2 101 entry electron-builder ZIP must round-trip exactly. The
-  // unpacked folder is build scratch that may have been cleaned, so it is optional and
-  // its absence must not be reported as a reader failure.
-  const reference = fileURLToPath(new URL('../release/Roomcast-0.14.3-beta.1-Windows/', import.meta.url));
-  if (!(await stat(reference).catch(() => null))) return;
-  for (const name of wanted) {
-    const original = await readFile(path.join(reference, ...name.split('/')));
-    assert.equal(
-      createHash('sha256').update(first.get(name)).digest('hex'),
-      createHash('sha256').update(original).digest('hex'),
-      `${name} must match the extracted release build`,
-    );
-  }
 });

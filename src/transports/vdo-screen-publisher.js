@@ -201,6 +201,10 @@ export function createVdoScreenPublisher(
 
     closed = true;
     diagnostics.stop();
+    // Revoke live media immediately even if SDK signaling cleanup is delayed.
+    for (const track of isolatedStream.getTracks()) {
+      try { track.stop(); } catch { }
+    }
 
     closePromise =
       (async () => {

@@ -8,6 +8,32 @@ import {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+test('winner failing during guard after total deadline exhausts instead of waiting forever', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const exhausted = [];
+  const race = createMediaRaceCoordinator({ timeoutMs: 100, stabilityGuardMs: 50, onExhausted: value => exhausted.push(value) });
+  race.start();
+  t.mock.timers.tick(90);
+  race.markPlayable('p2p');
+  t.mock.timers.tick(10);
+  assert.equal(race.selectedRoute, 'p2p');
+  race.markFailed('p2p', new Error('guard failure'));
+  assert.equal(race.state, 'exhausted');
+  assert.equal(exhausted.length, 1);
+  race.close();
+});
+
+test('playable alternative survives winner failure after deadline during guard', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const race = createMediaRaceCoordinator({ timeoutMs: 100, stabilityGuardMs: 50 });
+  race.start(); t.mock.timers.tick(90); race.markPlayable('p2p'); race.markPlayable('vdo');
+  t.mock.timers.tick(10); race.markFailed('p2p');
+  assert.equal(race.selectedRoute, 'vdo');
+  t.mock.timers.tick(50);
+  assert.equal(race.state, 'stable');
+  race.close();
+});
+
 test('P2P playable first wins immediately, loser closes only after stability guard', async () => {
   const selected = [];
   const stable = [];

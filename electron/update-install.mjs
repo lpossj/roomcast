@@ -300,6 +300,12 @@ export async function extractZip(zipPath, destination, { onProgress, only } = {}
 //     A plain `find "N"` would be a substring match, and a tasklist failure must not be
 //     read as "the app has exited" (the copy retry loop below is the second safety net).
 export function buildApplyScript({ target, payloadDir = '', assetPath = '', workDir, logPath, pid, parentPid = 0, failureMarkerPath = '', version = '' }) {
+  for (const value of [target?.targetPath, target?.appDir, target?.launchPath, payloadDir, assetPath, workDir, logPath, failureMarkerPath]) {
+    if (/[!%"\r\n]/.test(value || '')) {
+      throw Object.assign(new Error('更新路径包含无法安全处理的字符（!、%、引号或换行），请打开发布页手动更新。'), { code: 'target' });
+    }
+  }
+  if (version && !/^[A-Za-z0-9._+-]+$/.test(version)) throw Object.assign(new Error('更新版本标识无效。'), { code: 'target' });
   const kind = target?.kind === 'portable-exe' ? 'portable-exe' : 'directory';
   const waitForPid = (variable, waitPid, limit, timeoutLabel) => [
     `set "TRIES=0"`,
@@ -369,7 +375,7 @@ export function buildApplyScript({ target, payloadDir = '', assetPath = '', work
     // reads this marker and tells the user instead of silently staying on the old version.
     lines.push(
       `>"%FAIL%" echo ${version}`,
-      `>>"%FAIL%" echo ${workDir}`,
+      `>>"%FAIL%" echo ${String(workDir).replace(/[\^&|<>()]/g, '^$&')}`,
       '>>"%FAIL%" echo replacement failed, see apply.log',
     );
   }
@@ -447,10 +453,10 @@ export async function prepareUpdateInstall({ target, download, pid, parentPid = 
   await assertInstallTarget(target);
   const workDir = existingWorkDir || updateWorkRoot();
   // The apply script is a .cmd: `!` and `%` in a path would be expanded by cmd.exe.
-  if (/[!%]/.test(workDir)) {
-    throw Object.assign(new Error(`临时目录路径包含 cmd 无法安全处理的字符（! 或 %）：${workDir}`), { code: 'target' });
-  }
   const logPath = path.join(workDir, 'apply.log');
+  // Validate before extraction or deleting the verified archive as well as at
+  // the script boundary. The main window is still open when this can fail.
+  buildApplyScript({ target, assetPath: download.path, workDir, logPath, pid, parentPid, failureMarkerPath, version });
   await mkdir(workDir, { recursive: true });
   const payloadDir = target.kind === 'directory' ? path.join(workDir, 'payload') : '';
   try {

@@ -374,11 +374,21 @@ else {
       // who explicitly saved native capture are not prompted for OBS setup.
       const preferredCaptureBackend = preferences?.shareSettings?.captureBackend === 'native' ? 'native' : 'obs';
       if (process.platform === 'win32' && app.isPackaged && !process.env.ROOMCAST_TEST_MODE && preferredCaptureBackend === 'obs') {
-        let virtualCameraReadyAtStartup = false;
+        let startupRegistration;
+        const logBootstrapFailure = error => {
+          startupMark('obs-vcam-prewindow-unavailable');
+          try {
+            const logPath = path.join(app.getPath('userData'), 'obs-startup-diagnostics.log');
+            if (fs.existsSync(logPath) && fs.statSync(logPath).size > 64 * 1024) fs.writeFileSync(logPath, '');
+            fs.appendFileSync(logPath, `${new Date().toISOString()} ${String(error?.message || error)}\n`);
+          } catch { }
+        };
         try {
-          virtualCameraReadyAtStartup = registrationStatus().roomcastReady === true;
-        } catch { }
-        if (!virtualCameraReadyAtStartup) {
+          startupRegistration = registrationStatus();
+        } catch (error) { logBootstrapFailure(error); }
+        // An unreadable registration is unknown, not missing. Do not escalate
+        // privileges merely because a security product blocked a query.
+        if (startupRegistration && !startupRegistration.roomcastReady) {
           const bootstrapEngine = new ObsFixedFpsEngine({
             runtimeRoot: runtimePaths.runtimeRoot,
             dataRoot: app.getPath('userData'),
@@ -395,7 +405,7 @@ else {
             // Do not block Roomcast itself when UAC is cancelled or registration
             // fails. Native capture must still open; the OBS start path will
             // surface the concrete registration error if the user selects OBS.
-            startupMark('obs-vcam-prewindow-unavailable');
+            logBootstrapFailure(error);
           } finally {
             await bootstrapEngine.close().catch(() => {});
           }

@@ -11,6 +11,9 @@ import { playSound } from './sounds.js';
 // JPEG dimension markers can follow large metadata blocks. Keep parsing bounded
 // by the existing maximum accepted image size instead of truncating valid headers.
 const MAX_IMAGE_HEADER_BYTES = 10 * 1024 * 1024;
+// Nine other members can each have two uploads in flight.
+const MAX_INCOMING_IMAGES = 18;
+const INCOMING_IMAGE_TIMEOUT_MS = 60_000;
 
 function imageHeaderBytes(chunks) {
   const total = Math.min(
@@ -133,18 +136,24 @@ export default function useRoom(onError) {
     });
   }, [revokeImageUrl]);
 
+  const discardIncomingImage = useCallback(messageId => {
+    const entry = incomingImagesRef.current.get(messageId);
+    if (entry) clearTimeout(entry.timer);
+    incomingImagesRef.current.delete(messageId);
+  }, []);
+
   const clearMessages = useCallback(() => {
     for (const messageId of [...imageUrlsRef.current.keys()]) revokeImageUrl(messageId);
     imageUrlSizesRef.current.clear();
     imageCacheBytesRef.current = 0;
-    incomingImagesRef.current.clear();
+    for (const messageId of incomingImagesRef.current.keys()) discardIncomingImage(messageId);
     messagesRef.current = [];
     historyBusyRef.current = false;
 
     setMessages([]);
     setHasOlderMessages(false);
     setHistoryLoading(false);
-  }, [revokeImageUrl]);
+  }, [discardIncomingImage, revokeImageUrl]);
 
   const syncMissingMessages = useCallback(async socket => {
     if (
@@ -169,6 +178,8 @@ export default function useRoom(onError) {
           afterSeq,
           limit: 50,
         });
+
+        if (socketRef.current !== socket) return;
 
         mergeMessages(result.messages);
 
@@ -289,18 +300,25 @@ export default function useRoom(onError) {
       || !Number.isSafeInteger(value.size)
       || value.size < 1
       || value.size > 10 * 1024 * 1024
-      || incomingImagesRef.current.size >= 2
+      || incomingImagesRef.current.has(value.messageId)
+      || incomingImagesRef.current.size >= MAX_INCOMING_IMAGES
     ) {
       return;
     }
 
-    incomingImagesRef.current.set(value.messageId, {
+    const entry = {
       ...value,
       chunks: [],
       received: 0,
       nextIndex: 0,
-    });
-  }, []);
+      timer: null,
+    };
+    entry.timer = setTimeout(() => {
+      if (incomingImagesRef.current.get(value.messageId) === entry) discardIncomingImage(value.messageId);
+    }, INCOMING_IMAGE_TIMEOUT_MS);
+    entry.timer.unref?.();
+    incomingImagesRef.current.set(value.messageId, entry);
+  }, [discardIncomingImage]);
 
   const receiveImageChunk = useCallback(value => {
     const entry = incomingImagesRef.current.get(value?.messageId);
@@ -323,26 +341,26 @@ export default function useRoom(onError) {
       || entry.received + data.byteLength > entry.size
     ) {
       if (entry) {
-        incomingImagesRef.current.delete(value.messageId);
+        discardIncomingImage(value.messageId);
       }
 
       return;
     }
 
     if (value.index === 0 && !imageMagicMatches(entry.mime, data)) {
-      incomingImagesRef.current.delete(value.messageId);
+      discardIncomingImage(value.messageId);
       return;
     }
 
     entry.chunks.push(data);
     entry.received += data.byteLength;
     entry.nextIndex += 1;
-  }, []);
+  }, [discardIncomingImage]);
 
   const receiveImageComplete = useCallback(value => {
     const entry = incomingImagesRef.current.get(value?.messageId);
 
-    incomingImagesRef.current.delete(value?.messageId);
+    discardIncomingImage(value?.messageId);
 
     if (!entry || entry.received !== entry.size) return;
 
@@ -381,12 +399,12 @@ export default function useRoom(onError) {
       messagesRef.current = next;
       return next;
     });
-  }, [storeImageUrl]);
+  }, [discardIncomingImage, storeImageUrl]);
 
   const receiveImageAbort = useCallback(value => {
-    incomingImagesRef.current.delete(value?.messageId);
+    discardIncomingImage(value?.messageId);
     if (typeof value?.messageId === 'string') revokeImageUrl(value.messageId);
-  }, [revokeImageUrl]);
+  }, [discardIncomingImage, revokeImageUrl]);
 
   const receiveRoom = useCallback(value => {
     const previous = membersRef.current;
@@ -849,13 +867,14 @@ export default function useRoom(onError) {
   );
 
   const sendMessage = useCallback(async text => {
+    const socket = socketRef.current;
     const result = await ack(
-      socketRef.current,
+      socket,
       'chat:send',
       { text },
     );
 
-    if (result.message) {
+    if (socketRef.current === socket && result.message) {
       mergeMessages([result.message]);
     }
 
@@ -863,20 +882,25 @@ export default function useRoom(onError) {
   }, [mergeMessages]);
 
   const recallMessage = useCallback(async messageId => {
+    const socket = socketRef.current;
     const result = await ack(
-      socketRef.current,
+      socket,
       'chat:recall',
       { messageId },
     );
 
-    if (result.message) {
+    if (socketRef.current === socket && result.message) {
       receiveRecall(result.message);
     }
 
     return result;
   }, [receiveRecall]);
 
-  const sendImage = useCallback(async (file, text = '', batch = null) => {
+  const sendImage = useCallback(async (file, text = '', batch = null, socket = socketRef.current) => {
+    const assertCurrentRoom = () => {
+      if (!socket?.connected || socketRef.current !== socket) throw new Error('房间连接已变化，已取消图片发送。');
+    };
+    assertCurrentRoom();
     if (!(file instanceof Blob)) {
       throw new Error('请选择图片文件。');
     }
@@ -969,7 +993,7 @@ export default function useRoom(onError) {
       );
     }
 
-    const socket = socketRef.current;
+    assertCurrentRoom();
 
     const init = await ack(
       socket,
@@ -986,6 +1010,7 @@ export default function useRoom(onError) {
         } : {}),
       },
     );
+    assertCurrentRoom();
 
     const chunkSize = Math.min(
       48 * 1024,
@@ -1007,6 +1032,8 @@ export default function useRoom(onError) {
         )
         .arrayBuffer();
 
+      assertCurrentRoom();
+
       await ack(
         socket,
         'image:chunk',
@@ -1017,12 +1044,14 @@ export default function useRoom(onError) {
         },
         20_000,
       );
+      assertCurrentRoom();
 
       await new Promise(
         resolve => setTimeout(resolve, 4),
       );
     }
 
+    assertCurrentRoom();
     const result = await ack(
       socket,
       'image:complete',
@@ -1031,6 +1060,7 @@ export default function useRoom(onError) {
       },
       20_000,
     );
+    assertCurrentRoom();
 
     const imageId = result.imageId || result.message?.id;
     if (imageId) {
@@ -1046,10 +1076,11 @@ export default function useRoom(onError) {
   }, [mergeMessages, storeImageUrl]);
 
   const sendImages = useCallback(async (files, text = '') => {
+    const socket = socketRef.current;
     const list = [...(files || [])].filter(Boolean);
     if (!list.length) throw new Error('请选择图片文件。');
     if (list.length > 4) throw new Error('一次最多发送 4 张图片。');
-    if (list.length === 1) return sendImage(list[0], text);
+    if (list.length === 1) return sendImage(list[0], text, null, socket);
 
     const id = typeof globalThis.crypto?.randomUUID === 'function'
       ? globalThis.crypto.randomUUID()
@@ -1062,6 +1093,7 @@ export default function useRoom(onError) {
           list[index],
           index === 0 ? text : '',
           { id, index, count: list.length },
+          socket,
         );
         if (result?.imageId) completedIds.push(result.imageId);
       }

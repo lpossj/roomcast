@@ -40,7 +40,7 @@ class Peer extends EventTarget {
 function harness(t, { failOpen = false } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const candidates = [], peers = [], opened = [], vdoRequests = [], viewers = [], visibleRoutes = [];
-  const intervals = new Map(), networkSamples = [];
+  const intervals = new Map(), networkSamples = []; let credentialRetries = 0;
   const transport = new EventEmitter();
   transport.mediaP2P = true;
   transport.openScreen = async (owner, pc, options) => {
@@ -58,6 +58,7 @@ function harness(t, { failOpen = false } = {}) {
     emptyMetrics: {}, MIN_PLAYOUT_BUFFER_MS: 0, P2P_CONNECT_TIMEOUT_MS,
     adaptivePlayoutTarget: (current, sample) => { networkSamples.push(sample); return current; },
     setState() {}, setSound() {}, setError() {}, setMetrics(value) { if (value.route) visibleRoutes.push(value.route); },
+    setRetry: () => credentialRetries++,
     createMediaRaceCoordinator, watchPlayableFrame, mediaIceServers: value => value,
     recordP2pNetworkStats,
     createRoomcastPeerConnection: () => { const pc = new Peer(); peers.push(pc); return pc; },
@@ -80,6 +81,8 @@ function harness(t, { failOpen = false } = {}) {
   return {
     opened, vdoRequests, peers, candidates, viewers, video, visibleRoutes,
     networkSamples,
+    credentialChanged: () => transport.emit('room:credential', { inviteSecret: 'new' }),
+    credentialRetries: () => credentialRetries,
     sampleStats: () => { for (const callback of intervals.values()) callback(); },
     dispose: () => cleanup(),
     disconnect: () => transport.emit('disconnect'),
@@ -95,6 +98,32 @@ function harness(t, { failOpen = false } = {}) {
     },
   };
 }
+
+test('credential changes reconnect VDO viewing while keeping a healthy P2P view', async t => {
+  const h = harness(t);
+  t.mock.timers.tick(3000); await settle();
+  h.playable('vdo'); t.mock.timers.tick(1250); await settle();
+  h.credentialChanged(); assert.equal(h.credentialRetries(), 1);
+  h.dispose(); h.credentialChanged(); assert.equal(h.credentialRetries(), 1, 'disposed player unsubscribes');
+});
+
+test('credential changes do not restart a decoded P2P winner', async t => {
+  const h = harness(t);
+  h.playable('p2p'); h.credentialChanged();
+  assert.equal(h.credentialRetries(), 0);
+  assert.equal(h.peers[0].connectionState, 'connecting');
+  assert.equal(h.video.srcObject.getVideoTracks()[0].id, 'p2p');
+});
+
+test('a VDO disconnect before the new credential arrives still triggers authorized recovery', async t => {
+  const h = harness(t);
+  t.mock.timers.tick(3000); await settle();
+  h.playable('vdo'); t.mock.timers.tick(1250); await settle();
+  h.viewers[0].dispatchEvent(new CustomEvent('connectionfailed', { detail: { reason: 'revoked' } }));
+  await settle();
+  assert.equal(h.viewers[0].pc.connectionState, 'closed');
+  h.credentialChanged(); assert.equal(h.credentialRetries(), 1);
+});
 
 test('ScreenPlayer requests P2P at t=0 and makes no VDO request before 3000ms', async t => {
   const h = harness(t);

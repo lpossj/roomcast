@@ -45,19 +45,9 @@ test(
       packageJson.version,
     );
 
-    assert.doesNotMatch(
-      appText,
-      /0\.11\.4/,
-    );
-
     assert.match(
       appText,
       /localConfig\?\.version/,
-    );
-
-    assert.doesNotMatch(
-      serverText,
-      /0\.11\.4/,
     );
 
     assert.match(

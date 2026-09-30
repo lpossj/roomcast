@@ -18,17 +18,24 @@ class FakePC {
   async addIceCandidate(candidate) { this.received.push(candidate); }
   close() { this.signalingState = 'closed'; }
 }
-test('SDP and trickled candidates retain IPv4 and relay fallback with all policy', async () => {
+test('SDP and trickled candidates retain IPv4 and relay fallback with all policy', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const target = { RTCPeerConnection: FakePC }; installIcePolicy(target);
   const pc = new target.RTCPeerConnection({ roomcastIcePolicy: true, iceTransportPolicy: 'relay' });
   assert.equal(pc.config.iceTransportPolicy, 'all');
-  await pc.setRemoteDescription({ type: 'offer', sdp: `v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:video\r\na=${v6}\r\na=${v4}\r\na=end-of-candidates\r\n` });
+  const description = pc.setRemoteDescription({ type: 'offer', sdp: `v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:video\r\na=${v6}\r\na=${v4}\r\na=end-of-candidates\r\n` });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(pc.received.length, 1, 'IPv6 candidate is delivered before deferred IPv4');
+  t.mock.timers.tick(450);
+  await description;
   assert.doesNotMatch(pc.remoteDescription.sdp, /candidate/);
   assert.equal(pc.received.length, 3);
   assert.equal(candidateStage(pc.received[0].candidate), 'ipv6');
   assert.equal(candidateStage(pc.received[1].candidate), 'ipv4');
   assert.equal(pc.received[2], null);
   const pending = pc.addIceCandidate({ candidate: relay, sdpMid: 'video' });
+  assert.equal(pc.received.length, 3, 'relay candidate is still deferred');
+  t.mock.timers.tick(2400);
   await pending;
   assert.equal(pc.received.length, 4); assert.equal(candidateStage(pc.received[3].candidate), 'relay');
   assert.equal(pc.received[3].sdpMid, 'video'); pc.close();

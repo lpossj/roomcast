@@ -1,4 +1,6 @@
-# Roomcast 0.14.4-beta.2
+# Roomcast 0.14.4-beta.3
+
+Windows 桌面修复版，变更和验证范围见 [beta.3 说明](docs/RELEASE_NOTES-0.14.4-beta.3.md)。线上网页仍为 beta.2，本次未部署网页。
 
 Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间最多 10 人，可多人同时共享。
 
@@ -6,7 +8,7 @@ Roomcast 只面向合法、知情同意的屏幕共享与聊天。使用前请�
 
 > 当前版本是公开测试版（Beta）。Windows 桌面端和支持安全连接的网页端均可创建房间，生成 HTTPS 电脑／手机网页邀请，无需网站注册或登录。网页在浏览器提供 API、页面策略允许且权限未被明确拒绝时显示摄像头或屏幕共享；不支持屏幕采集的手机不会显示屏幕入口。网页房主需保持前台，后台挂起或关闭网页可能中断协调服务，长时间使用建议桌面端主持。默认可能使用 PeerJS / VDO.Ninja 公网服务，代码签名状态和已知限制见发布说明与 [状态文档](docs/STATUS.md)。
 
-[下载](https://github.com/lpossj/roomcast/releases/tag/v0.14.4-beta.2) · [发布说明](docs/RELEASE_NOTES-0.14.4-beta.2.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
+[下载](https://github.com/lpossj/roomcast/releases/tag/v0.14.4-beta.3) · [发布说明](docs/RELEASE_NOTES-0.14.4-beta.3.md) · [发布流程](docs/RELEASING.md) · [版本策略](docs/VERSIONING.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/lpossj/roomcast/issues)（也可发邮件：2106841308@qq.com / z2106841308@163.com） · [安全报告](SECURITY.md)
 
 Roomcast 当前媒体架构是：
 
@@ -104,6 +106,8 @@ npm run verify:release -> 打包后 EXE smoke 校验
 OBS 发布包必须通过 `scripts/check-packaged-obs-step5d.cjs` 验证。不要通过猜测 DLL 用途来裁剪 OBS runtime；Step 6B 的任何体积优化都必须配套 packaged OBS verifier。
 
 ## 回归要求
+
+日常 `npm test` 运行快速回归；发布前 `npm run check:release` 包含全部回归（含多人迁移、超时及恢复场景）、许可、构建和网络门禁。`npm run check` 使用日常回归，其余门禁相同。
 
 修改后按受影响范围执行测试，不要把“构建成功”等同于“功能已验证”。网络修改至少保持：
 

@@ -1,6 +1,6 @@
 # Roomcast 发布流程
 
-当前版本0.14.4-beta.2，公开测试版。package.json决定版本，Git tag为v<version>，公开版本的客户端文件和标签保持固定。不要用旧验收报告冒充本次结果。
+当前Windows桌面版本0.14.4-beta.3；线上网页仍为0.14.4-beta.2。package.json决定版本，Git tag为v<version>，公开版本的客户端文件和标签保持固定。不要用旧验收报告冒充本次结果。
 
 ## 构建与检查
 
@@ -10,16 +10,16 @@
 npm ci
 npm run setup
 npm run prepare:release
-npm run check
+npm run check:release
 npm run release:build
 node scripts/generate-checksums.mjs --strict --published-only
 npm run check:obs-package
-node scripts/check-portable-lifetime.cjs release/Roomcast-0.14.4-beta.2-Windows.exe
+node scripts/check-portable-lifetime.cjs release/Roomcast-0.14.4-beta.3-Windows.exe
 node scripts/check-capture-backend-switch.cjs
 npm run verify:release
 ```
 
-check先测试后构建，干净检出没有dist；测试自行建立夹具。实际注册/手机/公网需要补充[当前状态](STATUS.md)列出的真机范围，不能由自动检查推定。
+日常 `npm test` 运行249项快速回归，`npm run check` 增加许可、构建和网络门禁。发布 `npm run check:release` 使用完整260项回归，额外覆盖11项多人迁移、超时和恢复场景；先测试后构建，测试自行建立夹具。实际注册/手机/公网需要补充[当前状态](STATUS.md)列出的真机范围，不能由自动检查推定。
 
 loopback组件取自独立runtime-2026.09 Release中的稳定资产，固定SHA验证；可用ROOMCAST_LOOPBACK_ARCHIVE或ROOMCAST_LOOPBACK_ARCHIVE_URL覆盖取得路径。详见[运行时组件](LOOPBACK-CAPTURE-COMPLIANCE.md)。OBS运行时及对应源码由prepare:obs:release验证；发布许可门禁必须保留。
 
@@ -44,4 +44,4 @@ CI负责Windows项目检查；Release workflow只在v*标签或明确手工dispa
 
 ## 构建机与记录
 
-npm run clean:build-scratch先盘点，:apply才清理；清理器校验目录形状、年龄、占用、既存claim，保护运行中的便携目录。每步含失败持续写[时间戳记录](时间戳记录/README.md)。公开说明写变更、验证边界、未签名、升级方式和安全报告渠道；旧材料集中[历史归档](时间戳记录/历史资料-20260927.zip)。
+npm run clean:build-scratch先盘点，:apply才清理；清理器校验目录形状、年龄、占用、既存claim，保护运行中的便携目录。公开说明写变更、验证边界、未签名、升级方式和安全报告渠道；本地工作记录单独保留，不作为发布附件。

@@ -80,6 +80,7 @@ export class MediaRaceCoordinator {
   #selectedAt = null;
   #stableAt = null;
   #deadlineTimer = null;
+  #deadlineExpired = false;
   #tieTimer = null;
   #stabilityTimer = null;
   #vdoDelayTimer = null;
@@ -212,6 +213,7 @@ export class MediaRaceCoordinator {
 
     this.#deadlineTimer = setTimeout(() => {
       this.#deadlineTimer = null;
+      this.#deadlineExpired = true;
 
       // A selected winner is already serving media; let the short stability
       // guard finish rather than incorrectly opening the TURN gate.
@@ -357,6 +359,11 @@ export class MediaRaceCoordinator {
 
       if (this.#routes[alternative].status === 'failed') {
         this.#exhaust('both-failed');
+        return this.#snapshot();
+      }
+
+      if (this.#deadlineExpired) {
+        this.#exhaust('timeout');
         return this.#snapshot();
       }
 

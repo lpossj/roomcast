@@ -1122,8 +1122,8 @@ export default function App() {
   }, [notify]);
   useEffect(() => { if (stickToChatEnd.current) chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [messages.at(-1)?.seq]);
   useEffect(() => {
-    if (!room && ownsCapture.current) { ownsCapture.current = false; stopLocalShare().catch(error => notify(`连接已结束，但停止采集失败：${error.message}`)); }
-  }, [room, notify, stopLocalShare]);
+    if ((!room || self?.canShare === false) && ownsCapture.current) { ownsCapture.current = false; stopLocalShare().catch(error => notify(`停止采集失败：${error.message}`)); }
+  }, [room, self?.canShare, notify, stopLocalShare]);
   useEffect(() => {
     const unload = () => {
       if (!window.roomcast?.desktop) { void leave(true); return; }
@@ -1373,6 +1373,8 @@ export default function App() {
   };
   const stageImages = useCallback(files => {
     if (sendingImage || !room) return;
+    const socket = socketRef.current;
+    const action = roomAction.current;
     const list = [...(files || [])].filter(Boolean);
     if (!list.length) return;
     if (pendingImagesRef.current.length + list.length > MAX_CHAT_IMAGES) {
@@ -1398,8 +1400,15 @@ export default function App() {
         if (shrunk.size > 10 * 1024 * 1024) return file;
         return shrunk;
       }));
+      if (socketRef.current !== socket || roomAction.current !== action || activeRoomId.current !== room.id) return;
       const staged = prepared.map(file => ({ file, objectUrl: URL.createObjectURL(file) }));
-      setPendingImages(current => [...current, ...staged]);
+      setPendingImages(current => {
+        if (socketRef.current !== socket || roomAction.current !== action || current.length + staged.length > MAX_CHAT_IMAGES) {
+          staged.forEach(item => URL.revokeObjectURL(item.objectUrl));
+          return current;
+        }
+        return [...current, ...staged];
+      });
       stickToChatEnd.current = true;
       requestAnimationFrame(() => chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
     })();

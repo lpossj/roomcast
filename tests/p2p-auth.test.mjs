@@ -377,6 +377,54 @@ async function admittedGuest(room, id, reply = { ok: true }) {
   return { connection, disconnected: () => disconnected, closed: () => closed, probes: () => probes };
 }
 
+test('authenticated channels expire if they never join and release their reserved slot', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const room = new P2PRoom(); room.roomId = 'ABCDEF12'; room.inviteSecret = 's'.repeat(43);
+  t.after(() => room.disconnect());
+  const socket = new EventEmitter(); let disconnects = 0;
+  socket.disconnect = () => { disconnects++; };
+  room.localSocket = async () => socket;
+  const connection = new EventEmitter(); connection.open = true;
+  connection.metadata = { protocol: 2, authMode: 'invite' };
+  connection.close = () => { connection.open = false; connection.emit('close'); };
+  connection.send = value => {
+    if (value.authChallenge) void createPeerAuthProof(room.inviteSecret, value.authChallenge)
+      .then(authProof => connection.emit('data', { authProof }));
+  };
+  await room.accept(connection);
+  assert.equal(room.guests.size, 1); assert.equal(socket.data.admitted, false);
+  t.mock.timers.tick(24_999); assert.equal(connection.open, true);
+  t.mock.timers.tick(1); assert.equal(connection.open, false);
+  assert.equal(room.guests.size, 0); assert.equal(disconnects, 1);
+});
+
+test('credential rotation closes the old VDO publisher and preserves native capture and sessions', async () => {
+  const room = new P2PRoom(); room.isHost = true; room.inviteSecret = 's'.repeat(43);
+  let vdoClosed = 0, starts = 0, tracksStopped = 0, pcClosed = 0;
+  const capture = { active: true, getTracks: () => [{ stop: () => tracksStopped++ }] };
+  room.screenStream = capture;
+  room.vdoPublisher = { close: async () => { vdoClosed++; } };
+  room.screenSessions.set('native', { owner: 'healthy', pc: { close: () => pcClosed++ } });
+  room.startVdoPublisher = async stream => { assert.equal(stream, capture); starts++; };
+  room.rotateInviteCredential('kicked');
+  await flush();
+  assert.equal(vdoClosed, 1); assert.equal(starts, 1);
+  assert.equal(tracksStopped, 0); assert.equal(pcClosed, 0); assert.equal(room.screenSessions.size, 1);
+  room.dispatch('room:credential', { inviteSecret: room.inviteSecret });
+  assert.equal(starts, 1, 'a repeated credential does not rotate media again');
+  room.disconnect();
+});
+
+test('revoked share permission stops capture and VDO even if the room remains open', () => {
+  const room = new P2PRoom(); room.id = 'me';
+  let stopped = 0, cleaned = 0, closed = 0;
+  room.screenStream = { getTracks: () => [{ stop: () => stopped++ }], roomcastCleanup: () => cleaned++ };
+  room.vdoPublisher = { close: async () => closed++ };
+  room.dispatch('room:state', { id: 'room', members: [{ id: 'me', canShare: false }], streams: [] });
+  assert.equal(stopped, 1); assert.equal(cleaned, 1); assert.equal(closed, 1);
+  assert.equal(room.screenStream, null); assert.equal(room.room.id, 'room');
+});
+
 test('a silent web guest is removed without a close event while responsive and busy guests stay', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const room = new P2PRoom();

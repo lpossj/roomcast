@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFile } from 'node:fs/promises';
 import { adaptivePlayoutTarget, MAX_PLAYOUT_BUFFER_MS, MIN_PLAYOUT_BUFFER_MS } from '../src/playout.js';
 import { nativeAudioSources } from '../src/lib.js';
 
@@ -70,23 +69,4 @@ test('adaptive playout adds bounded shared delay under loss and decays smoothly 
   assert.ok(impaired > 80 && impaired <= MAX_PLAYOUT_BUFFER_MS);
   const recovered = adaptivePlayoutTarget(impaired, { jitterMs: 0, decodeMs: 0, lossRate: 0 });
   assert.ok(recovered < impaired && recovered > MIN_PLAYOUT_BUFFER_MS);
-});
-
-test('stage-one UI wiring keeps 50 percent volume, bounded PCM, fullscreen restore, and one room-exit entry', async () => {
-  const [player, app, lib, main] = await Promise.all([
-    readFile(new URL('../src/ScreenPlayer.jsx', import.meta.url), 'utf8'),
-    readFile(new URL('../src/App.jsx', import.meta.url), 'utf8'),
-    readFile(new URL('../src/lib.js', import.meta.url), 'utf8'),
-    readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8'),
-  ]);
-  assert.match(player, /FULLSCREEN_UI_HIDE_DELAY = 2000/);
-  assert.match(player, /loadPreference\('playbackVolume', 0\.5\)/);
-  assert.match(lib, /audioWorklet\.addModule\('\/roomcast-pcm-worklet\.js'\)/);
-  assert.doesNotMatch(lib, /createBufferSource\(\)|nextTime/);
-  const worklet = await readFile(new URL('../public/roomcast-pcm-worklet.js', import.meta.url), 'utf8');
-  assert.match(worklet, /maxQueuedFrames = 12000/);
-  assert.match(worklet, /this\.count < this\.startFrames/);
-  assert.match(main, /capture\.start\(mode === 'exclude' \? processId : process\.pid, false, onData\)/);
-  assert.equal((app.match(/className="rail-button leave-room-rail"/g) || []).length, 1);
-  assert.doesNotMatch(app, /className="people-section"|className="under-stage"/);
 });

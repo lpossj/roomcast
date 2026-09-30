@@ -40,3 +40,10 @@ reference*/
 PartyLink*/
 # Verification output
 .test/
+
+# Local work records; keep files on disk, exclude new additions from publication.
+/docs/时间戳记录/
+/docs/*审查*.md
+/docs/ARCHITECTURE*.md
+/docs/*架构*.md
+/docs/*结构*.md

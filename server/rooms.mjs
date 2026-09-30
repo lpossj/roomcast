@@ -1044,6 +1044,16 @@ export function attachRooms(io, {
       }
     };
 
+    const abortImageUpload = upload => {
+      uploads.delete(upload.uploadId);
+      clearTimeout(upload.timer);
+      if (upload.batchId && imageBatches.has(upload.batchId)) {
+        abortImageBatch(imageBatches.get(upload.batchId));
+      } else if (upload.started) {
+        emitImageAbort(upload.room, upload.member.id, upload.messageId);
+      }
+    };
+
     const armImageBatch = batch => {
       clearTimeout(batch.timer);
       batch.timer = setTimeout(() => abortImageBatch(batch), IMAGE_BATCH_TIMEOUT_MS);
@@ -3169,25 +3179,7 @@ export function attachRooms(io, {
         upload.timer =
           setTimeout(
             () => {
-              uploads.delete(
-                uploadId,
-              );
-
-              if (upload.batchId) {
-                const activeBatch = imageBatches.get(upload.batchId);
-                if (activeBatch) abortImageBatch(activeBatch);
-                return;
-              }
-
-              if (
-                upload.started
-              ) {
-                emitImageAbort(
-                  room,
-                  socket.data.memberId || socket.id,
-                  messageId,
-                );
-              }
+              abortImageUpload(upload);
             },
             IMAGE_UPLOAD_TIMEOUT_MS,
           );
@@ -3264,13 +3256,7 @@ export function attachRooms(io, {
           + data.length
           > upload.size
         ) {
-          uploads.delete(
-            upload.uploadId,
-          );
-
-          clearTimeout(
-            upload.timer,
-          );
+          abortImageUpload(upload);
 
           throw new Error(
             '图片分块大小或声明长度无效。',
@@ -3284,13 +3270,7 @@ export function attachRooms(io, {
             data,
           )
         ) {
-          uploads.delete(
-            upload.uploadId,
-          );
-
-          clearTimeout(
-            upload.timer,
-          );
+          abortImageUpload(upload);
 
           throw new Error(
             '图片内容与 MIME 类型不匹配。',

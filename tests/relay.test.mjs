@@ -13,9 +13,12 @@ const ice = [
 ];
 
 test('relay invite contains only sanitized short-lived ICE credentials', () => {
-  const value = encodeRelayInvite(ice);
+  const value = encodeRelayInvite(ice.map(item => ({ ...item, accessKey: 'owner-only-key', endpoint: 'https://owner.example.com' })));
   assert.match(value, /^[A-Za-z0-9_-]+$/);
   assert.deepEqual(decodeRelayInvite(value), ice);
+  const plain = Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+  assert.equal(plain.includes('owner-only-key'), false);
+  assert.equal(plain.includes('owner.example.com'), false);
   assert.throws(() => decodeRelayInvite('bad!value'), /无效/);
   assert.throws(() => encodeRelayInvite([{ urls: 'https://internal.example' }]), /TURN/);
 });
@@ -62,6 +65,9 @@ test('room-provided TURN credentials work even when the joining client has local
     iceServers: ice,
     unavailable: false,
   });
+  const corrupt = await optionalRelayIce({ settings: { enabled: false }, encoded: 'not_a_valid_roomcast_turn_payload' });
+  assert.equal(corrupt.unavailable, true);
+  assert.deepEqual(corrupt.iceServers, []);
 });
 
 test('local TURN OFF does not fetch TURN when the invite carries no relay credentials', async () => {

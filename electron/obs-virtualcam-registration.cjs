@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 const { VIRTUALCAM_HASHES, virtualCameraTrustScript } = require('./obs-virtualcam-trust.cjs');
 
@@ -30,55 +31,57 @@ function pathInside(child, parent) {
   return Boolean(a && b && (a === b || a.startsWith(`${b}\\`)));
 }
 
+function parseRegistrationExport(text, view) {
+  const key = `HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\CLSID\\${OBS_VIRTUAL_CAM_CLSID}\\InprocServer32`;
+  const sections = String(text).replace(/^\uFEFF/, '').split(/\r?\n(?=\[)/);
+  const section = sections.find(value => value.split(/\r?\n/, 1)[0].toLowerCase() === `[${key}]`.toLowerCase());
+  if (!section) throw new Error('注册表导出未包含目标项。');
+  const line = section.replace(/\\\r?\n\s*/g, '').split(/\r?\n/).find(value => value.startsWith('@='));
+  let value = '';
+  if (line?.startsWith('@="')) {
+    value = JSON.parse(line.slice(2));
+  } else if (line?.startsWith('@=hex(2):')) {
+    const hex = line.slice('@=hex(2):'.length).replace(/\s/g, '');
+    if (!/^(?:[a-f0-9]{2},)*[a-f0-9]{2}$/i.test(hex)) throw new Error('注册表路径编码无效。');
+    value = Buffer.from(hex.split(',').map(byte => parseInt(byte, 16))).toString('utf16le').replace(/\0+$/, '');
+    value = value.replace(/%([^%]+)%/g, (match, name) => {
+      const envKey = Object.keys(process.env).find(key => key.toLowerCase() === name.toLowerCase());
+      return envKey ? process.env[envKey] : match;
+    });
+  } else if (line) {
+    throw new Error('注册表路径类型无效。');
+  }
+  const modulePath = cleanRegistryPath(value);
+  return { registered: true, path: modulePath, pathExists: Boolean(modulePath) && fs.existsSync(modulePath), view: Number(view) };
+}
+
 function queryRegistrationView(view) {
   if (process.platform !== 'win32') {
     return { registered: false, path: '', pathExists: false, view: Number(view) };
   }
-  const registryView = Number(view) === 32 ? 'Registry32' : 'Registry64';
-  const subKey = `SOFTWARE\\Classes\\CLSID\\${OBS_VIRTUAL_CAM_CLSID}\\InprocServer32`;
-  const command = [
-    "$ErrorActionPreference = 'Stop'",
-    '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
-    `$View = [Microsoft.Win32.RegistryView]::${registryView}`,
-    '$Base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $View)',
-    `$Key = $Base.OpenSubKey(${psSingleQuoted(subKey)})`,
-    'if ($null -eq $Key) {',
-    `  [pscustomobject]@{ registered = $false; path = ''; view = ${Number(view)} } | ConvertTo-Json -Compress`,
-    '} else {',
-    "  $Value = [string]$Key.GetValue('')",
-    '  $Key.Dispose()',
-    `  [pscustomobject]@{ registered = $true; path = $Value; view = ${Number(view)} } | ConvertTo-Json -Compress`,
-    '}',
-    '$Base.Dispose()',
-  ].join('; ');
-  const result = spawnSync('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy', 'Bypass',
-    '-EncodedCommand', encodePowerShell(command),
-  ], {
-    windowsHide: true,
-    encoding: 'utf8',
-    maxBuffer: 1024 * 1024,
-  });
-  if (result.error) {
-    throw new Error(`无法读取 Windows ${view} 位 OBS Virtual Camera 注册状态：${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(`读取 Windows ${view} 位 OBS Virtual Camera 注册状态失败（exit ${result.status ?? 'unknown'}）：${String(result.stderr || result.stdout || '').trim()}`);
-  }
+  // reg export is read-only and preserves Unicode in its UTF-16 file. A shell
+  // query's locale-dependent stdout can corrupt non-ASCII installation paths.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'roomcast-vcam-query-'));
   try {
-    const parsed = JSON.parse(String(result.stdout || '').replace(/^\uFEFF/, '').trim());
-    const registered = parsed?.registered === true;
-    const modulePath = cleanRegistryPath(parsed?.path || '');
-    return {
-      registered,
-      path: modulePath,
-      pathExists: registered && Boolean(modulePath) && fs.existsSync(modulePath),
-      view: Number(view),
-    };
+    const file = path.join(dir, 'camera.reg');
+    const regExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+    const result = spawnSync(regExe, ['export', `HKLM\\SOFTWARE\\Classes\\CLSID\\${OBS_VIRTUAL_CAM_CLSID}\\InprocServer32`, file, '/y', `/reg:${Number(view) === 32 ? 32 : 64}`], {
+      windowsHide: true, timeout: 5000, maxBuffer: 1024 * 1024,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      const output = Buffer.concat([result.stderr || Buffer.alloc(0), result.stdout || Buffer.alloc(0)]);
+      const detail = `${output.toString('utf8')}\n${new TextDecoder('gbk').decode(output)}`;
+      if (result.status === 1 && /unable to find the specified registry key|系统找不到指定的注册表项或值/.test(detail)) {
+        return { registered: false, path: '', pathExists: false, view: Number(view) };
+      }
+      throw new Error(`exit ${result.status ?? 'unknown'}: ${output.toString('utf8').trim()}`);
+    }
+    return parseRegistrationExport(fs.readFileSync(file, 'utf16le'), view);
   } catch (error) {
-    throw new Error(`解析 Windows ${view} 位 OBS Virtual Camera 注册状态失败：${error.message}`);
+    throw new Error(`无法读取 Windows ${view} 位 OBS Virtual Camera 注册状态：${error.message}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -601,6 +604,7 @@ module.exports = {
   classifyVirtualCameraRegistration,
   roomcastRegistrationDecision,
   registrationStatus,
+  parseRegistrationExport,
   registrationAssessment,
   stableInstallPaths,
   buildElevatedRegistrationScript,

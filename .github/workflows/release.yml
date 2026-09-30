@@ -78,7 +78,7 @@ jobs:
         run: npm ci
 
       - name: Run project checks
-        run: npm run check
+        run: npm run check:release
 
       - name: Prepare loopback runtime
         run: node scripts/fetch-runtime.mjs

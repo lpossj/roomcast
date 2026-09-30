@@ -314,11 +314,17 @@ export class P2PRoom {
     }
     if (event === 'room:credential') {
       if (!INVITE_SECRET.test(value?.inviteSecret || '')) return;
+      const changed = this.inviteSecret !== value.inviteSecret;
       this.inviteSecret = value.inviteSecret;
       if (this.pendingMigrationCommit) this.pendingMigrationCommit.inviteSecret = value.inviteSecret;
+      if (changed && this.screenStream?.active) {
+        this.stopVdoPublisher();
+        void this.startVdoPublisher(this.screenStream).catch(() => { });
+      }
     }
     if (event === 'room:state') {
       this.room = value;
+      if (value?.members?.find(member => member.id === this.id)?.canShare === false) this.stopScreenStream();
     }
 
     if (
@@ -350,7 +356,7 @@ export class P2PRoom {
     if (!kickedId || this.closed) return;
     const kicked = this.guestMembers.get(kickedId);
     this.guestMembers.delete(kickedId);
-    this.inviteSecret = randomSecret();
+    this.dispatch('room:credential', { inviteSecret: randomSecret() });
     const admitted = new Set(this.guestMembers.values());
     for (const connection of [...this.unauthenticated, ...this.guests]) {
       if (connection === kicked || !admitted.has(connection)) {
@@ -360,7 +366,6 @@ export class P2PRoom {
         connection.send({ event: 'room:credential', data: { inviteSecret: this.inviteSecret } });
       }
     }
-    this.dispatch('room:credential', { inviteSecret: this.inviteSecret });
   }
 
   timeout(ms) {
@@ -2095,6 +2100,13 @@ export class P2PRoom {
       authenticated = true;
 
       clearTimeout(timeout);
+
+      // Passing HMAC is not admission. Bound the gap until a successful join
+      // so abandoned authenticated channels cannot reserve all nine slots.
+      timeout = setTimeout(() => {
+        cleanup();
+        try { connection.close(); } catch { }
+      }, 25_000);
 
       this.unauthenticated
         .delete(connection);

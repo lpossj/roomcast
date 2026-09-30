@@ -1648,6 +1648,15 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
       );
     };
 
+    const credentialChanged = () => {
+      // Healthy native P2P/TURN viewers keep their current connection. Only a
+      // VDO viewer (including a pending contender) needs fresh credentials.
+      // The old VDO connection may fail before the control-channel update
+      // arrives. Its closed attempt must still be eligible for recovery.
+      if (isCurrent(generation) && !turnStarted && activeRoute !== 'p2p'
+        && attempts.has('vdo')) setRetry(value => value + 1);
+    };
+    transport.on?.('room:credential', credentialChanged);
     transport.on?.(
       'disconnect',
       disconnected,
@@ -1661,6 +1670,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         'disconnect',
         disconnected,
       );
+      transport.off?.('room:credential', credentialChanged);
 
       race.close(
         'screen-player-disposed',

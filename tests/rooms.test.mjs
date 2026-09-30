@@ -54,6 +54,21 @@ async function harness(t, options = {}) {
 const create = (socket, overrides = {}) => request(socket, 'room:create', { name: '一起看屏幕', nickname: '房主', ...overrides });
 const join = (socket, roomId, overrides = {}) => request(socket, 'room:join', { roomId, nickname: '朋友', ...overrides });
 
+test('fatal upload length failure broadcasts abort and releases an already started receiver', async t => {
+  const { connect } = await harness(t);
+  const [owner, guest] = await Promise.all([connect(), connect()]);
+  const created = await create(owner); await join(guest, created.room.id);
+  const upload = await request(owner, 'image:init', { name: 'picture.png', mime: 'image/png', size: 9 });
+  const started = nextEvent(guest, 'image:start');
+  assert.equal((await request(owner, 'image:chunk', { uploadId: upload.uploadId, index: 0,
+    data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) })).ok, true);
+  assert.equal((await started).messageId, upload.messageId);
+  const aborted = nextEvent(guest, 'image:abort');
+  assert.equal((await request(owner, 'image:chunk', { uploadId: upload.uploadId, index: 1, data: Buffer.alloc(2) })).ok, false);
+  assert.equal((await aborted).messageId, upload.messageId);
+  assert.equal((await request(owner, 'image:complete', { uploadId: upload.uploadId })).ok, false);
+});
+
 test('password-protected rooms expose only public state and keep member credentials private', async (t) => {
   const { connect } = await harness(t);
   const [owner, guest] = await Promise.all([connect(), connect()]);
