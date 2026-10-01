@@ -41,6 +41,7 @@ export function openFloatingPlayer(source, {
   let fullscreen = false;
   let alwaysOnTop = false;
   let uiTimer = null;
+  let controlPointer = false;
 
   const doc = popup.document;
   doc.title = `${title || '共享画面'} — Roomcast`;
@@ -86,6 +87,11 @@ export function openFloatingPlayer(source, {
     .floating-info-card span { color: inherit; opacity: .84; flex: 0 0 auto; padding-left: 6px; border-left: 1px solid #ffffff18; }
     html.ui-hidden .floating-info-card { opacity: 0; pointer-events: none; }
     html.is-fullscreen .floating-info-card { display: none; }
+    .floating-viewers { position: absolute; z-index: 4; top: 38px; right: 15px; display: flex; gap: 5px; max-width: calc(100% - 30px); flex-wrap: wrap; transition: opacity .16s ease; -webkit-app-region: no-drag; }
+    .floating-viewer { width: 27px; height: 27px; border: 2px solid #0b0f14; border-radius: 50%; display: grid; place-items: center; font-size: 10px; overflow: hidden; }
+    .floating-viewer img { width: 100%; height: 100%; object-fit: cover; }
+    html.is-fullscreen .floating-viewers { top: 15px; }
+    html.ui-hidden .floating-viewers { opacity: 0; pointer-events: none; }
     video { position: relative; z-index: 0; flex: 1 1 0; width: 100%; height: 0; min-width: 0; min-height: 0; object-fit: contain; background: #06090c; }
     html.is-fullscreen video { position: relative; inset: auto; width: 100%; height: 0; flex: 1 1 0; }
     button, input { font: inherit; outline: none; }
@@ -160,7 +166,9 @@ export function openFloatingPlayer(source, {
     title: info?.title || title || '共享画面',
     avatarColor: normalizeAvatarColor(info?.avatarColor),
     lines: Array.isArray(info?.lines) ? info.lines.slice(0, 2) : [],
+    viewers: Array.isArray(info?.viewers) ? info.viewers : [],
   };
+  const viewers = doc.createElement('div'); viewers.className = 'floating-viewers';
 
   const renderInfo = () => {
     const [background, foreground] = AVATAR_PALETTE[infoState.avatarColor];
@@ -169,6 +177,16 @@ export function openFloatingPlayer(source, {
     infoCard.dataset.avatarColor = String(infoState.avatarColor);
     infoTitle.textContent = infoState.title;
     infoTitle.title = infoState.title;
+    viewers.replaceChildren(...infoState.viewers.slice(0, 10).map(member => {
+      const node = doc.createElement('span'); node.className = 'floating-viewer'; node.title = member.name || '访客';
+      node.setAttribute('aria-label', node.title);
+      const [background, foreground] = AVATAR_PALETTE[normalizeAvatarColor(member.avatarColor)];
+      node.style.background = background; node.style.color = foreground;
+      if (typeof member.avatar === 'string' && member.avatar.length <= 32768 && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(member.avatar)) {
+        const image = doc.createElement('img'); image.src = member.avatar; image.alt = ''; image.draggable = false; node.append(image);
+      } else node.textContent = [...String(member.name || '访').trim()][0]?.toUpperCase() || '访';
+      return node;
+    }));
     for (let index = 0; index < infoLines.length; index += 1) {
       const value = infoState.lines[index] || '';
       infoLines[index].textContent = value;
@@ -181,6 +199,7 @@ export function openFloatingPlayer(source, {
     if (typeof next.title === 'string' && next.title) infoState.title = next.title;
     if (Number.isInteger(next.avatarColor)) infoState.avatarColor = normalizeAvatarColor(next.avatarColor);
     if (Array.isArray(next.lines)) infoState.lines = next.lines.slice(0, 2);
+    if (Array.isArray(next.viewers)) infoState.viewers = next.viewers;
     renderInfo();
   };
 
@@ -259,7 +278,7 @@ export function openFloatingPlayer(source, {
     action: () => popup.close(),
   });
 
-  doc.body.append(infoCard, video, controls);
+  doc.body.append(infoCard, viewers, video, controls);
 
   function renderAudio() {
     soundButton.classList.toggle('audio-hidden', !audioState.available);
@@ -294,8 +313,8 @@ export function openFloatingPlayer(source, {
   };
 
   const syncAudioFromSource = () => {
-    audioState.enabled = !source.muted;
-    audioState.volume = Math.min(1, Math.max(0, Number(source.volume || 0)));
+    if (!onSound) audioState.enabled = !source.muted;
+    if (!onVolume) audioState.volume = Math.min(1, Math.max(0, Number(source.volume || 0)));
     renderAudio();
   };
 
@@ -306,6 +325,7 @@ export function openFloatingPlayer(source, {
 
   const hideUi = () => {
     clearUiTimer();
+    if (controls.matches(':hover') || controls.contains(doc.activeElement) && doc.activeElement.matches(':focus-visible') || controlPointer) return;
     controls.classList.remove('visible');
     doc.documentElement.classList.add('ui-hidden');
     doc.documentElement.classList.add('cursor-hidden');
@@ -320,6 +340,8 @@ export function openFloatingPlayer(source, {
   };
 
   const applyWindowState = (state, top) => {
+    // A native fullscreen transition may consume the button's pointerup.
+    controlPointer = false;
     fullscreen = state === 'FLOATING_FULLSCREEN';
     alwaysOnTop = top === true;
     topButton.title = alwaysOnTop ? '取消置顶' : '置顶小窗';
@@ -338,7 +360,7 @@ export function openFloatingPlayer(source, {
   };
 
   const pointerLeft = event => {
-    if (event.relatedTarget && doc.documentElement.contains(event.relatedTarget)) return;
+    if (event.relatedTarget?.nodeType && doc.documentElement.contains(event.relatedTarget)) return;
     clearUiTimer();
     uiTimer = setTimeout(hideUi, 2000);
   };
@@ -346,6 +368,12 @@ export function openFloatingPlayer(source, {
   doc.documentElement.addEventListener('pointerenter', pointerMoved);
   doc.documentElement.addEventListener('pointermove', pointerMoved);
   doc.documentElement.addEventListener('pointerleave', pointerLeft);
+  controls.addEventListener('pointerenter', showUi);
+  controls.addEventListener('pointerleave', showUi);
+  controls.addEventListener('pointerdown', () => { controlPointer = true; clearUiTimer(); });
+  doc.addEventListener('pointerup', () => { controlPointer = false; showUi(); });
+  controls.addEventListener('focusin', showUi);
+  controls.addEventListener('focusout', showUi);
 
   const syncTracks = () => {
     if (disposed || !observedStream) return;

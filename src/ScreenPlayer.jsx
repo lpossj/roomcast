@@ -13,6 +13,7 @@ import { openFloatingPlayer } from './floating-player.js';
 import { recordP2pNetworkStats } from './p2p-video-policy.js';
 import { playerInfo } from './player-info.js';
 import { preferH264High } from './video-codec-policy.js';
+import Avatar from './Avatar.jsx';
 
 export const FULLSCREEN_UI_HIDE_DELAY = 2000;
 const readPlaybackVolume = () => {
@@ -26,13 +27,13 @@ const emptyMetrics = {
   lost: 0, decoder: '', encoder: ''
 };
 
-export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewerMemberId, deafened, transport, reportViewing, initiallyEntered = false, onViewingChange }) {
+export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewerMemberId, deafened, masterVolume = 1, initialSound = false, transport, reportViewing, initiallyEntered = false, onViewingChange }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const streamViewRef = useRef(null);
   const [state, setState] = useState('idle');
   const [error, setError] = useState('');
-  const [sound, setSound] = useState(false);
+  const [sound, setSound] = useState(initialSound);
   const [volume, setVolume] = useState(readPlaybackVolume);
   const [retry, setRetry] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
@@ -60,7 +61,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
     for (const key of ['width', 'height', 'left', 'top']) node?.style.removeProperty(key);
   };
   useEffect(() => { const video = videoRef.current; if (video?.setSinkId) video.setSinkId(outputDeviceId || 'default').catch(() => { }); }, [outputDeviceId]);
-  useEffect(() => { if (videoRef.current) videoRef.current.volume = volume; savePreference('playbackVolume', volume); }, [volume]);
+  useEffect(() => { if (videoRef.current) videoRef.current.volume = volume * masterVolume; savePreference('playbackVolume', volume); }, [volume, masterVolume]);
   useEffect(() => { clearLegacySize(); return () => { floatingPlayer.current?.close(); floatingPlayer.current = null; }; }, []);
   useEffect(() => { if (!entered) { floatingPlayer.current?.close(); floatingPlayer.current = null; } }, [entered]);
   useEffect(() => {
@@ -110,7 +111,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
   }, []);
 
   const clearUiTimer = () => { clearTimeout(uiTimer.current); uiTimer.current = null; };
-  const canHideUi = () => !floating && entered && state === 'live' && !interaction.current.pointer;
+  const canHideUi = () => !floating && entered && state === 'live' && !interaction.current.pointer && !interaction.current.hover && !interaction.current.focus;
   const armUiHide = () => {
     clearUiTimer(); setControlsVisible(true);
     if (!floating && entered && state === 'live') uiTimer.current = setTimeout(() => { if (canHideUi()) setControlsVisible(false); }, FULLSCREEN_UI_HIDE_DELAY);
@@ -1652,6 +1653,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
   const floatingInfo = () => ({
     title: stream.name,
     avatarColor,
+    viewers: stream.viewers || [],
     lines: [
       `${info.resolution} · ${info.fps} · ${info.bitrate}`,
       info.route,
@@ -1659,7 +1661,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
   });
   useEffect(() => {
     if (floating) floatingPlayer.current?.updateInfo?.(floatingInfo());
-  }, [floating, stream.name, avatarColor, info.resolution, info.fps, info.bitrate, info.route]);
+  }, [floating, stream.name, stream.viewers, avatarColor, info.resolution, info.fps, info.bitrate, info.route]);
   const toggleFullscreen = async () => {
     try {
       if (document.fullscreenElement) { await document.exitFullscreen(); return; }
@@ -1718,12 +1720,12 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
   };
   const pointerEntered = event => {
     interaction.current.inside = true;
-    const overControls = Boolean(event.target.closest?.('.player-controls, .player-top'));
+    const overControls = Boolean(event.target.closest?.('.player-controls, .exit-view-button'));
     interaction.current.hover = overControls;
     showUi();
   };
   const pointerLeft = event => {
-    if (event.relatedTarget && containerRef.current?.contains(event.relatedTarget)) return;
+    if (event.relatedTarget?.nodeType && containerRef.current?.contains(event.relatedTarget)) return;
     interaction.current.inside = false;
     interaction.current.hover = false;
     armUiHide();
@@ -1740,8 +1742,8 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
       onPointerEnter={pointerEntered}
       onPointerMove={pointerEntered}
       onPointerLeave={pointerLeft}
-      onFocusCapture={() => { interaction.current.focus = true; showUi(); }}
-      onBlurCapture={() => requestAnimationFrame(() => { interaction.current.focus = Boolean(containerRef.current?.contains(document.activeElement)); showUi(); })}
+      onFocusCapture={event => { interaction.current.focus = event.target.matches?.(':focus-visible') === true; showUi(); }}
+      onBlurCapture={() => requestAnimationFrame(() => { interaction.current.focus = Boolean(containerRef.current?.contains(document.activeElement) && document.activeElement?.matches?.(':focus-visible')); showUi(); })}
     >
       {!floating && <div className={`stream-parameter-bar player-info-overlay avatar-color-${avatarColor}`}>
         <strong title={stream.name}>{stream.name}</strong>
@@ -1754,18 +1756,17 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
 
         {floating ? (entered && state === 'live' && <div className="floating-detached-placeholder" aria-hidden="true"><AppWindow size={28} /><strong>画面已移至小窗</strong><span>关闭小窗后自动返回这里</span></div>) : <>
           {!entered ? <div className="player-loading"><Radio size={28} /><strong>{stream.name} 正在共享</strong><span>进入后才连接并播放画面</span><button className="button primary" onClick={() => { playSound('watch'); setEntered(true); onViewingChange?.(stream.memberId, true); }}>点击进入共享</button></div> : state !== 'live' && <div className="player-loading"><LoaderCircle className="spin" size={28} /><strong>连接共享画面</strong><span>{error || '正在建立低延迟 P2P 画面…'}</span><button className="text-button" onClick={() => setRetry(value => value + 1)}><RefreshCw size={14} />重新连接</button></div>}
-          <div className="player-top" onPointerEnter={() => { interaction.current.hover = true; showUi(); }} onPointerLeave={() => { interaction.current.hover = false; armUiHide(); }} onPointerDown={controlPointerDown}>
+          <div className="player-top" onPointerEnter={showUi} onPointerLeave={showUi}>
             {(stream.viewers || []).length > 0 &&
               <div className="viewer-avatars">
                 {(stream.viewers || []).map(viewer =>
-                  <span
+                  <Avatar
                     key={viewer.memberId}
-                    className={`viewer-avatar avatar-color-${Number.isInteger(viewer.avatarColor) ? viewer.avatarColor : 0}`}
+                    member={viewer}
+                    className="viewer-avatar"
                     title={viewer.name}
                     aria-label={viewer.name}
-                  >
-                    {[...String(viewer.name || '访').trim()][0]?.toUpperCase() || '访'}
-                  </span>
+                  />
                 )}
               </div>
             }

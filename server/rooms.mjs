@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
+import { cleanAvatar } from './avatar-policy.mjs';
 
 const scrypt = promisify(scryptCallback);
 const MAX_MEMBERS = 10;
@@ -424,6 +425,7 @@ export function attachRooms(io, {
 
   function snapshot(room) {
     return {
+      features: { profiles: 1, voice: 1 },
       id: room.id,
       name: room.name,
       maxMembers: MAX_MEMBERS,
@@ -439,6 +441,9 @@ export function attachRooms(io, {
           role,
           canShare,
           avatarColor,
+          avatar,
+          voiceEnabled,
+          voiceRevision,
         }) => ({
           id,
           name,
@@ -447,6 +452,9 @@ export function attachRooms(io, {
           role,
           canShare,
           avatarColor,
+          avatar: avatar || '',
+          voiceEnabled: voiceEnabled === true,
+          voiceRevision: voiceRevision || 0,
         }),
       ),
 
@@ -455,6 +463,7 @@ export function attachRooms(io, {
       ].map(
         stream => ({
           ...stream,
+          avatar: room.members.get(stream.memberId)?.avatar || '',
 
           viewers: [
             ...(
@@ -482,6 +491,7 @@ export function attachRooms(io, {
                 memberId,
                 name,
                 avatarColor,
+                avatar: room.members.get(memberId)?.avatar || '',
               }),
             ),
         }),
@@ -929,6 +939,8 @@ export function attachRooms(io, {
       id: memberId,
       name,
       avatarColor,
+      avatar: '',
+      voiceEnabled: false,
       sharing: false,
       joinedAt: Date.now(),
       role,
@@ -1916,6 +1928,8 @@ export function attachRooms(io, {
 
                 name,
                 avatarColor,
+                avatar: cleanAvatar(candidate.avatar),
+                voiceEnabled: false,
 
                 sharing:
                   candidate.sharing
@@ -3632,6 +3646,60 @@ export function attachRooms(io, {
         windowMs: 10_000,
       },
     );
+
+    event('member:profile', payload => {
+      const { room, member } = current(socket);
+      member.avatar = cleanAvatar(payload.avatar);
+      broadcast(room);
+      return { ok: true };
+    }, { max: 12, windowMs: 10_000 });
+
+    event('member:voice', payload => {
+      const { room, member } = current(socket);
+      if (typeof payload.enabled !== 'boolean') throw new Error('麦克风状态格式错误。');
+      if (payload.enabled && (payload.revision ?? 0) !== (member.voiceRevision || 0)) throw new Error('麦克风已被管理者关闭，请重新点击开启。');
+      member.voiceEnabled = payload.enabled;
+      broadcast(room);
+      return { ok: true };
+    }, { max: 30, windowMs: 10_000 });
+
+    event('member:mute', payload => {
+      const { room, member } = current(socket);
+      const target = room.members.get(payload.memberId);
+      if (!target || target.id === member.id || target.role === 'owner'
+        || !(member.role === 'owner' || (member.role === 'admin' && target.role === 'user'))) {
+        throw new Error('没有权限关闭该成员的麦克风。');
+      }
+      target.voiceEnabled = false;
+      target.voiceRevision = (target.voiceRevision || 0) + 1;
+      target.socket?.emit('voice:muted', { memberId: target.id, by: member.name });
+      broadcast(room);
+      return { ok: true };
+    }, { max: 30, windowMs: 10_000 });
+
+    // Separate from screen signaling: room voice never registers a screen viewer.
+    event('voice:signal', payload => {
+      const { room, member } = current(socket);
+      const target = room.members.get(payload.to);
+      if (!target || target.id === member.id) throw new Error('语音目标不在房间中。');
+      if (!['offer', 'answer', 'candidate', 'close'].includes(payload.kind)
+        || typeof payload.requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(payload.requestId)) throw new Error('语音信令格式错误。');
+      if (payload.kind !== 'close') {
+        const publisher = payload.kind === 'offer' || (payload.kind === 'candidate' && payload.side === 'listener') ? target : member;
+        if (!publisher.voiceEnabled) throw new Error('麦克风已关闭。');
+      }
+      if (['offer', 'answer'].includes(payload.kind)
+        && (typeof payload.sdp !== 'string' || payload.sdp.length > 64 * 1024
+          || !/^v=0\r?\n/.test(payload.sdp) || /(?:^|\n)m=(?:video|application)\b/.test(payload.sdp))) throw new Error('语音描述格式错误。');
+      if (payload.kind === 'candidate' && !['listener', 'publisher'].includes(payload.side)) throw new Error('语音候选方向错误。');
+      target.socket?.emit('voice:signal', {
+        from: member.id, kind: payload.kind, requestId: payload.requestId,
+        sdp: ['offer', 'answer'].includes(payload.kind) ? payload.sdp : undefined,
+        candidate: payload.kind === 'candidate' ? iceCandidate(payload.candidate) : undefined,
+        side: payload.kind === 'candidate' ? payload.side : undefined,
+      });
+      return { ok: true };
+    }, { max: 300, windowMs: 10_000 });
 
     event(
       'screen:signal',

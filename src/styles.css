@@ -2315,10 +2315,32 @@ select {
     pointer-events: auto
 }
 
-.screen-player:hover .viewer-avatars {
+.screen-player.controls-visible .viewer-avatars {
     opacity: 1;
     transform: translateY(0)
 }
+
+.avatar img, .rail-avatar img, .viewer-avatar img {
+    width: 100%; height: 100%; object-fit: cover; border-radius: inherit; min-width: 0;
+}
+.avatar.is-speaking { outline: 3px solid #45d483; outline-offset: 2px; }
+.profile-avatar-row, .microphone-test { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.profile-avatar-row .avatar { width: 56px; height: 56px; flex-shrink: 0; }
+.profile-avatar-row input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.profile-avatar-row label:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }
+.microphone-test { margin-top: 18px; }
+.microphone-meter { display: grid; gap: 6px; flex: 1; min-width: 120px; font-size: 11px; color: var(--muted); }
+.microphone-meter meter { width: 100%; height: 12px; accent-color: #45d483; }
+.voice-controls { display: flex; gap: 5px; margin-left: auto; }
+.voice-control { position: relative; }
+.voice-toggle { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 5px; color: #7d8d99; background: #ffffff08; }
+.voice-toggle.enabled { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.voice-toggle:disabled { opacity: .45; cursor: default; }
+.voice-volume-popover { position: absolute; bottom: 100%; right: 0; width: 184px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; color: #d4dfe7; background: #202933; box-shadow: 0 8px 24px #0006; display: none; z-index: 20; font-size: 11px; }
+.voice-volume-popover span { float: right; }
+.voice-volume-popover input { display: block; width: 100%; margin-top: 12px; accent-color: var(--accent); }
+.voice-control:hover .voice-volume-popover, .voice-control:focus-within .voice-volume-popover { display: block; }
+.voice-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .viewer-avatar {
     width: 27px;
@@ -3427,6 +3449,9 @@ select {
     line-height: 1.5;
     color: #ffc9c9
 }
+
+.member-audio-volume { display: grid; grid-template-columns: 1fr auto; gap: 12px; font-size: 13px; }
+.member-audio-volume input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
 
 /* Startup update prompt: release notes get their own scroll area so a long changelog
    cannot push the "立即更新" button off screen. */

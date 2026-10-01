@@ -1,6 +1,6 @@
-# Roomcast 0.14.4-beta.6
+# Roomcast 0.14.4-beta.7
 
-Windows 桌面修复版，变更和验证范围见 [beta.3 说明](docs/RELEASE_NOTES-0.14.4-beta.3.md)。线上网页仍为 beta.2，本次未部署网页。
+当前本地开发与打包版本为 0.14.4-beta.7：自动更新重写、自定义头像和房间语音，客户端与网页使用同一版本源码。变更和验证范围见 [beta.7 说明](docs/RELEASE_NOTES-0.14.4-beta.7.md)。下载与更新说明见 [beta.7 Release](https://github.com/lpossj/roomcast/releases/tag/v0.14.4-beta.7)。
 
 Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间最多 10 人，可多人同时共享。
 

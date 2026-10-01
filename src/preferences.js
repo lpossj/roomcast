@@ -1,7 +1,7 @@
 // `autoCheckUpdates` and `dismissedUpdateVersion` must be listed here as well as in the
 // main process `preferenceKeys`, otherwise the startup-check switch and "不再弹出此框"
 // would silently fall back to their defaults on every launch.
-const allowedKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion']);
+const allowedKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion', 'avatar', 'voiceSettings']);
 
 export function loadPreference(key, fallback, legacyKey = `roomcast.${key}`) {
   if (!allowedKeys.has(key)) return fallback;

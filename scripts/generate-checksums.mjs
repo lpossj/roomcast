@@ -7,7 +7,7 @@ const strict = process.argv.includes('--strict');
 const publishedOnly = process.argv.includes('--published-only');
 const packageInfo = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const version = packageInfo.version;
-const releaseDir = path.join(rootDir, 'release');
+const releaseDir = path.resolve(process.argv.find(value => value.startsWith('--release-dir='))?.slice('--release-dir='.length) || path.join(rootDir, 'release'));
 
 const candidates = [
   path.join(releaseDir, `Roomcast-${version}-Windows.exe`),

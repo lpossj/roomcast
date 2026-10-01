@@ -1,118 +1,123 @@
-// End-to-end check of the generated update apply script.
-//
-// The automatic update replaces the installed program from a detached .cmd after the app
-// exits. That script is the one piece static review cannot settle (cmd.exe labels, quoting,
-// errorlevel and flow), so this check generates a real script with electron/update-install.mjs
-// and runs it against a throwaway fake installation:
-//
-//   - a holder process occupies the recorded PID, proving the script really waits
-//   - a fake "old" program folder and a fake "new" payload prove the copy happens
-//   - the relaunch step is redirected to a marker .cmd, proving the app is started again
-//   - the work directory must be gone afterwards, proving the success path cleans up
-//
-// It never touches a real Roomcast installation, downloads nothing, and is not part of
-// `npm test` (it needs to spawn processes).
-
+// Native transaction regression for EXE and directory distributions. No network;
+// only isolated fixtures are replaced, launched or stopped.
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
+const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
+const { createHash } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
-
+const { crc32 } = require('node:zlib');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-async function waitFor(check, { timeoutMs = 45000, intervalMs = 200 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await check()) return true;
-    await delay(intervalMs);
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+function makeZip(files) {
+  const chunks = [], directory = []; let offset = 0;
+  for (const [name, bytes] of files) {
+    const filename = Buffer.from(name), local = Buffer.alloc(30), central = Buffer.alloc(46);
+    local.writeUInt32LE(0x04034b50); local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(crc32(bytes), 14); local.writeUInt32LE(bytes.length, 18); local.writeUInt32LE(bytes.length, 22); local.writeUInt16LE(filename.length, 26);
+    central.writeUInt32LE(0x02014b50); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(crc32(bytes), 16); central.writeUInt32LE(bytes.length, 20); central.writeUInt32LE(bytes.length, 24); central.writeUInt16LE(filename.length, 28); central.writeUInt32LE(offset, 42);
+    chunks.push(local, filename, bytes); directory.push(central, filename); offset += 30 + filename.length + bytes.length;
   }
-  return false;
+  const index = Buffer.concat(directory), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(index.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, index, end]);
 }
-
-async function main() {
-  if (process.platform !== 'win32') {
-    console.log('[update-apply] 跳过：该检查只适用于 Windows。');
-    return;
-  }
-  const { buildApplyScript, startApplyScript, waitForApplyScriptStart } = await import(pathToFileURL(path.join(__dirname, '..', 'electron', 'update-install.mjs')).href);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'roomcast-apply-check-'));
-  const install = path.join(root, '安装 副本');
-  const work = path.join(root, 'work');
-  const payload = path.join(work, 'payload');
-  const logPath = path.join(work, 'apply.log');
-  const launchMarker = path.join(install, 'launch-marker.cmd');
-  let holder = null;
+async function waitFor(check, timeout = 20000) {
+  const until = Date.now() + timeout;
+  while (Date.now() < until) { if (await check()) return; await delay(100); }
+  throw new Error('Portable update fixture timed out');
+}
+async function run() {
+  if (process.platform !== 'win32') return console.log('Skipped: Windows only');
+  const installerUrl = pathToFileURL(path.join(__dirname, '../electron/update-install.mjs')).href;
+  const { prepareUpdateInstall } = await import(installerUrl);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "roomcast portable !% '& [中文] "));
+  const oldImage = await fs.readFile(process.execPath);
+  const newImage = Buffer.concat([oldImage, Buffer.from('Roomcast update fixture')]);
+  const children = [];
+  const preload = path.join(root, 'fixture.cjs');
+  await fs.writeFile(preload, `const fs=require('node:fs');
+if(process.env.ROOMCAST_UPDATE_RECEIPT){const file=process.env.ROOMCAST_UPDATE_RECEIPT;fs.writeFileSync(file+'.tmp',JSON.stringify({version:process.env.ROOMCAST_FIXTURE_VERSION,token:process.env.ROOMCAST_UPDATE_TOKEN,pid:process.pid}));fs.renameSync(file+'.tmp',file);setTimeout(()=>{},30000);}`);
   try {
-    fs.mkdirSync(path.join(install, 'resources'), { recursive: true });
-    fs.writeFileSync(path.join(install, 'resources', 'app.asar'), 'old-asar');
-    fs.writeFileSync(path.join(install, 'Roomcast.exe'), 'old-exe');
-    fs.writeFileSync(path.join(install, 'stale-only-file.dll'), 'keep-me');
-    fs.writeFileSync(launchMarker, '@echo off\r\necho launched > "%~dp0launched.txt"\r\n');
-
-    fs.mkdirSync(path.join(payload, 'resources'), { recursive: true });
-    fs.writeFileSync(path.join(payload, 'resources', 'app.asar'), 'new-asar');
-    fs.writeFileSync(path.join(payload, 'Roomcast.exe'), 'new-exe');
-    fs.writeFileSync(path.join(payload, 'new-only-file.dll'), 'new-file');
-
-    // A process that outlives the moment the script starts, so the wait loop must be used.
-    holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore', windowsHide: true });
-    await delay(300);
-
-    const script = buildApplyScript({
-      target: { kind: 'directory', appDir: install, launchPath: launchMarker },
-      payloadDir: payload,
-      workDir: work,
-      logPath,
-      pid: holder.pid,
-    });
-    fs.mkdirSync(work, { recursive: true });
-    const scriptPath = path.join(work, 'apply.cmd');
-    fs.writeFileSync(scriptPath, script, 'utf8');
-
-    const startedAt = Date.now();
-    let spawnError = null;
-    const driverPath = path.join(root, 'launcher.mjs');
-    const installerUrl = pathToFileURL(path.join(__dirname, '..', 'electron', 'update-install.mjs')).href;
-    fs.writeFileSync(driverPath, `import {startApplyScript,waitForApplyScriptStart} from ${JSON.stringify(installerUrl)};
-const result=startApplyScript(${JSON.stringify(scriptPath)});
-if(!result.pid || !await waitForApplyScriptStart(${JSON.stringify(logPath)})) process.exit(1);
-process.exit(0);`);
-    const child = spawn(process.execPath, [driverPath], { stdio: 'ignore', windowsHide: true });
-    child.on('error', error => { spawnError = error; });
-    const driverExit = await new Promise(resolve => child.on('exit', resolve));
-    assert.equal(driverExit, 0, '真实启动器未收到启动确认');
-    assert.ok(!fs.existsSync(path.join(install, 'launched.txt')), '替换应在启动器父进程退出之后完成');
-
-    const launched = await waitFor(() => fs.existsSync(path.join(install, 'launched.txt')) || spawnError);
-    const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
-    assert.ok(!spawnError, `无法启动替换脚本：${spawnError?.message || spawnError}`);
-    assert.ok(launched, `替换脚本没有重新启动程序（pid=${child.pid}）。apply.cmd:\n${script}\napply.log:\n${log}`);
-    const elapsed = Date.now() - startedAt;
-    assert.ok(elapsed >= 1500, `脚本没有等待占用 PID 的进程退出（耗时 ${elapsed}ms）。apply.log:\n${log}`);
-
-    assert.equal(fs.readFileSync(path.join(install, 'resources', 'app.asar'), 'utf8'), 'new-asar', '程序目录没有被覆盖');
-    assert.equal(fs.readFileSync(path.join(install, 'Roomcast.exe'), 'utf8'), 'new-exe', '主程序没有被覆盖');
-    assert.equal(fs.readFileSync(path.join(install, 'new-only-file.dll'), 'utf8'), 'new-file', '新增文件没有复制');
-    // /E copies but must never purge: a file only the installed copy has must survive.
-    assert.equal(fs.readFileSync(path.join(install, 'stale-only-file.dll'), 'utf8'), 'keep-me', '覆盖过程删除了目标目录里的多余文件');
-
-    // The payload is dropped, but the script must NOT delete its own directory: doing that
-    // while cmd.exe is still reading apply.cmd loses the remaining steps (the relaunch).
-    const payloadGone = await waitFor(() => !fs.existsSync(payload), { timeoutMs: 15000 });
-    assert.ok(payloadGone, '成功路径没有清理解压出来的 payload');
-    assert.ok(fs.existsSync(logPath), 'apply.log 必须保留下来用于排障');
-    assert.ok(!fs.existsSync(path.join(install, '..', 'update-failed.txt')), '成功路径不应写失败标记');
-    console.log(`[update-apply] 通过：启动确认 → 启动器父进程退出 → 等待 ${elapsed}ms → 中文/空格路径覆盖成功 → 自动重启 → 清理 payload 并保留日志。`);
+    for (const mode of ['locked-success', 'tampered', 'restart-failure', 'startup-mismatch', 'directory-success', 'directory-mismatch']) {
+      const dir = path.join(root, mode);
+      await fs.mkdir(dir);
+      const isDirectory = mode.startsWith('directory-');
+      const install = isDirectory ? path.join(dir, 'install') : dir;
+      await fs.mkdir(path.join(install, 'resources'), { recursive: true });
+      const targetPath = path.join(install, 'Roomcast.exe');
+      const assetPath = path.join(dir, isDirectory ? 'new.zip' : 'new.exe');
+      const asset = isDirectory ? makeZip([['Roomcast.exe', newImage], ['resources/app.asar', Buffer.from('new-asar')]]) : newImage;
+      const workDir = path.join(dir, 'work');
+      const marker = path.join(dir, 'update-failed.txt');
+      await fs.writeFile(targetPath, oldImage);
+      await fs.writeFile(path.join(install, 'resources/app.asar'), 'old-asar');
+      await fs.writeFile(path.join(install, 'user-file.txt'), 'preserve');
+      await fs.writeFile(assetPath, asset);
+      const holder = spawn(process.execPath, ['-e', 'setTimeout(()=>{},4000)'], { windowsHide: true, stdio: 'ignore' });
+      children.push(holder);
+      let blocker;
+      if (mode === 'locked-success') {
+        blocker = spawn(targetPath, ['-e', 'setTimeout(()=>{},30000)'], { windowsHide: true, stdio: 'ignore' });
+        children.push(blocker);
+        await delay(300);
+        await assert.rejects(() => fs.copyFile(assetPath, targetPath), 'direct overwrite should fail while the image is mapped');
+      }
+      const plan = await prepareUpdateInstall({
+        target: { supported: true, kind: isDirectory ? 'directory' : 'portable-exe', targetPath: isDirectory ? install : targetPath, appDir: install, launchPath: mode === 'restart-failure' ? path.join(dir, 'missing.exe') : targetPath },
+        download: { verified: true, path: assetPath, sha256: digest(asset), expected: digest(asset) },
+        pid: holder.pid, parentPid: process.pid, version: '0.14.4-beta.6', failureMarkerPath: marker, workDir,
+      });
+      if (mode === 'tampered') await fs.writeFile(assetPath, 'tampered');
+      // Use the production launcher, then exit its parent before replacement.
+      const driver = path.join(dir, 'driver.mjs');
+      await fs.writeFile(driver, `import {startApplyScript,waitForApplyScriptStart} from ${JSON.stringify(installerUrl)};
+const result=startApplyScript(${JSON.stringify(plan.scriptPath)});
+process.exit(result.pid && await waitForApplyScriptStart(${JSON.stringify(plan.logPath)}) ? 0 : 1);`);
+      const started = Date.now();
+      const env = { ...process.env, NODE_OPTIONS: '--require "' + preload.replace(/\\/g, '/') + '"', ROOMCAST_FIXTURE_VERSION: mode.includes('mismatch') ? 'wrong-version' : '0.14.4-beta.6' };
+      const child = spawn(process.execPath, [driver], { stdio: 'ignore', windowsHide: true, env });
+      children.push(child);
+      const code = await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject); });
+      assert.equal(code, 0, 'production launcher must acknowledge startup');
+      assert.equal(digest(await fs.readFile(targetPath)), digest(oldImage), 'must wait for the old app PID');
+      try {
+        await waitFor(async () => /COMMITTED|previous image restarted|restart failed|ROLLBACK FAILED/.test(await fs.readFile(plan.logPath, 'utf8').catch(() => '')));
+      } catch (error) {
+        error.message += '\n' + await fs.readFile(plan.logPath, 'utf8').catch(() => 'no log');
+        throw error;
+      }
+      const log = await fs.readFile(plan.logPath, 'utf8');
+      for (const match of log.matchAll(/(?:restart started|previous image restarted) pid=(\d+)/g)) {
+        // PIDs created by this fixture's worker only; never inspect or stop user apps.
+        try { process.kill(Number(match[1])); } catch {}
+      }
+      assert.ok(Date.now() - started >= 2000, 'worker skipped waiting for the recorded app');
+      if (mode === 'locked-success' || mode === 'directory-success') {
+        assert.equal(digest(await fs.readFile(targetPath)), digest(newImage), log);
+        const backups = (await fs.readdir(dir)).filter(name => name.includes('.previous-'));
+        assert.equal(backups.length, 1);
+        assert.equal(digest(await fs.readFile(isDirectory ? path.join(dir, backups[0], 'Roomcast.exe') : path.join(dir, backups[0]))), digest(oldImage));
+        if (blocker) assert.equal(blocker.exitCode, null, 'must not kill another process to replace the image');
+        assert.equal(await fs.stat(marker).catch(() => null), null);
+        assert.match(log, /COMMITTED version=/);
+      } else {
+        assert.equal(digest(await fs.readFile(targetPath)), digest(oldImage), log);
+        assert.match(await fs.readFile(marker, 'utf8'), /^0\.14\.4-beta\.6/);
+        if (mode === 'restart-failure' || mode.includes('mismatch')) assert.match(log, /rolled back to previous image/);
+        else assert.match(log, /changed after checksum verification/);
+      }
+      assert.equal(await fs.readFile(path.join(install, 'user-file.txt'), 'utf8'), 'preserve');
+      if (isDirectory) assert.equal(await fs.readFile(path.join(install, 'resources/app.asar'), 'utf8'), mode === 'directory-success' ? 'new-asar' : 'old-asar');
+      assert.ok(!(await fs.readdir(dir)).some(name => name.endsWith('.tmp')), 'stage must be removed');
+      console.log(`[update-apply] PASS ${mode}: wait, hidden launcher survival, literal paths, hashes and recovery`);
+    }
   } finally {
-    if (holder) { try { holder.kill(); } catch { } }
-    await delay(300);
-    fs.rmSync(root, { recursive: true, force: true });
+    for (const child of children) if (child.exitCode === null) child.kill();
+    await delay(500);
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
   }
 }
-
-main().catch(error => {
-  console.error('[update-apply] 失败：', error?.message || error);
-  process.exitCode = 1;
-});
+run().catch(error => { console.error(error); process.exitCode = 1; });

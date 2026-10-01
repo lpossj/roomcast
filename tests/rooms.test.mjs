@@ -54,6 +54,71 @@ async function harness(t, options = {}) {
 const create = (socket, overrides = {}) => request(socket, 'room:create', { name: '一起看屏幕', nickname: '房主', ...overrides });
 const join = (socket, roomId, overrides = {}) => request(socket, 'room:join', { roomId, nickname: '朋友', ...overrides });
 
+test('profile avatars update members and current screen viewers without changing share state', async t => {
+  const { connect } = await harness(t); const [owner, guest, outsider] = await Promise.all([connect(), connect(), connect()]);
+  const created = await create(owner); await join(guest, created.room.id);
+  await request(owner, 'share:claim'); await request(owner, 'share:started', { settings: {} });
+  assert.equal((await request(guest, 'view:start', { ownerId: owner.id })).ok, true);
+  const avatar = 'data:image/png;base64,iVBORw0KGgo=';
+  const state = nextEvent(owner, 'room:state');
+  assert.equal((await request(guest, 'member:profile', { avatar })).ok, true);
+  const snapshot = await state;
+  assert.equal(snapshot.members.find(member => member.id === guest.id).avatar, avatar);
+  assert.equal(snapshot.streams[0].viewers[0].avatar, avatar);
+  assert.equal(snapshot.streams.length, 1);
+  assert.equal((await request(outsider, 'member:profile', { avatar })).ok, false);
+  assert.equal((await request(guest, 'member:profile', { avatar: 'data:image/svg+xml;base64,PHN2Zz4=' })).ok, false);
+});
+
+test('room voice signals require enabled publisher and same-room identities, without a screen share', async t => {
+  const { connect } = await harness(t); const [owner, guest, outsider] = await Promise.all([connect(), connect(), connect()]);
+  const created = await create(owner); await join(guest, created.room.id);
+  const offer = { to: owner.id, kind: 'offer', requestId: 'voice1', sdp: 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n' };
+  assert.equal((await request(guest, 'voice:signal', offer)).ok, false);
+  assert.equal((await request(owner, 'member:voice', { enabled: true })).ok, true);
+  const incoming = nextEvent(owner, 'voice:signal');
+  assert.equal((await request(guest, 'voice:signal', { ...offer, from: outsider.id })).ok, true);
+  assert.equal((await incoming).from, guest.id);
+  assert.equal((await request(outsider, 'voice:signal', offer)).ok, false);
+  assert.equal((await request(guest, 'voice:signal', { ...offer, sdp: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n' })).ok, false);
+  assert.equal((await request(guest, 'voice:signal', { ...offer, to: guest.id })).ok, false);
+  assert.equal((await request(owner, 'member:voice', { enabled: false })).ok, true);
+  assert.equal((await request(guest, 'voice:signal', offer)).ok, false);
+  assert.equal((await request(guest, 'voice:signal', { to: owner.id, kind: 'close', requestId: 'voice1' })).ok, true);
+});
+
+test('moderator microphone mute enforces role hierarchy and rejects stale re-enable requests', async t => {
+  const { connect, service } = await harness(t);
+  const [owner, admin, admin2, user, outsider] = await Promise.all([connect(), connect(), connect(), connect(), connect()]);
+  const created = await create(owner);
+  for (const socket of [admin, admin2, user]) await join(socket, created.room.id);
+  for (const socket of [admin, admin2]) await request(owner, 'member:role', { memberId: socket.id, role: 'admin' });
+  for (const [actor, target] of [[user, admin], [user, owner], [admin, owner], [admin, admin2], [owner, owner], [owner, outsider], [outsider, user]]) {
+    assert.equal((await request(actor, 'member:mute', { memberId: target.id })).ok, false);
+  }
+  for (const [actor, target] of [[owner, admin], [admin, user]]) {
+    await request(target, 'member:voice', { enabled: true });
+    const muted = nextEvent(target, 'voice:muted');
+    assert.equal((await request(actor, 'member:mute', { memberId: target.id })).ok, true);
+    assert.equal((await muted).memberId, target.id);
+    const member = service.rooms.get(created.room.id).members.get(target.id);
+    assert.equal(member.voiceEnabled, false);
+    assert.equal((await request(target, 'member:voice', { enabled: true, revision: 0 })).ok, false);
+    assert.equal((await request(target, 'member:voice', { enabled: true, revision: member.voiceRevision })).ok, true);
+  }
+});
+
+test('large avatars do not inflate the coordinator handover envelope', async t => {
+  const { connect } = await harness(t); const [owner, guest, guest2] = await Promise.all([connect(), connect(), connect()]);
+  const created = await create(owner); await join(guest, created.room.id); await join(guest2, created.room.id);
+  const avatar = `data:image/jpeg;base64,${'A'.repeat(32000)}`;
+  for (const member of [owner, guest, guest2]) assert.equal((await request(member, 'member:profile', { avatar })).ok, true);
+  const exported = await request(owner, 'room:migration-export', { candidateIds: [guest.id] });
+  assert.equal(exported.ok, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(exported.transfer)) < 48 * 1024);
+  assert.ok(exported.transfer.members.every(member => !member.avatar));
+});
+
 test('fatal upload length failure broadcasts abort and releases an already started receiver', async t => {
   const { connect } = await harness(t);
   const [owner, guest] = await Promise.all([connect(), connect()]);
@@ -463,7 +528,7 @@ test('viewer state is deduplicated, removed on stop/disconnect, and isolated by 
   let stateEvent = nextEvent(owner, 'room:state');
   assert.equal((await request(viewer, 'view:start', { ownerId: owner.id, memberId: outsider.id })).ok, true);
   let state = await stateEvent;
-  assert.deepEqual(state.streams[0].viewers, [{ memberId: viewer.id, name: '张三', avatarColor: 1 }]);
+  assert.deepEqual(state.streams[0].viewers, [{ memberId: viewer.id, name: '张三', avatarColor: 1, avatar: '' }]);
   stateEvent = nextEvent(owner, 'room:state');
   assert.equal((await request(viewer, 'view:start', { ownerId: owner.id })).ok, true);
   state = await stateEvent;

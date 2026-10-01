@@ -25,6 +25,7 @@ exports.default = async function beforePack() {
     throw new Error('Roomcast 当前发布目标仅支持 Windows x64；无法准备内置 OBS Runtime。');
   }
   await cleanAbandonedBuildScratch();
+  require('./build-update-launcher.cjs');
   for (const [name, args] of [
     ['prepare-embedded-obs.mjs', ['--release']],
   ]) {

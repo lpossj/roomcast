@@ -312,7 +312,7 @@ else {
       // is used or safeStorage is temporarily unavailable.
       const themePreferencesPath = path.join(app.getPath('userData'), 'theme-preferences.json');
       const legacyThemePreferencesPath = path.join(rootDir, 'theme-preferences.json');
-      const preferenceKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion']);
+      const preferenceKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion', 'avatar', 'voiceSettings']);
       let preferences = {};
       let themePreferences = {};
       let loadedThemeFromStablePath = false;
@@ -335,7 +335,7 @@ else {
       } catch { }
       const savePreferences = () => {
         const encoded = JSON.stringify(preferences);
-        if (encoded.length > 32768 || !safeStorage.isEncryptionAvailable()) return false;
+        if (encoded.length > 65536 || !safeStorage.isEncryptionAvailable()) return false;
         try {
           fs.mkdirSync(path.dirname(preferencesPath), { recursive: true });
           const temporary = `${preferencesPath}.tmp`;
@@ -623,6 +623,7 @@ else {
       let updateChecker = null;
       let lastUpdateCheck = null;
       let updatePipeline = null;
+      let updateStarting = false;
       const ensureUpdateChecker = async () => {
         if (!updateChecker) {
           const { createUpdateChecker } = await loadUpdateCheck();
@@ -685,7 +686,7 @@ else {
         }
         return !window || window.isDestroyed();
       };
-      const runUpdatePipeline = async ({ target, asset, version }) => {
+      const runUpdatePipeline = async ({ target, asset, version, checksumUrl }) => {
         let plan = null;
         let workDir = '';
         try {
@@ -696,7 +697,7 @@ else {
           const destination = path.join(downloadDir, path.basename(asset.name));
           const checker = await ensureUpdateChecker();
           setUpdaterState({ status: 'running', phase: 'connecting', version, asset: asset.name, received: 0, total: Number(asset.size) || 0, done: 0, files: 0, error: '' });
-          const downloaded = await checker.download(asset, destination, lastUpdateCheck.checksumUrl, progress => {
+          const downloaded = await checker.download(asset, destination, checksumUrl, progress => {
             setUpdaterState({ phase: progress.phase, received: progress.received, total: progress.total });
           });
           setUpdaterState({ phase: 'extracting', done: 0, files: 0 });
@@ -744,14 +745,17 @@ else {
       };
       const beginUpdate = async () => {
         if (!lastUpdateCheck?.available) throw new Error('请先检查更新。');
-        if (updatePipeline) return { ok: false, reason: '更新已经开始了。' };
+        if (updateStarting || updatePipeline) return { ok: false, reason: '更新已经开始了。' };
+        updateStarting = true;
+        const release = lastUpdateCheck;
+        try {
         const target = await describeTarget();
         if (!target.supported) return { ok: false, unsupported: true, reason: target.reason };
-        if (!lastUpdateCheck.checksumUrl) return { ok: false, unsupported: true, reason: '发布页没有提供 SHA256 校验文件，无法自动更新；请手动下载安装包。' };
+        if (!release.checksumUrl) return { ok: false, unsupported: true, reason: '发布页没有提供 SHA256 校验文件，无法自动更新；请手动下载安装包。' };
         const { selectInstallAsset } = await loadUpdateCheck();
-        const asset = selectInstallAsset(lastUpdateCheck.assets, target.kind);
+        const asset = selectInstallAsset(release.assets, target.kind);
         if (!asset) return { ok: false, unsupported: true, reason: '发布页没有与当前安装方式匹配的更新包。' };
-        updaterState = { status: 'running', phase: 'starting', version: lastUpdateCheck.version, asset: asset.name, received: 0, total: Number(asset.size) || 0, done: 0, files: 0, error: '' };
+        updaterState = { status: 'running', phase: 'starting', version: release.version, asset: asset.name, received: 0, total: Number(asset.size) || 0, done: 0, files: 0, error: '' };
         createUpdaterWindow();
         publishUpdaterState();
         // Destroy only the main window: normal window.close() now exits the process,
@@ -759,8 +763,9 @@ else {
         stopAllAudioCaptures();
         void runObsCaptureOperation(() => closeObsCaptureEngine()).catch(() => {});
         if (window && !window.isDestroyed()) window.destroy();
-        updatePipeline = runUpdatePipeline({ target, asset, version: lastUpdateCheck.version });
-        return { ok: true, version: lastUpdateCheck.version, kind: target.kind, asset: asset.name };
+        updatePipeline = runUpdatePipeline({ target, asset, version: release.version, checksumUrl: release.checksumUrl });
+        return { ok: true, version: release.version, kind: target.kind, asset: asset.name };
+        } finally { updateStarting = false; }
       };
       ipcMain.handle('roomcast:update-check', async event => {
         requireOwner(event, '不允许此窗口检查更新。');
@@ -985,7 +990,7 @@ else {
         if (!allowed) return void (event.returnValue = false);
         try {
           const serialized = JSON.stringify(payload.value);
-          if (serialized.length > 12000) return void (event.returnValue = false);
+          if (serialized.length > (payload.key === 'avatar' ? 32770 : 12000)) return void (event.returnValue = false);
           if (payload.key === 'relaySettings') {
             const previous = preferences.relaySettings && typeof preferences.relaySettings === 'object' ? preferences.relaySettings : {};
             const next = payload.value && typeof payload.value === 'object' && !Array.isArray(payload.value) ? payload.value : {};
@@ -1201,6 +1206,16 @@ else {
       startupMark('load-start');
       await window.loadURL(service.url + (pendingInvite ? `/?room=${encodeURIComponent(pendingInvite)}` : ''));
       startupMark('load-end');
+      if (process.env.ROOMCAST_UPDATE_RECEIPT) {
+        await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+          const ready = () => Boolean(document.querySelector('.app-shell') && window.roomcast?.desktop);
+          if (ready()) return resolve(true);
+          const observer = new MutationObserver(() => { if (ready()) { clearTimeout(timer); observer.disconnect(); resolve(true); } });
+          const timer = setTimeout(() => { observer.disconnect(); reject(new Error('更新后主界面未完成加载')); }, 20000);
+          observer.observe(document.documentElement, { childList: true, subtree: true });
+        })`);
+      }
+      await (await loadUpdateInstall()).confirmUpdateStartup(app.getVersion());
       if (savedWindow?.maximized) window.maximize();
       // Neither default-session cleanup nor protocol registration is needed to
       // render the private-session UI. Keep both off the first-window path.

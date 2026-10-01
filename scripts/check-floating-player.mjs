@@ -15,9 +15,10 @@ const canvas=document.createElement('canvas'); canvas.width=320; canvas.height=1
 const ctx=canvas.getContext('2d'); let tick=0;
 window.testPaint=setInterval(()=>{ctx.fillStyle=++tick%2?'red':'blue';ctx.fillRect(0,0,320,180);},50);
 window.testStream=canvas.captureStream(20);
+document.querySelector('.app-shell').style.display='none';
 const host=document.createElement('div'); host.id='floating-test'; host.style.width='640px';document.body.append(host);
 window.testRoot=createRoot(host);
-window.testRoot.render(<ScreenPlayer stream={{memberId:'self',name:'Test',avatarColor:3,path:'test',settings:{}}} viewerMemberId="self" transport={{screenStream:window.testStream}} initiallyEntered={true}/>);
+window.testRoot.render(<ScreenPlayer stream={{memberId:'self',name:'Test',avatarColor:3,path:'test',settings:{},viewers:[{memberId:'viewer',name:'头像朋友',avatarColor:1,avatar:canvas.toDataURL('image/png')}]}} viewerMemberId="self" transport={{screenStream:window.testStream}} initiallyEntered={true}/>);
 `, loader: 'jsx', resolveDir: path.resolve('src')
   }, bundle: true, write: false, format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }
 });
@@ -32,7 +33,7 @@ assert.doesNotMatch(floatingWindowSource, /titleBarOverlay/, '独立小窗不能
 const env = { ...process.env, ROOMCAST_TEST_MODE: '1', ROOMCAST_PROFILE_DIR: path.resolve('test-results/floating/profile') };
 delete env.ELECTRON_RUN_AS_NODE;
 const app = await _electron.launch({
-  args: ['.'],
+  args: ['.', '--force-device-scale-factor=1'],
   env,
 });
 
@@ -177,16 +178,33 @@ const clickMainButton = async (page, name) => {
   // Match real usage: moving toward a control must first reveal/reset the UI,
   // and the control itself must win hit testing over the underlying <video>.
   await showMainPlayerUi(page);
+  assert.equal(await page.locator('#floating-test .viewer-avatar img').count(), 1);
+  assert.equal(await page.locator('#floating-test .viewer-avatar.is-speaking').count(), 0);
   const button = mainButton(page, name);
-  await button.hover({ timeout: 2500 });
-  await button.click({ timeout: 2500 });
+  const box = await button.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+  try {
+    assert.ok(await button.evaluate(node => { const r = node.getBoundingClientRect(); return node.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }));
+  }
+  catch (error) {
+    const state = await button.evaluate(node => {
+      const box = node.getBoundingClientRect(), controls = node.closest('.player-controls'), player = node.closest('.screen-player');
+      return { box: box.toJSON(), controls: { pointer: getComputedStyle(controls).pointerEvents, z: getComputedStyle(controls).zIndex, opacity: getComputedStyle(controls).opacity }, player: player.className,
+        hit: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.outerHTML.slice(0, 240), viewport: { width: innerWidth, height: innerHeight } };
+    });
+    await page.screenshot({ path: '.test/floating-failure.png' });
+    throw new Error(`Player hit testing failed: ${JSON.stringify(state)}\n${error.message}`);
+  }
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 };
 
 const clickFloatingButton = async (child, name) => {
   await showFloatingUi(child);
   const button = child.getByRole('button', { name, exact: true });
-  await button.hover({ timeout: 2500 });
-  await button.click({ timeout: 2500 });
+  const box = await button.boundingBox();
+  await child.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+  assert.ok(await button.evaluate(node => { const r = node.getBoundingClientRect(); return node.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }));
+  await child.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 };
 
 try {
@@ -293,6 +311,7 @@ try {
   assert.equal(mainFullscreenLayout.infoDisplay, 'none', `全屏不显示信息条：${JSON.stringify(mainFullscreenLayout)}`);
   assert.ok(Math.abs(mainFullscreenLayout.videoTop - mainFullscreenLayout.playerTop) < 1, `全屏视频从播放器顶部开始：${JSON.stringify(mainFullscreenLayout)}`);
   assert.equal(mainFullscreenLayout.overlap, false, `全屏信息条不能覆盖视频：${JSON.stringify(mainFullscreenLayout)}`);
+  assert.equal(await page.locator('#floating-test .viewer-avatar img').count(), 1, '全屏继续显示观看者自定义头像');
   // Reset from a real mouse movement, then verify the full 2s idle cycle.
   await showMainPlayerUi(page);
   await waitMainPlayerUiHidden(page);
@@ -328,6 +347,7 @@ try {
   assert.ok(child);
   await child.waitForFunction(() => document.querySelector('video')?.videoWidth === 320);
   await showFloatingUi(child);
+  assert.equal(await child.locator('.floating-viewer img').count(), 1, '独立小窗显示同一观看者头像');
   assert.equal(await child.locator('.floating-info-card').getAttribute('data-avatar-color'), '3');
   assert.equal(await child.locator('.floating-info-card').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(83, 59, 56)');
   assert.ok(await child.locator('.floating-info-card').evaluate(node => Number.parseFloat(getComputedStyle(node).opacity) > 0.95));

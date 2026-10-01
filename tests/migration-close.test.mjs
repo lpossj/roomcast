@@ -57,7 +57,7 @@ test('automatic update destroys only the main window and keeps its pipeline aliv
       close() { throw new Error('normal close would exit the updater'); } },
     runUpdatePipeline: () => { calls.push('update'); return Promise.resolve(); },
     stopAllAudioCaptures() {}, runObsCaptureOperation: async callback => callback(), closeObsCaptureEngine() {},
-    target: {}, asset: {}, lastUpdateCheck: { version: 'test' }, updatePipeline: null,
+    target: {}, asset: {}, release: { version: 'test', checksumUrl: 'test-checksum' }, updatePipeline: null,
   });
   vm.runInContext(source.slice(start, end), context);
   assert.deepEqual(calls, ['destroy', 'update']);

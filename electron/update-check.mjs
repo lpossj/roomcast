@@ -302,7 +302,7 @@ export function createUpdateChecker({ currentVersion, fetchImpl, apiUrl = RELEAS
             const chunk = Buffer.from(step.value.buffer, step.value.byteOffset, step.value.byteLength);
             digest.update(chunk);
             bytes += chunk.length;
-            try { await handle.write(chunk); } catch (error) { throw writeError(error); }
+            try { await handle.writeFile(chunk); } catch (error) { throw writeError(error); }
             report('downloading', bytes, total);
           }
         } finally { await handle.close().catch(() => { }); }

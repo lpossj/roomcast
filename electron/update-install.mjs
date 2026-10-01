@@ -9,9 +9,8 @@
 //   1. detect what kind of install is running (portable single EXE vs. a program folder)
 //   2. verify that target once more on disk
 //   3. unpack the verified archive into %TEMP%\roomcast-update-<stamp>\payload
-//   4. write a small .cmd that waits for this process to exit, copies the payload over the
-//      program folder (or copies the new EXE over the portable EXE), starts it again and
-//      cleans up
+//   4. write a data plan for an independent transaction worker: stage, back up, swap,
+//      restart, confirm the loaded version, or roll back
 //   5. the caller starts that script detached and quits
 //
 // Nothing outside the temporary work directory is modified before the app exits, so a
@@ -20,8 +19,16 @@
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { mkdir, open, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import fsPromises from 'node:fs/promises';
 import { inflateRawSync } from 'node:zlib';
+import { createHash, randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+// Installation touches physical archives. Electron's fs shim otherwise sees
+// payload/resources/app.asar as a virtual directory and hashes its inner files.
+const { mkdir, open, readFile, readdir, rm, stat, writeFile } = process.versions.electron
+  ? createRequire(import.meta.url)('original-fs').promises : fsPromises;
 
 const EOCD_SIGNATURE = 0x06054b50;
 const CENTRAL_SIGNATURE = 0x02014b50;
@@ -41,9 +48,6 @@ const MAX_CENTRAL_BYTES = 16 * 1024 * 1024;
 const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_ENTRIES = 20000;
-// robocopy exit codes 0-7 mean success (1 = files copied, 2 = extra files, 4 = mismatches);
-// 8 and above mean at least one file failed.
-const ROBOCOPY_FAILURE_CODE = 8;
 
 export function updateWorkRoot(now = Date.now()) {
   return path.join(os.tmpdir(), `roomcast-update-${now}`);
@@ -288,221 +292,104 @@ export async function extractZip(zipPath, destination, { onProgress, only } = {}
   }
 }
 
-// Human readable script; every failure is appended to apply.log next to it.
-//
-// Two Windows details drive the shape of this script:
-//   * Portable builds run as launcher.exe (the downloaded EXE) -> inner extracted
-//     Roomcast.exe (confirmed in app-builder-lib/templates/nsis/portable.nsi: the launcher
-//     ExecWaits the inner app and only then removes $INSTDIR). `process.ppid` is therefore
-//     the launcher, and the launcher keeps the downloaded EXE locked until it exits, so the
-//     portable path must wait for both PIDs and still retry the copy.
-//   * `tasklist /FI "PID eq N" /FO CSV` matched with `for /f` gives an exact PID test.
-//     A plain `find "N"` would be a substring match, and a tasklist failure must not be
-//     read as "the app has exited" (the copy retry loop below is the second safety net).
-export function buildApplyScript({ target, payloadDir = '', assetPath = '', workDir, logPath, pid, parentPid = 0, failureMarkerPath = '', version = '' }) {
-  for (const value of [target?.targetPath, target?.appDir, target?.launchPath, payloadDir, assetPath, workDir, logPath, failureMarkerPath]) {
-    if (/[!%"\r\n]/.test(value || '')) {
-      throw Object.assign(new Error('更新路径包含无法安全处理的字符（!、%、引号或换行），请打开发布页手动更新。'), { code: 'target' });
-    }
-  }
-  if (version && !/^[A-Za-z0-9._+-]+$/.test(version)) throw Object.assign(new Error('更新版本标识无效。'), { code: 'target' });
-  const kind = target?.kind === 'portable-exe' ? 'portable-exe' : 'directory';
-  const waitForPid = (variable, waitPid, limit, timeoutLabel) => [
-    `set "TRIES=0"`,
-    `:${variable}`,
-    'set "FOUND="',
-    `for /f "tokens=2 delims=," %%P in ('tasklist /FI "PID eq ${waitPid}" /NH /FO CSV 2^>NUL') do set "FOUND=%%~P"`,
-    `if not defined FOUND goto ${variable}gone`,
-    'set /a TRIES+=1',
-    `if !TRIES! GEQ ${limit} goto ${timeoutLabel}`,
-    'ping -n 2 127.0.0.1 >NUL',
-    `goto ${variable}`,
-    `:${variable}gone`,
-  ];
-  const lines = [
-    '@echo off',
-    // The script is UTF-8; select its code page before reading installation paths.
-    'chcp 65001 >NUL',
-    'setlocal enabledelayedexpansion',
-    `set "LOG=${logPath}"`,
-    ...(failureMarkerPath ? [`set "FAIL=${failureMarkerPath}"`, 'if defined FAIL del "%FAIL%" 2>NUL'] : []),
-    // Never overwrite a running program: if tasklist is unavailable the PID check cannot be
-    // trusted, so abort instead of copying files the app may have open.
-    'if not exist "%SystemRoot%\\System32\\tasklist.exe" goto giveup',
-    `echo [%DATE% %TIME%] update start kind=${kind} pid=${pid} version=${version}>>"%LOG%"`,
-    // If the app itself is still running after three minutes, do not overwrite files it has
-    // open: abort, leave the installation untouched and tell the user on the next start.
-    ...waitForPid('waitroomcast', pid, 180, 'giveup'),
-  ];
-  // A stuck launcher must not stall the update forever: the copy loop below retries until
-  // the launcher has really released its image.
-  if (kind === 'portable-exe' && Number(parentPid) > 0) {
-    lines.push(
-      'echo [%DATE% %TIME%] app exited, waiting for the portable launcher>>"%LOG%"',
-      ...waitForPid('waitlauncher', Number(parentPid), 120, 'waitlaunchergone'),
-    );
-  }
-  if (kind === 'portable-exe') {
-    lines.push(
-      'set "COPIES=0"',
-      ':copynew',
-      `copy /Y "${assetPath}" "${target.targetPath}" >>"%LOG%" 2>&1`,
-      'if not errorlevel 1 goto copied',
-      'set /a COPIES+=1',
-      'if !COPIES! GEQ 30 goto failed',
-      'ping -n 2 127.0.0.1 >NUL',
-      'goto copynew',
-      ':copied',
-    );
-  } else {
-    lines.push(
-      `robocopy "${payloadDir}" "${target.appDir}" /E /R:2 /W:1 /NFL /NDL /NJH /NJS >>"%LOG%" 2>&1`,
-      `if errorlevel ${ROBOCOPY_FAILURE_CODE} goto failed`,
-    );
-  }
-  lines.push(
-    'echo [%DATE% %TIME%] files replaced, restarting>>"%LOG%"',
-    `start "" "${target.launchPath}"`,
-    'goto cleanup',
-    ':giveup',
-    'echo [%DATE% %TIME%] gave up waiting for the previous instance>>"%LOG%"',
-    'goto failed',
-    ':failed',
-    'echo [%DATE% %TIME%] FAILED; restarting whatever is installed now>>"%LOG%"',
-  );
-  if (failureMarkerPath) {
-    // The app has already exited, so it cannot report this failure itself. The next launch
-    // reads this marker and tells the user instead of silently staying on the old version.
-    lines.push(
-      `>"%FAIL%" echo ${version}`,
-      `>>"%FAIL%" echo ${String(workDir).replace(/[\^&|<>()]/g, '^$&')}`,
-      '>>"%FAIL%" echo replacement failed, see apply.log',
-    );
-  }
-  lines.push(
-    `start "" "${target.launchPath}"`,
-    // Keep apply.log plus the marker for diagnosis; drop the payload so a failure does not
-    // leave ~600 MB behind. The work directory itself is removed on the next app start.
-    ...(payloadDir ? [`rmdir /s /q "${payloadDir}" 2>NUL`] : []),
-    'endlocal',
-    'exit /b 1',
-    ':cleanup',
-    // Never delete the work directory here: apply.cmd lives in it, and removing it while
-    // cmd.exe is still reading the script kills the remaining steps (the relaunch was lost
-    // this way in testing). The next app start removes stale work directories instead.
-    ...(payloadDir ? [`rmdir /s /q "${payloadDir}" 2>NUL`] : []),
-    ...(kind === 'portable-exe' ? [`if exist "${assetPath}" del /q "${assetPath}" 2>NUL`] : []),
-    'endlocal',
-    'exit /b 0',
-    '',
-  );
-  return lines.join('\r\n');
+// One independent transaction worker serves both Windows distribution formats.
+// References: electron-updater BaseUpdater; Velopack apply_windows_impl.
+async function hashFile(file) {
+  const handle = await open(file, 'r');
+  const digest = createHash('sha256');
+  try { for await (const chunk of handle.createReadStream({ autoClose: false })) digest.update(chunk); }
+  finally { await handle.close(); }
+  return digest.digest('hex');
 }
-
-// Start a hidden replacement process through the normal PowerShell host. A detached
-// PowerShell host was measured exiting 0 without executing even `exit 7` on this
-// Windows installation. Start-Process creates an independent cmd; the start-log
-// acknowledgement must precede app exit. Native regression also exits the launcher
-// parent before the replacement completes to verify its survival.
-export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = spawn, onError, comspec = process.env.ComSpec || 'cmd.exe', powershell = 'powershell.exe' } = {}) {
-  const launch = (file, args, detached = true) => {
-    const child = spawnImpl(file, args, { cwd, stdio: 'ignore', windowsHide: true, detached });
-    // spawn() reports failures asynchronously; without a listener that would be an unhandled
-    // 'error' event in the main process.
-    child.on?.('error', error => { if (typeof onError === 'function') onError(error); });
-    child.unref?.();
-    // pid is undefined when the process could not be started at all.
-    return Number(child.pid) || 0;
-  };
-  // cmd.exe needs the quotes itself when the path contains spaces; Node must not be the one
-  // adding them (see the /d /s /c note in git history: Node escapes them as \" and cmd.exe
-  // then fails before running a single line).
-  const target = /\s/.test(scriptPath) ? `"${scriptPath}"` : scriptPath;
-  const command = `Start-Process -FilePath '${comspec.replace(/'/g, "''")}' -ArgumentList '/d','/c','${target.replace(/'/g, "''")}' -WindowStyle Hidden`;
-  const viaLauncher = launch(powershell, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command], false);
-  if (viaLauncher) return { pid: viaLauncher, via: 'powershell-hidden' };
-  // PowerShell unavailable or blocked: fall back to a detached cmd.exe. Survival (the part
-  // that decides whether the update happens at all) is preserved; windows may flash.
-  return { pid: launch(comspec, ['/d', '/c', scriptPath]), via: 'cmd-detached' };
-}
-
-// A successful spawn only proves a pid was handed out: the process can still die before
-// executing a single line (observed in heavily sandboxed environments, where cmd.exe is
-// started and then fails to initialise). The script writes its first log line before it
-// waits for anything, so "log file has content" is a reliable "it is really running" signal.
-// Without this check the app would quit and nothing would replace the files.
-export async function waitForApplyScriptStart(logPath, { timeoutMs = 8000, intervalMs = 200 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const info = await stat(logPath).catch(() => null);
-    if (info?.size > 0) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+async function payloadFiles(root, relative = '') {
+  const files = [];
+  for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
+    const name = path.join(relative, entry.name);
+    if (entry.isDirectory()) files.push(...await payloadFiles(root, name));
+    else if (entry.isFile()) files.push({ name, sha256: await hashFile(path.join(root, name)) });
+    else throw new Error('更新包包含不支持的文件类型。');
   }
+  return files;
 }
-
-// Unpack a verified download into a work directory and write the apply script.
-// `download.verified` must be true: an archive whose SHA256 could not be checked against
-// the release page is never installed. Callers may pass a `workDir` they already created
-// (for example to download straight into it); then it is theirs to clean up.
 export async function prepareUpdateInstall({ target, download, pid, parentPid = 0, failureMarkerPath = '', version = '', onProgress, workDir: existingWorkDir = '' } = {}) {
   if (!download?.path) throw Object.assign(new Error('没有可用的更新包。'), { code: 'download' });
-  if (!download.verified) {
-    throw Object.assign(new Error('发布页未提供校验值，自动更新已取消；请用"打开发布页"手动下载。'), { code: 'checksum' });
+  if (!download.verified || !/^[0-9a-f]{64}$/i.test(download.sha256 || '') || download.sha256 !== download.expected) {
+    throw Object.assign(new Error('发布页未提供匹配的 SHA256 校验值，已取消自动更新。'), { code: 'checksum' });
   }
   await assertInstallTarget(target);
+  if (!['portable-exe', 'directory'].includes(target.kind)) throw new Error('不支持当前安装方式。');
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(parentPid) || parentPid < 0) throw new Error('更新进程标识无效。');
+  if (!/^[A-Za-z0-9._+-]+$/.test(version)) throw new Error('更新版本标识无效。');
+  if (await hashFile(download.path) !== download.sha256) throw Object.assign(new Error('更新文件在校验后被改变。'), { code: 'checksum' });
   const workDir = existingWorkDir || updateWorkRoot();
-  // The apply script is a .cmd: `!` and `%` in a path would be expanded by cmd.exe.
   const logPath = path.join(workDir, 'apply.log');
-  // Validate before extraction or deleting the verified archive as well as at
-  // the script boundary. The main window is still open when this can fail.
-  buildApplyScript({ target, assetPath: download.path, workDir, logPath, pid, parentPid, failureMarkerPath, version });
-  await mkdir(workDir, { recursive: true });
+  const scriptPath = path.join(workDir, 'apply.ps1');
+  const receiptPath = path.join(workDir, 'receipt.json');
   const payloadDir = target.kind === 'directory' ? path.join(workDir, 'payload') : '';
+  await mkdir(workDir, { recursive: true });
   try {
-    if (target.kind === 'directory') {
-      await extractZip(download.path, payloadDir, { onProgress }).catch(error => {
-        // A ~600 MB payload needs real free space; say so instead of surfacing ENOSPC.
-        if (error?.code === 'ENOSPC' || /no space left/i.test(String(error?.message || ''))) {
-          throw Object.assign(new Error('磁盘剩余空间不足，无法解压更新包；请清理临时目录后重试。'), { code: 'space' });
-        }
-        throw error;
-      });
-      // The archive is no longer needed and is the largest thing in the work directory.
-      await unlink(download.path).catch(() => { });
+    let files = [];
+    if (payloadDir) {
+      await extractZip(download.path, payloadDir, { onProgress });
+      for (const name of ['Roomcast.exe', 'resources/app.asar']) {
+        if (!(await stat(path.join(payloadDir, name)).catch(() => null))?.isFile()) throw new Error('更新包缺少必要的程序文件：' + name);
+      }
+      files = await payloadFiles(payloadDir);
     }
-    const scriptPath = path.join(workDir, 'apply.cmd');
-    await writeFile(scriptPath, buildApplyScript({
-      target,
-      payloadDir,
-      assetPath: download.path,
-      workDir,
-      logPath,
-      pid,
-      parentPid,
-      failureMarkerPath,
-      version,
-    }), 'utf8');
-    return { workDir, payloadDir, scriptPath, logPath, kind: target.kind };
+    const plan = {
+      kind: target.kind, targetPath: target.targetPath, launchPath: target.launchPath,
+      assetPath: download.path, payloadDir, files, sha256: download.sha256,
+      workDir, logPath, receiptPath, token: randomBytes(32).toString('hex'),
+      lockPath: target.targetPath + '.update.lock', pid, parentPid, failureMarkerPath, version,
+    };
+    await writeFile(path.join(workDir, 'update-plan.json'), JSON.stringify(plan), 'utf8');
+    const worker = await readFile(new URL('./update-worker.ps1', import.meta.url), 'utf8');
+    await writeFile(scriptPath, '\ufeff' + worker, 'utf8');
+    return { workDir, payloadDir, scriptPath, logPath, receiptPath, kind: target.kind };
   } catch (error) {
-    if (!existingWorkDir) await rm(workDir, { recursive: true, force: true }).catch(() => { });
+    if (!existingWorkDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
 }
-
-// The apply script cannot delete its own directory, so stale work directories are removed
-// on the next app start. Anything touched in the last ten minutes is left alone so a
-// concurrently running apply script is never disturbed.
-export async function cleanupStaleUpdateWorkDirs({ now = Date.now(), maxAgeMs = 10 * 60 * 1000, root = os.tmpdir() } = {}) {
+export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = spawn, onError,
+  launcherPath = process.resourcesPath ? path.join(process.resourcesPath, 'runtime/update-launcher/RoomcastUpdateLauncher.exe') : fileURLToPath(new URL('../runtime/update-launcher/RoomcastUpdateLauncher.exe', import.meta.url)),
+} = {}) {
+  const worker = Buffer.from("& '" + scriptPath.replace(/'/g, "''") + "'", 'utf16le').toString('base64');
+  const child = spawnImpl(launcherPath, [worker], { cwd, stdio: 'ignore', windowsHide: true, detached: true });
+  child.on?.('error', error => { if (typeof onError === 'function') onError(error); });
+  child.unref?.();
+  return { pid: Number(child.pid) || 0, via: 'native-breakaway' };
+}
+export async function waitForApplyScriptStart(logPath, { timeoutMs = 8000, intervalMs = 200 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const log = await readFile(logPath, 'utf8').catch(() => '');
+    if (/update start kind=/.test(log)) return true;
+    if (/FAILED/.test(log) || Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+}
+export async function confirmUpdateStartup(version, env = process.env) {
+  const receiptPath = env.ROOMCAST_UPDATE_RECEIPT;
+  const token = env.ROOMCAST_UPDATE_TOKEN;
+  delete env.ROOMCAST_UPDATE_RECEIPT;
+  delete env.ROOMCAST_UPDATE_TOKEN;
+  if (!receiptPath || !/^[a-f0-9]{64}$/.test(token || '') || path.basename(receiptPath) !== 'receipt.json') return false;
+  const temporary = receiptPath + '.tmp';
+  await writeFile(temporary, JSON.stringify({ version, token, pid: process.pid }), 'utf8');
+  await (await import('node:fs/promises')).rename(temporary, receiptPath);
+  return true;
+}
+export async function cleanupStaleUpdateWorkDirs({ now = Date.now(), maxAgeMs = 24 * 60 * 60 * 1000, root = os.tmpdir() } = {}) {
   let removed = 0;
-  const names = await readdir(root).catch(() => []);
-  for (const name of names) {
+  for (const name of await readdir(root).catch(() => [])) {
     if (!/^roomcast-update-\d+$/.test(name)) continue;
-    const target = path.join(root, name);
-    const info = await stat(target).catch(() => null);
-    if (!info?.isDirectory()) continue;
-    if (now - info.mtimeMs < maxAgeMs) continue;
-    await rm(target, { recursive: true, force: true }).then(() => { removed += 1; }, () => { });
+    const directory = path.join(root, name);
+    const info = await stat(directory).catch(() => null);
+    if (!info?.isDirectory() || now - info.mtimeMs < maxAgeMs) continue;
+    const log = await readFile(path.join(directory, 'apply.log'), 'utf8').catch(() => '');
+    if (!/COMMITTED version=/.test(log)) continue;
+    await rm(directory, { recursive: true, force: true }).then(() => { removed++; }, () => {});
   }
   return removed;
 }

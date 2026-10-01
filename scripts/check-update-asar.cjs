@@ -1,0 +1,42 @@
+// Verify physical archive preparation under Electron's virtual-ASAR filesystem.
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { spawn, spawnSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
+const { pathToFileURL } = require('node:url');
+const assert = require('node:assert/strict');
+async function main() {
+  const root = process.cwd();
+  const output = await fs.mkdtemp(path.join(root, '.test/update-asar-'));
+  const contents = path.join(output, 'contents');
+  const payload = path.join(output, 'payload');
+  await fs.mkdir(contents); await fs.mkdir(path.join(payload, 'resources'), { recursive: true });
+  await fs.writeFile(path.join(contents, 'package.json'), '{"name":"asar-update-fixture","version":"1.0.0"}');
+  await require('@electron/asar').createPackage(contents, path.join(payload, 'resources/app.asar'));
+  await fs.writeFile(path.join(payload, 'Roomcast.exe'), 'exe-fixture');
+  const zipPath = path.join(output, 'update.zip');
+  const archiveTool = path.join(path.dirname(require.resolve('electron-winstaller/package.json')), 'vendor/7z.exe');
+  const packed = spawnSync(archiveTool, ['a', '-tzip', zipPath, 'Roomcast.exe', 'resources'], { cwd: payload, windowsHide: true, stdio: 'ignore' });
+  assert.equal(packed.status, 0);
+  const sha256 = createHash('sha256').update(await fs.readFile(zipPath)).digest('hex');
+  const report = path.join(output, 'result.json');
+  const entry = path.join(output, 'probe.cjs');
+  const moduleUrl = pathToFileURL(path.join(root, 'electron/update-install.mjs')).href;
+  await fs.writeFile(entry, `const {app}=require('electron');const fs=require('node:fs');const raw=require('original-fs');
+app.whenReady().then(async()=>{try{
+const {prepareUpdateInstall}=await import(${JSON.stringify(moduleUrl)});
+const archive=${JSON.stringify(path.join(payload, 'resources/app.asar'))};
+if(!fs.statSync(archive).isDirectory()||!raw.statSync(archive).isFile())throw new Error('ASAR shim fixture inactive');
+const plan=await prepareUpdateInstall({target:{supported:true,kind:'directory',targetPath:${JSON.stringify(payload)},appDir:${JSON.stringify(payload)},launchPath:${JSON.stringify(path.join(payload, 'Roomcast.exe'))}},download:{path:${JSON.stringify(zipPath)},verified:true,sha256:${JSON.stringify(sha256)},expected:${JSON.stringify(sha256)}},pid:process.pid,version:'0.14.4-beta.7',workDir:${JSON.stringify(path.join(output, 'work'))}});
+const data=JSON.parse(raw.readFileSync(require('node:path').join(plan.workDir,'update-plan.json'),'utf8'));
+if(data.files.length!==2||!data.files.some(file=>file.name.replace(/\\\\/g,'/')==='resources/app.asar'))throw new Error('ASAR contents were traversed instead of its physical file');
+raw.writeFileSync(${JSON.stringify(report)},JSON.stringify({ok:true,files:data.files,virtualAsar:true,physicalAsar:true},null,2));app.exit(0);
+}catch(error){raw.writeFileSync(${JSON.stringify(report)},JSON.stringify({ok:false,error:error.stack}));app.exit(1);}});`);
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const child = spawn(require('electron'), [entry], { env, windowsHide: true, stdio: 'ignore' });
+  const exit = await new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
+  const result = JSON.parse(await fs.readFile(report, 'utf8'));
+  assert.equal(exit, 0, result.error); assert.equal(result.ok, true);
+  console.log('[update-asar] PASS: real Electron shim reports virtual archive; transaction hashes the physical ASAR. Evidence: ' + output);
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.4-beta.6",
+  "version": "0.14.4-beta.7",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -87,6 +87,11 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "runtime/update-launcher",
+        "to": "runtime/update-launcher",
+        "filter": ["RoomcastUpdateLauncher.exe"]
+      },
       {
         "from": "runtime/obs-bundle",
         "to": "runtime/obs-bundle",

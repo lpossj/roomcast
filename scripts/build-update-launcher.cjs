@@ -1,0 +1,10 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const root = path.join(__dirname, '..');
+const compiler = path.join(process.env.SystemRoot || 'C:\\Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
+const output = path.join(root, 'runtime/update-launcher/RoomcastUpdateLauncher.exe');
+fs.mkdirSync(path.dirname(output), { recursive: true });
+const result = spawnSync(compiler, ['/nologo', '/target:winexe', '/optimize+', '/out:' + output, path.join(root, 'electron/update-launcher.cs')], { stdio: 'inherit', windowsHide: true });
+if (result.error || result.status !== 0) throw result.error || new Error('Windows update launcher compilation failed');
+console.log('[update-launcher] compiled native handoff host');

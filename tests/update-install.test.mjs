@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { deflateRawSync, crc32 } from 'node:zlib';
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
   assertInstallTarget,
-  buildApplyScript,
+  confirmUpdateStartup,
   cleanupStaleUpdateWorkDirs,
   describeInstallTarget,
   extractZip,
@@ -242,222 +243,86 @@ test('a truncated or non-zip archive fails without touching the destination', as
   await assert.rejects(() => extractZip(truncated, path.join(workRoot, 'payload-truncated')));
 });
 
-test('the apply script waits, replaces and restarts, and never uses a destructive mirror copy', () => {
-  const target = { kind: 'directory', appDir: 'D:\\Roomcast', launchPath: 'D:\\Roomcast\\Roomcast.exe' };
-  const script = buildApplyScript({
-    target,
-    payloadDir: 'C:\\Temp\\roomcast-update-1\\payload',
-    workDir: 'C:\\Temp\\roomcast-update-1',
-    logPath: 'C:\\Temp\\roomcast-update-1\\apply.log',
-    pid: 4321,
-  });
-  // An exact PID test: `find "4321"` would also match PID 54321.
-  assert.match(script, /tasklist \/FI "PID eq 4321" \/NH \/FO CSV/);
-  assert.ok(!/find "4321"/.test(script), 'PID detection must not be a substring match');
-  assert.match(script, /if not defined FOUND goto waitroomcastgone/);
-  // A stuck app must abort the update instead of overwriting files it still has open.
-  assert.match(script, /if !TRIES! GEQ 180 goto giveup/);
-  assert.match(script, /robocopy "C:\\Temp\\roomcast-update-1\\payload" "D:\\Roomcast" \/E /);
-  assert.ok(!/\/MIR/.test(script), 'must not mirror: /MIR would delete files the user added');
-  assert.match(script, /start "" "D:\\Roomcast\\Roomcast\.exe"/);
-  // Regression guard: deleting the work directory from inside apply.cmd kills cmd.exe while
-  // it is still reading the script, so the relaunch after it never happens.
-  assert.ok(!/rmdir \/s \/q "C:\\Temp\\roomcast-update-1"/.test(script), 'the script must not delete its own directory');
-  assert.match(script, /rmdir \/s \/q "C:\\Temp\\roomcast-update-1\\payload"/);
-  // Without tasklist the PID check cannot be trusted, so the update must abort.
-  assert.match(script, /if not exist "%SystemRoot%\\System32\\tasklist\.exe" goto giveup/);
-  assert.match(script, /exit \/b 0/);
-  assert.match(script, /exit \/b 1/);
-});
-
-test('the portable apply script waits for the launcher and retries the locked EXE copy', () => {
-  const script = buildApplyScript({
-    target: { kind: 'portable-exe', targetPath: 'D:\\Tools\\Roomcast.exe', launchPath: 'D:\\Tools\\Roomcast.exe' },
-    assetPath: 'C:\\Temp\\roomcast-update-2\\Roomcast-0.14.3-beta.2-Windows.exe',
-    payloadDir: '',
-    workDir: 'C:\\Temp\\roomcast-update-2',
-    logPath: 'C:\\Temp\\roomcast-update-2\\apply.log',
-    pid: 99,
-    parentPid: 4242,
-  });
-  // electron-builder's portable launcher ExecWaits the inner app and only then exits, so it
-  // keeps the downloaded EXE locked; both PIDs must be awaited.
-  assert.match(script, /tasklist \/FI "PID eq 99" \/NH \/FO CSV/);
-  assert.match(script, /tasklist \/FI "PID eq 4242" \/NH \/FO CSV/);
-  assert.match(script, /:waitlauncher/);
-  assert.match(script, /:copynew/);
-  assert.match(script, /if !COPIES! GEQ 30 goto failed/);
-  assert.match(script, /copy \/Y "C:\\Temp\\roomcast-update-2\\Roomcast-0\.14\.3-beta\.2-Windows\.exe" "D:\\Tools\\Roomcast\.exe"/);
-  assert.ok(!/robocopy/.test(script));
-  assert.match(script, /exit \/b 1/);
-
-  // Without a launcher PID the copy still retries, and no launcher wait is generated.
-  const noParent = buildApplyScript({
-    target: { kind: 'portable-exe', targetPath: 'D:\\Tools\\Roomcast.exe', launchPath: 'D:\\Tools\\Roomcast.exe' },
-    assetPath: 'C:\\Temp\\roomcast-update-3\\new.exe',
-    payloadDir: '',
-    workDir: 'C:\\Temp\\roomcast-update-3',
-    logPath: 'C:\\Temp\\roomcast-update-3\\apply.log',
-    pid: 99,
-  });
-  assert.ok(!/:waitlauncher/.test(noParent));
-  assert.match(noParent, /:copynew/);
-});
-
-test('the apply script leaves a failure marker so the next launch can report it', () => {
-  const script = buildApplyScript({
-    target: { kind: 'directory', appDir: 'D:\\Roomcast', launchPath: 'D:\\Roomcast\\Roomcast.exe' },
-    payloadDir: 'C:\\Temp\\roomcast-update-4\\payload',
-    workDir: 'C:\\Temp\\roomcast-update-4',
-    logPath: 'C:\\Temp\\roomcast-update-4\\apply.log',
-    pid: 7,
-    failureMarkerPath: 'C:\\Users\\me\\AppData\\Roaming\\Roomcast\\update-failed.txt',
-    version: '0.14.4-beta.1',
-  });
-  assert.match(script, /set "FAIL=C:\\Users\\me\\AppData\\Roaming\\Roomcast\\update-failed\.txt"/);
-  // A previous marker must be cleared at the start of every attempt...
-  assert.match(script, /if defined FAIL del "%FAIL%" 2>NUL/);
-  // ...and only the failure path writes a new one.
-  assert.match(script, />"%FAIL%" echo 0\.14\.4-beta\.1/);
-  assert.match(script, />>"%FAIL%" echo C:\\Temp\\roomcast-update-4/);
-  // Only the failure branch may create the marker (the single `>` form, not the appends).
-  assert.equal(script.match(/(?<!>)>"%FAIL%" echo/g).length, 1, 'only one branch may create the marker');
-});
-
-test('the apply script start guard waits for the first log line', async () => {
-  // The app must not quit unless the replacement script really began running; a spawn that
-  // returns a pid can still die before executing anything.
-  const logPath = path.join(workRoot, 'guard', 'apply.log');
-  await mkdir(path.dirname(logPath), { recursive: true });
-  assert.equal(await waitForApplyScriptStart(logPath, { timeoutMs: 400, intervalMs: 50 }), false, '没有日志时必须报未启动');
-  await writeFile(logPath, '[time] update start kind=directory pid=1\n');
-  assert.equal(await waitForApplyScriptStart(logPath, { timeoutMs: 400, intervalMs: 50 }), true, '日志有内容即视为已启动');
-  // An empty file is not a start signal either.
-  const emptyLog = path.join(workRoot, 'guard', 'empty.log');
-  await writeFile(emptyLog, '');
-  assert.equal(await waitForApplyScriptStart(emptyLog, { timeoutMs: 300, intervalMs: 50 }), false);
-});
-
-test('apply rejects cmd expansion characters in every embedded path before launching', () => {
-  const plan = { target: { kind: 'portable-exe', targetPath: 'C:\\Roomcast.exe', appDir: 'C:\\', launchPath: 'C:\\Roomcast.exe' },
-    workDir: 'C:\\Temp\\update', logPath: 'C:\\Temp\\update\\apply.log', assetPath: 'C:\\Temp\\new.exe', pid: 7 };
-  for (const field of ['targetPath', 'appDir', 'launchPath']) {
-    for (const char of ['!', '%']) assert.throws(() => buildApplyScript({ ...plan, target: { ...plan.target, [field]: `C:\\bad${char}path` } }), /手动更新/);
-  }
-  for (const field of ['payloadDir', 'assetPath', 'workDir', 'logPath', 'failureMarkerPath']) {
-    assert.throws(() => buildApplyScript({ ...plan, [field]: 'C:\\bad%path' }), /手动更新/);
-  }
-  assert.throws(() => buildApplyScript({ ...plan, version: '1 & calc' }), /版本标识/);
-});
-
-test('the apply script uses a normal hidden PowerShell host and retains a detached cmd fallback', () => {
-  // Regression coverage for the existing hidden launcher: cmd quoting, survival
-  // after the app exits, and hidden descendants. On Windows, libuv adds
-  // non-detached children to its own job; detached skips that assignment.
-  // detached and windowsHide are compatible options, but CREATE_NO_WINDOW is
-  // ignored with DETACHED_PROCESS, so the explicit hidden launcher still matters.
-  const calls = [];
-  const spawnImpl = (file, args, options) => {
-    calls.push({ file, args, options });
-    return { pid: 4242, on() { }, unref() { } };
-  };
-  const scriptPath = 'C:\\Users\\me\\AppData\\Local\\Temp\\roomcast-update-1\\apply.cmd';
-  const started = startApplyScript(scriptPath, { spawnImpl, comspec: 'C:\\Windows\\System32\\cmd.exe' });
-  assert.equal(started.pid, 4242);
-  assert.equal(started.via, 'powershell-hidden');
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].file, 'powershell.exe');
-  assert.deepEqual(calls[0].args.slice(0, 4), ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden']);
-  assert.equal(calls[0].args[4], '-Command');
-  assert.ok(calls[0].args[5].includes("Start-Process -FilePath 'C:\\Windows\\System32\\cmd.exe'"));
-  assert.match(calls[0].args[5], /-WindowStyle Hidden$/);
-  assert.ok(calls[0].args[5].includes(scriptPath), '必须把脚本路径交给启动器');
-  assert.ok(!calls[0].args[5].includes('/s '), '不能使用 /s');
-  assert.equal(calls[0].options.detached, false, 'PowerShell detached 在实测 Windows 上未执行命令');
-  assert.equal(calls[0].options.windowsHide, true);
-  assert.equal(calls[0].options.stdio, 'ignore');
-
-  // A path with spaces must be quoted for cmd.exe, not for Node.
-  const spaced = [];
-  startApplyScript('C:\\Users\\me\\App Data\\apply.cmd', {
-    spawnImpl: (file, args, options) => { spaced.push({ file, args, options }); return { pid: 1, on() { }, unref() { } }; },
-  });
-  assert.ok(spaced[0].args[5].includes("'\"C:\\Users\\me\\App Data\\apply.cmd\"'"), '含空格路径必须由 cmd 侧加引号');
-
-  // If PowerShell cannot be started, fall back to a detached cmd.exe so the update still
-  // happens (windows may flash), and report which path was used.
-  const fallback = [];
-  const started2 = startApplyScript(scriptPath, {
-    spawnImpl: (file, args, options) => {
-      fallback.push({ file, args, options });
-      return { pid: fallback.length === 1 ? 0 : 777, on() { }, unref() { } };
-    },
-    comspec: 'C:\\Windows\\System32\\cmd.exe',
-  });
-  assert.equal(started2.via, 'cmd-detached');
-  assert.equal(started2.pid, 777);
-  assert.equal(fallback.length, 2);
-  assert.equal(fallback[1].file, 'C:\\Windows\\System32\\cmd.exe');
-  assert.deepEqual(fallback[1].args, ['/d', '/c', scriptPath]);
-  assert.equal(fallback[1].options.detached, true);
-  assert.equal(fallback[1].options.windowsHide, true);
-});
-
-test('an unverified download is never installed', async () => {
-  const dir = path.join(workRoot, 'folder-install');
-  await mkdir(path.join(dir, 'resources'), { recursive: true });
-  await writeFile(path.join(dir, 'resources', 'app.asar'), 'asar');
-  const target = { supported: true, kind: 'directory', targetPath: dir, appDir: dir, launchPath: path.join(dir, 'Roomcast.exe') };
-  await assert.rejects(
-    () => prepareUpdateInstall({ target, download: { path: 'ignored.zip', verified: false }, pid: 1 }),
-    /发布页未提供校验值/,
-  );
-  await assert.rejects(
-    () => prepareUpdateInstall({ target, download: null, pid: 1 }),
-    /没有可用的更新包/,
-  );
-});
-
-test('prepareUpdateInstall unpacks a verified archive and writes a runnable script', async () => {
-  const dir = path.join(workRoot, 'real-install');
-  await mkdir(path.join(dir, 'resources'), { recursive: true });
-  await writeFile(path.join(dir, 'resources', 'app.asar'), 'old-asar');
-  const target = { supported: true, kind: 'directory', targetPath: dir, appDir: dir, launchPath: path.join(dir, 'Roomcast.exe') };
-  const zipPath = path.join(workRoot, 'update.zip');
-  await writeFile(zipPath, makeZip([
-    { name: 'Roomcast.exe', content: 'new-exe', deflate: true },
-    { name: 'resources/app.asar', content: 'new-asar', deflate: true },
-  ]));
-  const plan = await prepareUpdateInstall({ target, download: { path: zipPath, verified: true }, pid: process.pid });
+function verified(path, bytes) {
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  return { path, verified: true, sha256, expected: sha256 };
+}
+test('transaction preparation verifies the actual file and preserves the installation', async () => {
+  const dir = path.join(workRoot, "便携 !% '& [中文]");
+  await mkdir(dir, { recursive: true });
+  const targetPath = path.join(dir, 'Roomcast.exe');
+  const assetPath = path.join(dir, 'new.exe');
+  await writeFile(targetPath, 'old'); await writeFile(assetPath, 'new');
+  const target = { supported: true, kind: 'portable-exe', targetPath, launchPath: targetPath };
+  const args = { target, download: verified(assetPath, 'new'), pid: process.pid, parentPid: process.ppid, version: '0.14.4-beta.7' };
+  await assert.rejects(() => prepareUpdateInstall({ ...args, download: { ...args.download, verified: false } }), /SHA256/);
+  await assert.rejects(() => prepareUpdateInstall({ ...args, download: { ...args.download, expected: '0'.repeat(64) } }), /SHA256/);
+  await assert.rejects(() => prepareUpdateInstall({ ...args, download: verified(assetPath, 'changed') }), /改变/);
+  await assert.rejects(() => prepareUpdateInstall({ ...args, pid: 0 }), /进程标识/);
+  const plan = await prepareUpdateInstall(args);
   try {
-    assert.equal(await readFile(path.join(plan.payloadDir, 'resources', 'app.asar'), 'utf8'), 'new-asar');
-    const script = await readFile(plan.scriptPath, 'utf8');
-    assert.match(script, new RegExp(`roomcast-update-`));
-    assert.match(script, new RegExp(String(process.pid)));
-    // The archive itself is dropped once unpacked; the payload is what gets copied.
-    assert.equal(await stat(zipPath).catch(() => null), null);
-    assert.ok(plan.logPath.startsWith(plan.workDir));
-  } finally {
-    await rm(plan.workDir, { recursive: true, force: true });
-  }
+    assert.match(plan.scriptPath, /apply\.ps1$/);
+    const data = JSON.parse(await readFile(path.join(plan.workDir, 'update-plan.json'), 'utf8'));
+    assert.equal(data.targetPath, targetPath); assert.equal(data.sha256, args.download.sha256);
+    assert.match(data.token, /^[a-f0-9]{64}$/);
+    assert.equal(await readFile(targetPath, 'utf8'), 'old');
+    assert.equal((await readFile(plan.scriptPath, 'utf8')).charCodeAt(0), 0xfeff);
+  } finally { await rm(plan.workDir, { recursive: true, force: true }); }
 });
-
-test('stale update work directories are removed on a later start', async () => {
-  const root = path.join(workRoot, 'temp-root');
-  const staleRoot = path.join(root, 'roomcast-update-1000');
-  await mkdir(staleRoot, { recursive: true });
-  await writeFile(path.join(staleRoot, 'apply.log'), 'old');
-  const past = new Date(Date.now() - 60 * 60 * 1000);
-  await utimes(staleRoot, past, past);
-  const freshRoot = path.join(root, `roomcast-update-${Date.now()}`);
-  await mkdir(freshRoot, { recursive: true });
-  const unrelated = path.join(root, 'some-other-folder');
-  await mkdir(unrelated, { recursive: true });
-  const removed = await cleanupStaleUpdateWorkDirs({ root });
-  assert.equal(removed, 1);
-  assert.equal(await stat(staleRoot).catch(() => null), null);
-  // A directory created by a still-running update must survive, and unrelated temp
-  // folders must never be touched.
-  assert.ok(await stat(freshRoot).catch(() => null));
-  assert.ok(await stat(unrelated).catch(() => null));
+test('directory transaction validates its layout and hashes every extracted file', async () => {
+  const dir = path.join(workRoot, 'directory-install');
+  await mkdir(path.join(dir, 'resources'), { recursive: true });
+  await writeFile(path.join(dir, 'resources/app.asar'), 'old');
+  const zipPath = path.join(workRoot, 'new.zip');
+  const bytes = makeZip([{ name: 'Roomcast.exe', content: 'new-exe' }, { name: 'resources/app.asar', content: 'new-asar', deflate: true }]);
+  await writeFile(zipPath, bytes);
+  const target = { supported: true, kind: 'directory', targetPath: dir, appDir: dir, launchPath: path.join(dir, 'Roomcast.exe') };
+  const args = { target, download: verified(zipPath, bytes), pid: process.pid, version: '0.14.4-beta.7' };
+  const plan = await prepareUpdateInstall(args);
+  try {
+    const data = JSON.parse(await readFile(path.join(plan.workDir, 'update-plan.json'), 'utf8'));
+    assert.equal(data.files.length, 2);
+    for (const entry of data.files) assert.equal(entry.sha256, createHash('sha256').update(await readFile(path.join(plan.payloadDir, entry.name))).digest('hex'));
+    assert.equal(await readFile(path.join(dir, 'resources/app.asar'), 'utf8'), 'old');
+    assert.ok(await stat(zipPath));
+  } finally { await rm(plan.workDir, { recursive: true, force: true }); }
+  const incomplete = makeZip([{ name: 'other.txt', content: 'incomplete' }]);
+  await writeFile(zipPath, incomplete);
+  await assert.rejects(() => prepareUpdateInstall({ ...args, download: verified(zipPath, incomplete) }), /必要的程序文件/);
+});
+test('the launcher encodes literal paths and uses an independent hidden worker', () => {
+  const calls = [];
+  const scriptPath = "C:\\Users\\me\\!% 中文 '& [目录]\\apply.ps1";
+  const started = startApplyScript(scriptPath, { spawnImpl(file, args, options) { calls.push({ file, args, options }); return { pid: 42, on() {}, unref() {} }; } });
+  assert.equal(started.pid, 42); assert.equal(started.via, 'native-breakaway');
+  assert.equal(calls[0].options.detached, true); assert.equal(calls[0].options.windowsHide, true);
+  const encoded = calls[0].args[0];
+  assert.equal(Buffer.from(encoded, 'base64').toString('utf16le'), "& '" + scriptPath.replace(/'/g, "''") + "'");
+  assert.match(calls[0].file, /RoomcastUpdateLauncher\.exe$/);
+});
+test('start guard requires a real start record rather than a failure log', async () => {
+  const log = path.join(workRoot, 'start.log');
+  await writeFile(log, 'FAILED: permission denied');
+  assert.equal(await waitForApplyScriptStart(log, { timeoutMs: 200, intervalMs: 20 }), false);
+  await writeFile(log, '[timestamp] update start kind=portable-exe pid=1');
+  assert.equal(await waitForApplyScriptStart(log), true);
+});
+test('startup receipt records the actual version and consumes inherited transaction state', async () => {
+  const receiptPath = path.join(workRoot, 'receipt.json');
+  const env = { ROOMCAST_UPDATE_RECEIPT: receiptPath, ROOMCAST_UPDATE_TOKEN: 'a'.repeat(64) };
+  assert.equal(await confirmUpdateStartup('0.14.4-beta.7', env), true);
+  assert.deepEqual(JSON.parse(await readFile(receiptPath, 'utf8')), { version: '0.14.4-beta.7', token: 'a'.repeat(64), pid: process.pid });
+  assert.equal(await confirmUpdateStartup('0.14.4-beta.7', env), false);
+  assert.equal(await stat(receiptPath + '.tmp').catch(() => null), null);
+});
+test('cleanup retains failed/incomplete work and removes only old committed transactions', async () => {
+  const root = path.join(workRoot, 'cleanup');
+  const past = new Date(Date.now() - 48 * 3600 * 1000);
+  for (const [name, log] of [['roomcast-update-1', 'COMMITTED version=1'], ['roomcast-update-2', 'FAILED'], ['roomcast-update-3', 'update start kind=directory'], ['unrelated', 'COMMITTED version=1']]) {
+    await mkdir(path.join(root, name), { recursive: true });
+    await writeFile(path.join(root, name, 'apply.log'), log);
+    await utimes(path.join(root, name), past, past);
+  }
+  assert.equal(await cleanupStaleUpdateWorkDirs({ root }), 1);
+  for (const name of ['roomcast-update-2', 'roomcast-update-3', 'unrelated']) assert.ok(await stat(path.join(root, name)));
 });

@@ -9,13 +9,14 @@ import { chromium } from 'playwright';
 const root = process.cwd();
 const packageInfo = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const version = packageInfo.version;
+const releaseDir = path.resolve(process.argv.find(value => value.startsWith('--release-dir='))?.slice('--release-dir='.length) || 'release');
 const output = path.join(root, `.test/release-${version}`);
 const profile = path.join(output, 'portable-profile');
 await mkdir(profile, { recursive: true });
 await rm(path.join(profile, 'DevToolsActivePort'), { force: true });
 
-const executablePath = path.join(root, `release/Roomcast-${version}-Windows.exe`);
-const resourcesDir = path.join(root, 'release/win-unpacked/resources');
+const executablePath = path.join(releaseDir, `Roomcast-${version}-Windows.exe`);
+const resourcesDir = path.join(releaseDir, 'win-unpacked/resources');
 
 const env = {
   ...process.env,
