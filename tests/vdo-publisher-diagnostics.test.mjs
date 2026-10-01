@@ -81,6 +81,41 @@ test('unknown stats and counter resets remain unknown, and a failed viewer does 
   monitor.stop();
 });
 
+test('motion diagnostics use interval counters and preserve missing, idle and reset values', async () => {
+  const { monitor, outbound, report } = fixture();
+  report.set('codec', { mimeType: 'video/H264', sdpFmtpLine: 'private-sdp' });
+  Object.assign(outbound, { codecId: 'codec', framesEncoded: 60, qpSum: 1800, totalEncodeTime: 0.6,
+    keyFramesEncoded: 1, pliCount: 0, firCount: 0, packetsSent: 100, totalPacketSendDelay: 0.5 });
+  await monitor.sample();
+  assert.equal(monitor.snapshot().samples.at(-1).connections[0].outbound[0].averageQp, null);
+  Object.assign(outbound, { timestamp: 3000, framesEncoded: 180, qpSum: 7200, totalEncodeTime: 1.8,
+    keyFramesEncoded: 3, pliCount: 1, packetsSent: 300, totalPacketSendDelay: 2.5, encoderImplementation: 'OpenH264' });
+  await monitor.sample();
+  const motion = monitor.snapshot().samples.at(-1).connections[0].outbound[0];
+  assert.equal(motion.averageQp, 45);
+  assert.ok(Math.abs(motion.encodeTimeMs - 10) < 0.0001);
+  assert.equal(motion.delta.keyFramesEncoded, 2);
+  assert.equal(motion.delta.pliCount, 1);
+  assert.equal(motion.packetSendDelayMs, 10);
+  assert.equal(motion.codec, 'video/H264');
+  assert.equal(motion.encoderImplementation, 'OpenH264');
+  outbound.timestamp += 2000;
+  await monitor.sample();
+  assert.equal(monitor.snapshot().samples.at(-1).connections[0].outbound[0].averageQp, null);
+  Object.assign(outbound, { timestamp: 7000, framesEncoded: 2, qpSum: 50, totalEncodeTime: 0.01, keyFramesEncoded: 1 });
+  delete outbound.encoderImplementation;
+  delete outbound.packetsSent;
+  await monitor.sample();
+  const reset = monitor.snapshot().samples.at(-1).connections[0].outbound[0];
+  assert.equal(reset.averageQp, null);
+  assert.equal(reset.encodeTimeMs, null);
+  assert.equal(reset.delta.keyFramesEncoded, null);
+  assert.equal(reset.packetSendDelayMs, null);
+  assert.equal(reset.encoderImplementation, null);
+  assert.doesNotMatch(JSON.stringify(monitor.snapshot()), /private-|sdpFmtpLine/);
+  monitor.stop();
+});
+
 test('retains at most 300 independent samples and returns copies', async () => {
   const { monitor, outbound, parameters } = fixture();
   for (let i = 0; i < 305; i++) { outbound.timestamp = i * 2000; await monitor.sample(); }
@@ -167,7 +202,8 @@ test('publisher wiring exports diagnostics and stops sampling on close, failed p
   };
   const source = (await readFile(new URL('../src/transports/vdo-screen-publisher.js', import.meta.url), 'utf8'))
     .replace("import { createVdoTransport } from './vdo-transport.js';", 'const createVdoTransport = () => globalThis.__vdoDiagnosticTestTransport;')
-    .replace("from './vdo-publisher-diagnostics.js'", `from '${new URL('../src/transports/vdo-publisher-diagnostics.js', import.meta.url).href}'`);
+    .replace("from './vdo-publisher-diagnostics.js'", `from '${new URL('../src/transports/vdo-publisher-diagnostics.js', import.meta.url).href}'`)
+    .replace("from '../video-frame-balance.js'", `from '${new URL('../src/video-frame-balance.js', import.meta.url).href}'`);
   const { createVdoScreenPublisher } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   for (const mode of ['ready', 'failed', 'late']) {
     const original = track(), cloned = track();

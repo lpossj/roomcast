@@ -3,6 +3,8 @@ const SAMPLE_INTERVAL_MS = 2000;
 const MAX_SAMPLES = 300;
 const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
 const pickNumbers = (value, keys) => Object.fromEntries(keys.map(key => [key, number(value?.[key])]));
+const counters = ['bytesSent', 'framesEncoded', 'qpSum', 'totalEncodeTime', 'keyFramesEncoded',
+  'pliCount', 'firCount', 'packetsSent', 'totalPacketSendDelay'];
 
 function trackDetails(track) {
   let settings;
@@ -21,6 +23,7 @@ export function createVdoPublisherDiagnostics({
   schedule = setTimeout,
   cancel = clearTimeout,
   now = Date.now,
+  onVideoStats,
 }) {
   const samples = [];
   const connections = new WeakMap();
@@ -58,14 +61,23 @@ export function createVdoPublisherDiagnostics({
       ).map(stat => {
         const before = previous.outbound.get(stat.id);
         const elapsed = before ? stat.timestamp - before.timestamp : 0;
-        const bytes = before ? stat.bytesSent - before.bytesSent : -1;
-        const bitrate = elapsed > 0 && bytes >= 0 ? number(bytes * 8000 / elapsed) : null;
-        nextOutbound.set(stat.id, { timestamp: stat.timestamp, bytesSent: stat.bytesSent });
+        const values = pickNumbers(stat, counters);
+        const delta = Object.fromEntries(counters.map(key => [key,
+          elapsed > 0 && values[key] !== null && before[key] !== null && values[key] >= before[key]
+            ? values[key] - before[key] : null,
+        ]));
+        nextOutbound.set(stat.id, { timestamp: stat.timestamp, ...values });
         const transport = report.get(stat.transportId);
         const pair = report.get(transport?.selectedCandidatePairId);
         return {
-          ...pickNumbers(stat, ['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'bytesSent', 'framesEncoded', 'qualityLimitationResolutionChanges']),
-          bitrate,
+          ...values, delta,
+          ...pickNumbers(stat, ['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'qualityLimitationResolutionChanges']),
+          bitrate: delta.bytesSent !== null ? number(delta.bytesSent * 8000 / elapsed) : null,
+          averageQp: delta.framesEncoded > 0 && delta.qpSum !== null ? delta.qpSum / delta.framesEncoded : null,
+          encodeTimeMs: delta.framesEncoded > 0 && delta.totalEncodeTime !== null ? delta.totalEncodeTime * 1000 / delta.framesEncoded : null,
+          packetSendDelayMs: delta.packetsSent > 0 && delta.totalPacketSendDelay !== null ? delta.totalPacketSendDelay * 1000 / delta.packetsSent : null,
+          codec: report.get(stat.codecId)?.mimeType ?? null,
+          encoderImplementation: typeof stat.encoderImplementation === 'string' ? stat.encoderImplementation.slice(0, 128) : null,
           qualityLimitationReason: stat.qualityLimitationReason ?? null,
           qualityLimitationDurations: pickNumbers(stat.qualityLimitationDurations, ['none', 'cpu', 'bandwidth', 'other']),
           availableOutgoingBitrate: number(pair?.availableOutgoingBitrate),
@@ -73,6 +85,9 @@ export function createVdoPublisherDiagnostics({
         };
       });
       previous.outbound = nextOutbound;
+      if (!stopped && pc.connectionState === 'connected' && onVideoStats) {
+        result.frameBalance = await onVideoStats(pc, result.outbound);
+      }
       result.status = 'ok';
     } catch {
       // A closing or unsupported connection must not affect publishing or other viewers.

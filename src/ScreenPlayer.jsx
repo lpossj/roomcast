@@ -12,6 +12,7 @@ import { playSound } from './sounds.js';
 import { openFloatingPlayer } from './floating-player.js';
 import { recordP2pNetworkStats } from './p2p-video-policy.js';
 import { playerInfo } from './player-info.js';
+import { preferH264High } from './video-codec-policy.js';
 
 export const FULLSCREEN_UI_HIDE_DELAY = 2000;
 const readPlaybackVolume = () => {
@@ -230,7 +231,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
       }
 
       let inbound;
-      if (attempt.route === 'p2p') recordP2pNetworkStats(current, report, 'viewer');
+      recordP2pNetworkStats(current, report, 'viewer', null, attempt.route);
       let audioInbound;
       let codec;
 
@@ -1010,26 +1011,8 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
               ?.codecs
             || [];
 
-          const h264 =
-            codecs.filter(
-              codec => (
-                codec.mimeType
-                  .toLowerCase()
-                === 'video/h264'
-              ),
-            );
-
-          if (h264.length) {
-            video.setCodecPreferences([
-              ...h264,
-              ...codecs.filter(
-                codec => (
-                  !h264.includes(
-                    codec,
-                  )
-                ),
-              ),
-            ]);
+          if (codecs.length) {
+            video.setCodecPreferences(preferH264High(codecs));
           }
         } catch { }
 
@@ -1479,26 +1462,8 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
               ?.codecs
             || [];
 
-          const h264 =
-            codecs.filter(
-              codec => (
-                codec.mimeType
-                  .toLowerCase()
-                === 'video/h264'
-              ),
-            );
-
-          if (h264.length) {
-            video.setCodecPreferences([
-              ...h264,
-              ...codecs.filter(
-                codec => (
-                  !h264.includes(
-                    codec,
-                  )
-                ),
-              ),
-            ]);
+          if (codecs.length) {
+            video.setCodecPreferences(preferH264High(codecs));
           }
         } catch { }
 

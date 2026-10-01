@@ -11,13 +11,14 @@ import useDevices from './useDevices.js';
 import useRoom from './useRoom.js';
 import { MEDIA_RACE_BUILD_PROBE } from './media-race-manager.js';
 import { readPageInvite, roomInviteFromUrl } from './invite-entry.js';
+import { readP2pDiagnostics } from './p2p-video-policy.js';
 
 void MEDIA_RACE_BUILD_PROBE;
 
 const presets = [
   { id: '1080p30', label: '1080p', detail: '30 FPS · 推荐', width: 1920, height: 1080, fps: 30, bitrate: 4500 },
   { id: '720p30', label: '720p', detail: '30 FPS · 节省带宽', width: 1280, height: 720, fps: 30, bitrate: 2500 },
-  { id: '1080p60', label: '1080p', detail: '60 FPS · 更流畅', width: 1920, height: 1080, fps: 60, bitrate: 6500 },
+  { id: '1080p60', label: '1080p', detail: '最高 60 FPS · 自动均衡', width: 1920, height: 1080, fps: 60, bitrate: 6500 },
 ];
 const defaultShareSettings = { captureBackend: 'obs', sourceType: 'monitor', sourceId: '', preset: '1080p30', width: 1920, height: 1080, fps: 30, bitrate: 6500, audioMode: 'none', audioSourceId: '', applicationMuted: false, microphoneMuted: false, systemAudio: false, microphone: false, compatibilityCanvas: false, performanceMode: 'quality', facingMode: 'user' };
 const avatarClass = color => `avatar-color-${Number.isInteger(color) && color >= 0 && color < 10 ? color : 0}`;
@@ -27,6 +28,9 @@ function loadShareSettings() {
     const legacyAudioMode = saved.systemAudio ? (saved.microphone ? 'system-microphone' : 'system') : saved.microphone ? 'microphone' : 'none';
     const clean = { ...defaultShareSettings };
     for (const key of Object.keys(defaultShareSettings)) if (Object.hasOwn(saved || {}, key)) clean[key] = saved[key];
+    // Undo beta.5's raised named-preset budget; numeric edits are saved as 'custom'.
+    if (clean.preset === '1080p60' && Number(clean.width) === 1920 && Number(clean.height) === 1080
+      && Number(clean.fps) === 60 && Number(clean.bitrate) === 16000) clean.bitrate = 6500;
     clean.captureBackend = !window.roomcast?.desktop || clean.captureBackend === 'native' ? 'native' : 'obs';
     clean.sourceType = clean.sourceType === 'window' ? 'window' : 'monitor';
     clean.audioMode = ['none', 'system', 'application', 'exclude', 'microphone', 'system-microphone', 'application-microphone', 'exclude-microphone'].includes(saved.audioMode) ? saved.audioMode : legacyAudioMode;
@@ -464,7 +468,14 @@ function UpdatePromptModal({ current, result, install, dontRemind, setDontRemind
 
 function AboutPanel({ version = '' }) {
   const exportDiagnostics = () => {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(getLifecycleDiagnostics(version), null, 2)], { type: 'application/json' }));
+    const diagnostics = {
+      ...getLifecycleDiagnostics(version),
+      media: {
+        connections: readP2pDiagnostics(),
+        vdoPublisher: window.roomcastVdoDiagnostics?.() ?? null,
+      },
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(diagnostics, null, 2)], { type: 'application/json' }));
     const link = document.createElement('a');
     link.href = url;
     link.download = `Roomcast-${version || 'dev'}-diagnostics.json`;
@@ -484,7 +495,7 @@ function AboutPanel({ version = '' }) {
       <p className="about-note">仅用于合法、知情同意的屏幕共享与聊天。禁止用于未经同意的监控、偷拍、监听、跟踪、骚扰或其他违法用途；使用者应自行遵守当地法律与平台规则。</p>
       <p className="about-note">房间状态与聊天是内存态，房间结束后释放，不写入数据库。屏幕媒体通过 WebRTC DTLS-SRTP 在成员之间传输。</p>
       <div className="settings-buttons"><button className="button subtle small" onClick={exportDiagnostics}><Download size={15} />导出诊断</button></div>
-      <p className="about-note">诊断仅保留本次页面会话最近 200 条操作阶段和耗时；不记录邀请、密钥、成员信息或聊天，不自动上传。</p>
+      <p className="about-note">诊断保留本次页面会话最近 200 条操作阶段和耗时，以及有限的画质、编码和网络统计；不记录画面内容、网络地址、邀请、密钥、成员信息或聊天，不自动上传。</p>
       <p className="about-note">网页观看入口使用固定 HTTPS 站点，分享者和观看者无需注册或登录；邀请链接等同于入房凭据，请只发给预期成员。站点可访问不代表信令和媒体连接一定可用。</p>
       <p className="about-note">未使用商业代码签名，Windows SmartScreen 可能提示未知发布者；下载后请核对发布页提供的 SHA-256。</p>
     </section>

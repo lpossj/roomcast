@@ -1,8 +1,11 @@
+import { createVideoFrameBalance, applyVideoFrameBalance } from './video-frame-balance.js';
+
 const numeric = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
 const counters = ['bytesSent', 'bytesReceived', 'packetsSent', 'packetsReceived', 'packetsLost',
   'nackCount', 'pliCount', 'firCount', 'retransmittedPacketsSent', 'retransmittedBytesSent',
   'retransmittedPacketsReceived', 'retransmittedBytesReceived', 'packetsDiscarded',
-  'framesDropped', 'framesEncoded', 'framesDecoded', 'totalPacketSendDelay', 'qpSum', 'totalEncodeTime'];
+  'framesDropped', 'framesEncoded', 'framesDecoded', 'keyFramesEncoded', 'keyFramesDecoded',
+  'totalPacketSendDelay', 'qpSum', 'totalEncodeTime'];
 const histories = new Map();
 const states = new WeakMap();
 let nextId = 1;
@@ -14,7 +17,7 @@ export function readP2pDiagnostics() {
 // Local, bounded, allowlisted diagnostics. No peer identities, SDP or ICE addresses.
 if (typeof window !== 'undefined') window.roomcastP2pDiagnostics = readP2pDiagnostics;
 
-export function recordP2pNetworkStats(pc, report, direction, policy = null) {
+export function recordP2pNetworkStats(pc, report, direction, policy = null, route = 'p2p') {
   let state = states.get(pc);
   if (!state) {
     state = { id: nextId++, previous: new Map() };
@@ -54,6 +57,7 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null) {
       averageQp: delta.framesEncoded > 0 && delta.qpSum !== null ? delta.qpSum / delta.framesEncoded : null,
       encodeTimeMs: delta.framesEncoded > 0 && delta.totalEncodeTime !== null ? delta.totalEncodeTime * 1000 / delta.framesEncoded : null,
       codec: report.get(stat.codecId)?.mimeType ?? null,
+      encoderImplementation: typeof stat.encoderImplementation === 'string' ? stat.encoderImplementation.slice(0, 128) : null,
       ...Object.fromEntries(['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'jitter']
         .map(key => [key, numeric(stat[key])])),
       qualityLimitationReason: stat.qualityLimitationReason ?? null,
@@ -69,7 +73,7 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null) {
   }
   state.previous = next;
   let history = histories.get(state.id);
-  if (!history) history = { connection: state.id, direction, samples: [] };
+  if (!history) history = { connection: state.id, direction, route, samples: [] };
   history.samples.push(sample);
   if (history.samples.length > 120) history.samples.shift();
   histories.delete(state.id);
@@ -116,8 +120,9 @@ function buildP2pVideoTiers(quality, targetFps) {
   return tiers;
 }
 
-export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
+export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', adapt = true, now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
   const targetFps = Math.max(1, Number(quality.fps) || 30);
+  const frameBalance = createVideoFrameBalance(targetFps, now);
   const tiers = buildP2pVideoTiers(quality, targetFps);
   const baseRate = Math.max(1, tiers[0].width * tiers[0].height * tiers[0].fps);
   const rateFor = tier => Math.max(1, tier.width * tier.height * tier.fps);
@@ -126,26 +131,38 @@ export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, sche
     if (!(selected > 0)) return 0;
     return selected * rateFor(tiers[index]) / baseRate;
   };
-  let tierIndex = 0, bad = 0, good = 0, lastChange = -Infinity, fullRateBitrate = 0;
+  let tierIndex = 0, bad = 0, queued = 0, good = 0, lastChange = -Infinity, fullRateBitrate = 0;
   let started = false, stopped = false, timer = null, inFlight = null;
 
   const poll = () => {
     if (stopped) return Promise.resolve();
     if (inFlight) return inFlight;
     inFlight = (async () => {
-      if (pc.connectionState !== 'connected') { bad = good = 0; return; }
+      if (pc.connectionState !== 'connected') { bad = queued = good = 0; frameBalance.reject(); return; }
       const report = await pc.getStats();
       if (stopped || pc.connectionState !== 'connected' || sender.track?.readyState === 'ended') return;
       const currentTier = tiers[tierIndex];
-      const sample = recordP2pNetworkStats(pc, report, 'publisher', {
+      const sample = recordP2pNetworkStats(pc, report, 'publisher', adapt ? {
         width: currentTier.width,
         height: currentTier.height,
         targetFps,
         appliedFps: currentTier.fps,
         tierIndex,
         tierCount: tiers.length,
-      });
+      } : null, route);
       const video = sample.streams.find(stat => stat.type === 'outbound-rtp' && stat.kind === 'video');
+      // TURN retains Chromium's network control; only encoder-load protection is shared.
+      if (!adapt) {
+        const balance = await applyVideoFrameBalance(sender, video, frameBalance, () => stopped);
+        const parameters = sender.getParameters();
+        sample.policy = { status: 'observe-only',
+          frameBalance: balance,
+          degradationPreference: parameters.degradationPreference ?? null,
+          ...Object.fromEntries(['maxBitrate', 'maxFramerate', 'scaleResolutionDownBy']
+            .map(key => [key, numeric(parameters.encodings?.[0]?.[key])])),
+        };
+        return;
+      }
       const active = video?.fresh && video.delta.packetsSent > 0;
       if (active && video.qualityLimitationReason === 'none' && video.bitrate > 0) {
         // Keep an estimated full-quality bitrate even after a temporary tier drop,
@@ -160,9 +177,13 @@ export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, sche
       // A high user ceiling or a motion-complexity spike is not itself network
       // congestion. Let Chromium handle transient encoder/BWE adjustments.
       const networkPressure = (video?.lossRate !== null && video?.lossRate >= 0.05)
-        || (video?.packetSendDelayMs !== null && video?.packetSendDelayMs >= 100)
         || (bandwidthLimited && budgetLimited && video?.rtt !== null && video?.rtt >= 0.3);
-      const congested = active && networkPressure;
+      const queuePressure = video?.packetSendDelayMs !== null && video?.packetSendDelayMs >= 100;
+      // Motion/keyframe bursts can fill the local pacer while RTT/loss stay low.
+      // Give queue-only pressure five samples to drain; retain fast protection
+      // for confirmed network pressure or a queue already over one second.
+      const severeQueue = video?.packetSendDelayMs !== null && video?.packetSendDelayMs >= 1000;
+      const congested = active && (networkPressure || queuePressure);
       const nextIndex = Math.max(0, tierIndex - 1);
       const nextBudget = budgetFor(nextIndex, fullRateBitrate);
       const bitrateHealthy = nextBudget <= 0
@@ -172,14 +193,16 @@ export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, sche
         && (video.lossRate === null || video.lossRate < 0.02)
         && (video.rtt === null || video.rtt < 0.3)
         && (video.packetSendDelayMs === null || video.packetSendDelayMs < 30);
-      bad = congested ? bad + 1 : 0;
+      bad = active && (networkPressure || severeQueue) ? bad + 1 : 0;
+      queued = active && queuePressure ? queued + 1 : 0;
       good = healthy ? good + 1 : 0;
       let desiredIndex = tierIndex;
-      if (bad >= 2 && tierIndex < tiers.length - 1) desiredIndex = tierIndex + 1;
+      if ((bad >= 2 || queued >= 5) && tierIndex < tiers.length - 1) desiredIndex = tierIndex + 1;
       else if (good >= 8 && tierIndex > 0 && now() - lastChange >= 10000) desiredIndex = tierIndex - 1;
 
       const parameters = sender.getParameters();
       const encoding = parameters.encodings?.[0];
+      const balance = frameBalance.inspect(video, tiers[desiredIndex].fps);
       const finalize = status => {
         const applied = tiers[tierIndex];
         sample.policy = {
@@ -187,17 +210,21 @@ export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, sche
           width: applied.width,
           height: applied.height,
           targetFps,
-          appliedFps: applied.fps,
+          appliedFps: Math.min(applied.fps, frameBalance.fps),
+          balancedFps: frameBalance.fps,
+          encoderPressure: balance.overloaded,
           tierIndex,
           tierCount: tiers.length,
           scaleResolutionDownBy: p2pResolutionScale(sender.track, applied),
           maxBitrate: encoding?.maxBitrate ?? null,
           maxFramerate: encoding?.maxFramerate ?? null,
           badSamples: bad,
+          queueSamples: queued,
           healthySamples: good,
           bandwidthLimited,
           budgetLimited,
           networkPressure,
+          queuePressure,
           resolutionMatches: video?.frameWidth > 0 && video?.frameHeight > 0
             ? video.frameWidth === applied.width && video.frameHeight === applied.height : null,
           status,
@@ -209,18 +236,20 @@ export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, sche
       }
 
       const desiredTier = tiers[desiredIndex];
+      const desiredFps = Math.min(desiredTier.fps, balance.fps);
       const scale = p2pResolutionScale(sender.track, desiredTier);
-      const changed = encoding.maxFramerate !== desiredTier.fps
+      const changed = encoding.maxFramerate !== desiredFps
         || encoding.scaleResolutionDownBy !== scale
         || parameters.degradationPreference !== 'maintain-resolution';
       if (!changed) {
+        frameBalance.commit(balance);
         finalize('unchanged');
         return;
       }
 
       const previousTierIndex = tierIndex;
       tierIndex = desiredIndex;
-      encoding.maxFramerate = desiredTier.fps;
+      encoding.maxFramerate = desiredFps;
       encoding.scaleResolutionDownBy = scale;
       delete encoding.scaleResolutionDownTo;
       parameters.degradationPreference = 'maintain-resolution';
@@ -234,14 +263,16 @@ export function createP2pVideoPolicy({ pc, sender, quality, now = Date.now, sche
           tierIndex = previousTierIndex;
           return;
         }
-        if (previousTierIndex !== tierIndex) { lastChange = now(); bad = good = 0; }
+        if (previousTierIndex !== tierIndex) { lastChange = now(); bad = queued = good = 0; }
+        frameBalance.commit(balance);
         finalize('applied');
       } catch {
         tierIndex = previousTierIndex;
-        bad = good = 0;
+        frameBalance.reject();
+        bad = queued = good = 0;
         finalize('parameters-rejected');
       }
-    })().catch(() => { bad = good = 0; }).finally(() => { inFlight = null; });
+    })().catch(() => { bad = queued = good = 0; frameBalance.reject(); }).finally(() => { inFlight = null; });
     return inFlight;
   };
   const tick = async () => {

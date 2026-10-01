@@ -1,4 +1,4 @@
-# Roomcast 0.14.4-beta.3
+# Roomcast 0.14.4-beta.6
 
 Windows 桌面修复版，变更和验证范围见 [beta.3 说明](docs/RELEASE_NOTES-0.14.4-beta.3.md)。线上网页仍为 beta.2，本次未部署网页。
 

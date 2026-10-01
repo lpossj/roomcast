@@ -1,5 +1,6 @@
 import { createVdoTransport } from './vdo-transport.js';
 import { createVdoPublisherDiagnostics } from './vdo-publisher-diagnostics.js';
+import { createVideoFrameBalance, applyVideoFrameBalance } from '../video-frame-balance.js';
 
 const VDO_DESCRIPTOR_VERSION = 1;
 
@@ -107,6 +108,7 @@ export function createVdoScreenPublisher(
   sourceStream,
   {
     label = 'Roomcast',
+    quality = {},
   } = {},
 ) {
   const descriptor =
@@ -138,10 +140,20 @@ export function createVdoScreenPublisher(
 
   let closed = false;
   let closePromise = null;
+  const frameBalances = new WeakMap();
   const diagnostics = createVdoPublisherDiagnostics({
     getConnections: () => transport.getPublisherConnections(),
     sourceStream,
     isolatedStream,
+    // Reuse the existing bounded stats poll; no extra timers or source constraints.
+    onVideoStats: async (pc, outbound) => {
+      const senders = pc.getSenders().filter(sender => sender.track?.kind === 'video');
+      if (senders.length !== 1 || outbound.length !== 1) return { status: 'ambiguous' };
+      const sender = senders[0];
+      let balance = frameBalances.get(sender);
+      if (!balance) { balance = createVideoFrameBalance(quality.fps); frameBalances.set(sender, balance); }
+      return applyVideoFrameBalance(sender, outbound[0], balance, () => closed);
+    },
   });
   // A copied history of allowlisted measurements remains available after sharing stops.
   // In sender DevTools: copy(JSON.stringify(window.roomcastVdoDiagnostics(), null, 2))
@@ -155,13 +167,15 @@ export function createVdoScreenPublisher(
           streamId:
             descriptor.streamId,
           label,
-          // VDO fallback lane only: cap the sender target at 30 FPS so
-          // congestion adaptation has more bitrate available for resolution.
-          // Native Roomcast P2P continues using the original source stream
-          // and its user-selected frame rate.
+          // SDK 1.6.1 applies frameRate as a soft constraint on the clone,
+          // and maxBitrate as an RTP ceiling in bits/s. It does not expose
+          // maxFramerate or degradationPreference through publish options.
           media: {
             video: {
-              frameRate: 30,
+              codec: 'H264',
+              frameRate: Math.max(1, Math.min(120, Number(quality.fps) || 30)),
+              ...(Number(quality.bitrate) > 0 && Number.isFinite(Number(quality.bitrate))
+                ? { maxBitrate: Number(quality.bitrate) * 1000 } : {}),
             },
           },
         },

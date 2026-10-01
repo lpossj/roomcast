@@ -2709,6 +2709,7 @@ export class P2PRoom {
           {
             label:
               'Roomcast',
+            quality: this.screenSettings,
           },
         );
 
@@ -3197,8 +3198,8 @@ export class P2PRoom {
           .catch(() => { });
       }
 
-      if (route === 'p2p' && videoSender) {
-        entry.videoPolicy = createP2pVideoPolicy({ pc, sender: videoSender, quality });
+      if (videoSender) {
+        entry.videoPolicy = createP2pVideoPolicy({ pc, sender: videoSender, quality, route, adapt: route === 'p2p' });
       }
 
       const calibrateResolution =
@@ -3288,8 +3289,8 @@ export class P2PRoom {
             pc.connectionState
             === 'connected'
           ) {
-            if (entry.videoPolicy) entry.videoPolicy.start();
-            else entry.calibrateTimer =
+            entry.videoPolicy?.start();
+            if (route !== 'p2p') entry.calibrateTimer =
               setTimeout(
                 calibrateResolution,
                 350,
