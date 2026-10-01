@@ -40,7 +40,7 @@ Roomcast源码用GitHub自动生成的Source code ZIP/tar.gz；无需另上传�
 
 CI负责Windows项目检查；Release workflow只在v*标签或明确手工dispatch时构建、执行门禁并上传上述四项。配置ROOMCAST_LOOPBACK_ARCHIVE_URL稳定运行时地址。用户选择直接上传时，复用同代码已验收成品；先草稿核对文件/摘要/标签，再公开prerelease。
 
-更新已有公开Release的附件说明或删重复文件，需要明确授权并先保存原清单；不覆盖EXE/ZIP，不移动已公开tag。若保持同版本重包，已安装同号版本不会自动发现，必须明确提示手动下载。
+更新已有公开Release需要明确授权并先保存原清单。默认不覆盖EXE/ZIP，不移动已公开tag。beta.7按本轮明确要求采用同版本修订：保存旧包和摘要，先上传临时修订附件并核对服务器digest，再替换同名EXE/ZIP/SHA；固定tag保留首发基线，在Release说明记录实际修订commit及源码链接。已安装同号版本不会自动发现，必须明确提示重新下载覆盖。
 
 ## 构建机与记录
 

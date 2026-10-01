@@ -24,3 +24,9 @@ Windows 程序未签名。下载后可用 SHA256.txt 核对 Windows EXE/ZIP 和�
 ## 参考实现
 
 自动更新参考 electron-updater、VS Code、Velopack（[实现说明](https://github.com/lpossj/roomcast/blob/main/docs/%E8%87%AA%E5%8A%A8%E6%9B%B4%E6%96%B0%E5%AE%9E%E7%8E%B0%E8%AF%B4%E6%98%8E.md)）；房间语音电平及逐轨音量参考 [LiveKit](https://github.com/livekit/client-sdk-js/blob/main/src/room/track/RemoteAudioTrack.ts)，适配现有 P2P 结构，未引入 SFU 或改变 TURN 获取方式。
+
+## 2026-10-02 同版本修订
+
+修复人物栏说话绿圈被滚动区域裁切，圆环改为头像内部绘制；移除右下角旧在线小点。默认头像及图片头像在 100%、150%、200% 缩放和列表首末边界检查通过，发布回归 280 项通过。
+
+Windows EXE/ZIP 已同版本修订，版本仍为 0.14.4-beta.7。已安装 beta.7 不会因同号修订自动提示升级，请重新下载覆盖。固定 tag 保留首发基线，最新修订代码见 Release 更新记录；GitHub 自动生成的 tag 源码包仍为首发基线，修订源码使用更新记录中的提交链接。

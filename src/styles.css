@@ -1309,16 +1309,7 @@ a {
     color: #677a85
 }
 
-.presence-dot {
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    border: 2px solid #151a21;
-    border-radius: 50%;
-    background: var(--status-good);
-    right: -1px;
-    bottom: -1px
-}
+
 
 .avatar-color-0 {
     background: #394631;
@@ -2323,7 +2314,8 @@ select {
 .avatar img, .rail-avatar img, .viewer-avatar img {
     width: 100%; height: 100%; object-fit: cover; border-radius: inherit; min-width: 0;
 }
-.avatar.is-speaking { outline: 3px solid #45d483; outline-offset: 2px; }
+.avatar.is-speaking { position: relative; }
+.avatar.is-speaking::after { content: ""; position: absolute; inset: 0; box-sizing: border-box; border: 3px solid #45d483; border-radius: 50%; pointer-events: none; }
 .profile-avatar-row, .microphone-test { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .profile-avatar-row .avatar { width: 56px; height: 56px; flex-shrink: 0; }
 .profile-avatar-row input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
