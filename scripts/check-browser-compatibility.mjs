@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
 
@@ -14,8 +15,15 @@ try {
     if (process.argv.includes('--engine') && process.argv[process.argv.indexOf('--engine') + 1] !== name) continue;
     let browser, host;
     const result = { name, checks: [] }; report.engines.push(result);
+    const stage = value => { result.stage = value; console.log(`[compatibility] ${name}: ${value}`); };
+    const watchdog = setTimeout(() => {
+      result.ok = false; result.failure = `Browser stalled at ${result.stage}`; report.ok = false;
+      writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2)); console.error(JSON.stringify(report, null, 2)); process.exit(1);
+    }, 120_000);
     try {
+      stage('launch');
       browser = await engine.launch({ headless: true, ...options, ...(name === 'firefox' && process.env.ROOMCAST_FIREFOX_EXECUTABLE ? { executablePath: process.env.ROOMCAST_FIREFOX_EXECUTABLE } : {}) });
+      stage('context');
       const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
       const peers = new Map();
       await context.routeWebSocket('**/*', socket => {
@@ -31,10 +39,10 @@ try {
         window.testPointers = [];
         for (const type of ['pointerdown', 'pointermove', 'pointerup', 'gotpointercapture', 'lostpointercapture']) document.addEventListener(type, event => window.testPointers.push({ type, x: event.clientX, button: event.button, target: event.target.className }));
       });
-      host = await context.newPage(); const guest = await context.newPage();
+      stage('pages'); host = await context.newPage(); const guest = await context.newPage();
       for (const page of [host, guest]) page.on('pageerror', error => report.errors.push(`${name}: ${error.message}`));
       const origin = `http://127.0.0.1:${server.address().port}`;
-      await host.goto(origin); await host.locator('.app-shell').waitFor();
+      stage('load'); await host.goto(origin); await host.locator('.app-shell').waitFor();
       result.capabilities = await host.evaluate(() => ({ secure: isSecureContext, microphone: typeof navigator.mediaDevices?.getUserMedia === 'function', rtc: typeof RTCPeerConnection === 'function', audio: typeof globalThis.AudioContext === 'function', mediaDestination: typeof globalThis.AudioContext?.prototype.createMediaStreamDestination === 'function' }));
       const rail = await host.locator('.icon-rail').evaluate(node => node.offsetWidth);
       const handle = host.getByRole('separator', { name: '调整成员栏宽度' });
@@ -45,11 +53,11 @@ try {
       await host.waitForFunction(() => document.querySelector('.channel-sidebar').offsetWidth === 280);
       assert.equal(await host.locator('.channel-sidebar').evaluate(node => node.offsetWidth), 280);
       assert.equal(await host.locator('.icon-rail').evaluate(node => node.offsetWidth), rail);
-      await host.getByRole('button', { name: '切换日间主题', exact: true }).click();
+      stage('theme'); await host.getByRole('button', { name: '切换日间主题', exact: true }).click();
       await host.waitForFunction(() => document.documentElement.dataset.appearance === 'light');
       await host.locator('.theme-confetti').waitFor({ state: 'detached' });
       assert.equal(await host.locator('.theme-confetti').count(), 0);
-      await host.reload(); await host.locator('.app-shell').waitFor(); assert.equal(await host.locator('html').getAttribute('data-appearance'), 'light');
+      stage('reload'); await host.reload(); await host.locator('.app-shell').waitFor(); assert.equal(await host.locator('html').getAttribute('data-appearance'), 'light');
       await host.getByRole('button', { name: '设置', exact: true }).click(); let dialog = host.getByRole('dialog');
       assert.equal(await dialog.getByLabel('后台状态通知').count(), 0);
       if (result.capabilities.microphone) {
@@ -57,7 +65,7 @@ try {
         assert.equal(await dialog.getByText('测试时本地耳返，不会开启房间麦克风').count(), 0);
       } else assert.equal(await dialog.getByRole('button', { name: '音频与采集', exact: true }).count(), 0);
       await dialog.getByRole('button', { name: '关闭', exact: true }).click();
-      if (result.capabilities.audio) {
+      stage('audio'); if (result.capabilities.audio) {
         await host.evaluate(() => {
           const button = document.createElement('button'); button.textContent = '兼容音频测试'; button.className = 'compat-audio-test';
           button.style.cssText = 'position:fixed;top:0;left:300px;z-index:99999';
@@ -99,11 +107,11 @@ try {
         await host.waitForTimeout(1000); await host.locator('.theme-confetti').waitFor({ state: 'detached' });
         result.checks.push('390px mobile drawer and theme; unavailable audio UI correctly omitted'); result.ok = true; continue;
       }
-      await host.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).click(); dialog = host.getByRole('dialog');
+      stage('room'); await host.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).click(); dialog = host.getByRole('dialog');
       await dialog.getByLabel('你的昵称').fill('兼容房主'); await dialog.getByRole('button', { name: '创建并进入房间' }).click(); await dialog.waitFor({ state: 'hidden' });
       await host.getByRole('button', { name: '邀请朋友', exact: true }).click(); dialog = host.getByRole('dialog');
       const invite = await dialog.getByLabel('邀请链接', { exact: true }).inputValue(); await dialog.getByRole('button', { name: '关闭', exact: true }).click();
-      await guest.goto(`${origin}/#room=${encodeURIComponent(invite)}`); dialog = guest.getByRole('dialog');
+      stage('join'); await guest.goto(`${origin}/#room=${encodeURIComponent(invite)}`); dialog = guest.getByRole('dialog');
       await dialog.getByLabel('你的昵称').fill('兼容成员'); await dialog.getByRole('button', { name: '进入房间', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
       await host.waitForFunction(() => document.querySelectorAll('.member-row').length === 2);
       await guest.evaluate(() => { window.testBackground = true; document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })); });
@@ -125,7 +133,7 @@ try {
       result.checks.push('real RTC room/chat, BFCache/background title without leave, 390px mobile drawer/theme and voluntary cleanup');
       result.ok = true;
     } catch (error) { result.ok = false; result.failure = error.stack; try { result.debug = await host.evaluate(() => ({ audioState: window.testAudioContext?.state, body: document.body.innerText, width: document.querySelector('.channel-sidebar')?.offsetWidth, pointers: window.testPointers?.slice(-12), drag: document.querySelector('.app-shell')?.className })); await host.screenshot({ path: path.join(output, `${name}-failure.png`) }); } catch {} }
-    finally { await browser?.close(); }
+    finally { stage('close'); await browser?.close(); clearTimeout(watchdog); }
   }
   assert.ok(report.engines.length > 0 && report.engines.every(result => result.ok), 'Every selected browser engine must pass');
   assert.deepEqual(report.errors, []); report.ok = true;
