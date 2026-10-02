@@ -29,11 +29,15 @@ beta.8 高于 beta.7，可由已有更新检查发现。旧 beta.7 与首版 bet
 
 已实际克隆并核对 [electron-builder 更新器](https://github.com/electron-userland/electron-builder/tree/44c5265a9260ca6f319f111b5a2ca7e50b0a7cd6/packages/electron-updater)和 [Velopack Windows 更新事务](https://github.com/velopack/velopack/blob/92d6a1c91716729d449034df5c50307dcce39493/src/bins/src/commands/apply_windows_impl.rs)。补齐从最终 ASAR 内加载更新器的回归入口。
 
+补齐禁止进程脱离的 Windows 宿主兼容：优先独立启动，宿主拒绝时改用普通原生创建；等待旧进程、校验、备份和失败恢复保持。通常环境及禁止脱离的真实 Windows Job 各七种事务通过，包含连续两次更新。
+
 ## 2026-10-02 界面配色补齐（版本仍为 beta.8）
 
 共享参数、声音选项、预览外框和等待界面补齐日间配色。共享、聊天、导航和播放按钮采用统一主题色，危险操作用浅红色，禁用状态清楚区分；调整卡片、弹窗、输入和分栏边界。聊天输入与容器融合，小窗随主界面同步明暗主题和强调色。共享顶部信息框继续保持成员头像配色，明暗切换不改该配色。网页同步同套样式，保持房间和媒体功能。
 
 实际 Edge 检查共享设置、预览/聊天、390px布局及日夜主题；实际 Electron 验证主预览与小窗控件、主题同步与关闭释放，媒体轨道保持不变。
+
+本次附件源码对应 [945715d 修订](https://github.com/lpossj/roomcast/tree/945715d2a3dc012ad477c92ee839d257c018b3ca)，包含原生更新器和保留头像信息框的统一主题。beta.8 tag 保留首次发布基线，修订附件以本页 EXE/ZIP 与 SHA256.txt 为准。
 
 ## 参考实现
 
