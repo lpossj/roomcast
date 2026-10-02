@@ -57,17 +57,31 @@ try {
         assert.equal(await dialog.getByText('测试时本地耳返，不会开启房间麦克风').count(), 0);
       } else assert.equal(await dialog.getByRole('button', { name: '音频与采集', exact: true }).count(), 0);
       await dialog.getByRole('button', { name: '关闭', exact: true }).click();
-      if (result.capabilities.audio) result.audio = await host.evaluate(async () => {
+      if (result.capabilities.audio) {
+        await host.evaluate(() => {
+          const button = document.createElement('button'); button.textContent = '兼容音频测试'; button.className = 'compat-audio-test';
+          button.style.cssText = 'position:fixed;top:0;left:300px;z-index:99999';
+          button.onclick = () => { window.testAudioReady = (async () => {
         const context = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
         const oscillator = context.createOscillator(), gain = context.createGain(), analyser = context.createAnalyser();
         const destination = context.createMediaStreamDestination?.(); if (destination) destination.channelCount = 1;
         oscillator.connect(gain); if (destination) gain.connect(destination); gain.connect(analyser); gain.connect(context.destination);
-        gain.gain.value = 0.02; oscillator.start(); await context.resume();
-        await new Promise(resolve => setTimeout(resolve, 150));
-        const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
-        const result = { state: context.state, rate: context.sampleRate, nonzero: samples.some(value => Math.abs(value) > 0.001), track: destination?.stream.getAudioTracks()[0]?.readyState, viewTransition: typeof document.startViewTransition === 'function' };
-        oscillator.stop(); oscillator.disconnect(); gain.disconnect(); analyser.disconnect(); destination?.stream.getTracks().forEach(track => track.stop()); await context.close(); return result;
-      });
+        gain.gain.value = 0.02; oscillator.start(); let timeout;
+        try {
+          await Promise.race([context.resume(), new Promise((_, reject) => { timeout = setTimeout(() => reject(Error('Interactive audio did not start within 5 seconds')), 5000); })]);
+          await new Promise(resolve => setTimeout(resolve, 150));
+          const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
+          return { state: context.state, rate: context.sampleRate, nonzero: samples.some(value => Math.abs(value) > 0.001), track: destination?.stream.getAudioTracks()[0]?.readyState, viewTransition: typeof document.startViewTransition === 'function' };
+        } finally {
+          clearTimeout(timeout); oscillator.stop(); oscillator.disconnect(); gain.disconnect(); analyser.disconnect(); destination?.stream.getTracks().forEach(track => track.stop()); await context.close();
+        }
+          })(); };
+          document.body.append(button);
+        });
+        await host.getByRole('button', { name: '兼容音频测试', exact: true }).click();
+        result.audio = await host.evaluate(() => window.testAudioReady);
+        await host.locator('.compat-audio-test').evaluate(node => node.remove());
+      }
       if (result.capabilities.audio) { assert.equal(result.audio.state, 'running'); assert.equal(result.audio.nonzero, true); }
       if (result.capabilities.mediaDestination) assert.equal(result.audio.track, 'live');
       result.checks.push('desktop pointer/keyboard resizing, fixed rail, saved day theme and concise settings');
