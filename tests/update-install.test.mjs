@@ -13,8 +13,8 @@ import {
   extractZip,
   prepareUpdateInstall,
   resolveEntryPath,
-  startApplyScript,
-  waitForApplyScriptStart,
+  startUpdateWorker,
+  waitForUpdateWorkerStart,
 } from '../electron/update-install.mjs';
 
 // Minimal ZIP writer used only by these tests: enough of the format to exercise the
@@ -78,8 +78,12 @@ function makeZip(files) {
   return Buffer.concat([...chunks, centralBuffer, eocd]);
 }
 
-let workRoot;
-test.before(async () => { workRoot = await mkdtemp(path.join(os.tmpdir(), 'roomcast-install-test-')); });
+let workRoot, workerFixture;
+test.before(async () => {
+  workRoot = await mkdtemp(path.join(os.tmpdir(), 'roomcast-install-test-'));
+  workerFixture = path.join(workRoot, 'worker.exe');
+  await writeFile(workerFixture, 'MZ native worker copy fixture');
+});
 test.after(async () => { await rm(workRoot, { recursive: true, force: true }); });
 
 test('malformed archives cannot exceed declared inflate sizes or extraction budgets', async () => {
@@ -254,19 +258,22 @@ test('transaction preparation verifies the actual file and preserves the install
   const assetPath = path.join(dir, 'new.exe');
   await writeFile(targetPath, 'old'); await writeFile(assetPath, 'new');
   const target = { supported: true, kind: 'portable-exe', targetPath, launchPath: targetPath };
-  const args = { target, download: verified(assetPath, 'new'), pid: process.pid, parentPid: process.ppid, version: '0.14.4-beta.7' };
+  const args = { target, download: verified(assetPath, 'new'), pid: process.pid, parentPid: process.ppid, version: '0.14.4-beta.7', workerSourcePath: workerFixture };
   await assert.rejects(() => prepareUpdateInstall({ ...args, download: { ...args.download, verified: false } }), /SHA256/);
   await assert.rejects(() => prepareUpdateInstall({ ...args, download: { ...args.download, expected: '0'.repeat(64) } }), /SHA256/);
   await assert.rejects(() => prepareUpdateInstall({ ...args, download: verified(assetPath, 'changed') }), /改变/);
   await assert.rejects(() => prepareUpdateInstall({ ...args, pid: 0 }), /进程标识/);
+  await assert.rejects(() => prepareUpdateInstall({ ...args, workerSourcePath: assetPath }), /原生更新程序/);
   const plan = await prepareUpdateInstall(args);
   try {
-    assert.match(plan.scriptPath, /apply\.ps1$/);
+    assert.match(plan.planPath, /update-plan\.json$/);
+    assert.match(plan.workerPath, /RoomcastUpdateLauncher\.exe$/);
     const data = JSON.parse(await readFile(path.join(plan.workDir, 'update-plan.json'), 'utf8'));
     assert.equal(data.targetPath, targetPath); assert.equal(data.sha256, args.download.sha256);
     assert.match(data.token, /^[a-f0-9]{64}$/);
     assert.equal(await readFile(targetPath, 'utf8'), 'old');
-    assert.equal((await readFile(plan.scriptPath, 'utf8')).charCodeAt(0), 0xfeff);
+    assert.deepEqual(await readFile(plan.workerPath), await readFile(workerFixture));
+    assert.equal(await stat(path.join(plan.workDir, 'apply.ps1')).catch(() => null), null);
   } finally { await rm(plan.workDir, { recursive: true, force: true }); }
 });
 test('directory transaction validates its layout and hashes every extracted file', async () => {
@@ -277,7 +284,7 @@ test('directory transaction validates its layout and hashes every extracted file
   const bytes = makeZip([{ name: 'Roomcast.exe', content: 'new-exe' }, { name: 'resources/app.asar', content: 'new-asar', deflate: true }]);
   await writeFile(zipPath, bytes);
   const target = { supported: true, kind: 'directory', targetPath: dir, appDir: dir, launchPath: path.join(dir, 'Roomcast.exe') };
-  const args = { target, download: verified(zipPath, bytes), pid: process.pid, version: '0.14.4-beta.7' };
+  const args = { target, download: verified(zipPath, bytes), pid: process.pid, version: '0.14.4-beta.7', workerSourcePath: workerFixture };
   const plan = await prepareUpdateInstall(args);
   try {
     const data = JSON.parse(await readFile(path.join(plan.workDir, 'update-plan.json'), 'utf8'));
@@ -290,22 +297,22 @@ test('directory transaction validates its layout and hashes every extracted file
   await writeFile(zipPath, incomplete);
   await assert.rejects(() => prepareUpdateInstall({ ...args, download: verified(zipPath, incomplete) }), /必要的程序文件/);
 });
-test('the launcher encodes literal paths and uses an independent hidden worker', () => {
+test('the native launcher passes literal data paths without a command interpreter', () => {
   const calls = [];
-  const scriptPath = "C:\\Users\\me\\!% 中文 '& [目录]\\apply.ps1";
-  const started = startApplyScript(scriptPath, { spawnImpl(file, args, options) { calls.push({ file, args, options }); return { pid: 42, on() {}, unref() {} }; } });
+  const dir = "C:\\Users\\me\\!% 中文 '& [目录]";
+  const plan = { workerPath: dir + '\\RoomcastUpdateLauncher.exe', planPath: dir + '\\update-plan.json' };
+  const started = startUpdateWorker(plan, { spawnImpl(file, args, options) { calls.push({ file, args, options }); return { pid: 42, on() {}, unref() {} }; } });
   assert.equal(started.pid, 42); assert.equal(started.via, 'native-breakaway');
   assert.equal(calls[0].options.detached, true); assert.equal(calls[0].options.windowsHide, true);
-  const encoded = calls[0].args[0];
-  assert.equal(Buffer.from(encoded, 'base64').toString('utf16le'), "& '" + scriptPath.replace(/'/g, "''") + "'");
-  assert.match(calls[0].file, /RoomcastUpdateLauncher\.exe$/);
+  assert.deepEqual(calls[0].args, ['--start', plan.planPath]);
+  assert.equal(calls[0].file, plan.workerPath); assert.ok(!calls[0].options.shell);
 });
 test('start guard requires a real start record rather than a failure log', async () => {
   const log = path.join(workRoot, 'start.log');
   await writeFile(log, 'FAILED: permission denied');
-  assert.equal(await waitForApplyScriptStart(log, { timeoutMs: 200, intervalMs: 20 }), false);
+  assert.equal(await waitForUpdateWorkerStart(log, { timeoutMs: 200, intervalMs: 20 }), false);
   await writeFile(log, '[timestamp] update start kind=portable-exe pid=1');
-  assert.equal(await waitForApplyScriptStart(log), true);
+  assert.equal(await waitForUpdateWorkerStart(log), true);
 });
 test('startup receipt records the actual version and consumes inherited transaction state', async () => {
   const receiptPath = path.join(workRoot, 'receipt.json');

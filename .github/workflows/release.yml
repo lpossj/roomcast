@@ -95,6 +95,12 @@ jobs:
       - name: Build portable EXE and ZIP
         run: npm run release:build
 
+      - name: Verify updater loaded from final ASAR
+        run: node scripts/check-update-asar.cjs release/win-unpacked/resources/app.asar
+
+      - name: Verify Windows update transactions and recovery
+        run: npm run check:update-apply
+
       - name: Package source archive
         run: npm run package:source
 

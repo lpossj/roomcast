@@ -11,7 +11,7 @@
 //   3. unpack the verified archive into %TEMP%\roomcast-update-<stamp>\payload
 //   4. write a data plan for an independent transaction worker: stage, back up, swap,
 //      restart, confirm the loaded version, or roll back
-//   5. the caller starts that script detached and quits
+//   5. the caller starts that native worker detached and quits
 //
 // Nothing outside the temporary work directory is modified before the app exits, so a
 // failure at any point before step 5 leaves the installed program untouched.
@@ -311,7 +311,7 @@ async function payloadFiles(root, relative = '') {
   }
   return files;
 }
-export async function prepareUpdateInstall({ target, download, pid, parentPid = 0, failureMarkerPath = '', version = '', onProgress, workDir: existingWorkDir = '' } = {}) {
+export async function prepareUpdateInstall({ target, download, pid, parentPid = 0, failureMarkerPath = '', version = '', onProgress, workDir: existingWorkDir = '', workerSourcePath = '' } = {}) {
   if (!download?.path) throw Object.assign(new Error('没有可用的更新包。'), { code: 'download' });
   if (!download.verified || !/^[0-9a-f]{64}$/i.test(download.sha256 || '') || download.sha256 !== download.expected) {
     throw Object.assign(new Error('发布页未提供匹配的 SHA256 校验值，已取消自动更新。'), { code: 'checksum' });
@@ -321,9 +321,15 @@ export async function prepareUpdateInstall({ target, download, pid, parentPid = 
   if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(parentPid) || parentPid < 0) throw new Error('更新进程标识无效。');
   if (!/^[A-Za-z0-9._+-]+$/.test(version)) throw new Error('更新版本标识无效。');
   if (await hashFile(download.path) !== download.sha256) throw Object.assign(new Error('更新文件在校验后被改变。'), { code: 'checksum' });
+  const sourceWorker = workerSourcePath || (process.resourcesPath
+    ? path.join(process.resourcesPath, 'runtime/update-launcher/RoomcastUpdateLauncher.exe')
+    : fileURLToPath(new URL('../runtime/update-launcher/RoomcastUpdateLauncher.exe', import.meta.url)));
+  const workerBytes = await readFile(sourceWorker);
+  if (workerBytes.length < 2 || workerBytes.subarray(0, 2).toString() !== 'MZ') throw new Error('原生更新程序缺失或损坏。');
   const workDir = existingWorkDir || updateWorkRoot();
   const logPath = path.join(workDir, 'apply.log');
-  const scriptPath = path.join(workDir, 'apply.ps1');
+  const planPath = path.join(workDir, 'update-plan.json');
+  const workerPath = path.join(workDir, 'RoomcastUpdateLauncher.exe');
   const receiptPath = path.join(workDir, 'receipt.json');
   const payloadDir = target.kind === 'directory' ? path.join(workDir, 'payload') : '';
   await mkdir(workDir, { recursive: true });
@@ -342,25 +348,22 @@ export async function prepareUpdateInstall({ target, download, pid, parentPid = 
       workDir, logPath, receiptPath, token: randomBytes(32).toString('hex'),
       lockPath: target.targetPath + '.update.lock', pid, parentPid, failureMarkerPath, version,
     };
-    await writeFile(path.join(workDir, 'update-plan.json'), JSON.stringify(plan), 'utf8');
-    const worker = await readFile(new URL('./update-worker.ps1', import.meta.url), 'utf8');
-    await writeFile(scriptPath, '\ufeff' + worker, 'utf8');
-    return { workDir, payloadDir, scriptPath, logPath, receiptPath, kind: target.kind };
+    await writeFile(planPath, JSON.stringify(plan), 'utf8');
+    // The worker must survive replacing its source installation directory.
+    await writeFile(workerPath, workerBytes, { flag: 'wx' });
+    return { workDir, payloadDir, planPath, workerPath, logPath, receiptPath, kind: target.kind };
   } catch (error) {
     if (!existingWorkDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
 }
-export function startApplyScript(scriptPath, { cwd = os.tmpdir(), spawnImpl = spawn, onError,
-  launcherPath = process.resourcesPath ? path.join(process.resourcesPath, 'runtime/update-launcher/RoomcastUpdateLauncher.exe') : fileURLToPath(new URL('../runtime/update-launcher/RoomcastUpdateLauncher.exe', import.meta.url)),
-} = {}) {
-  const worker = Buffer.from("& '" + scriptPath.replace(/'/g, "''") + "'", 'utf16le').toString('base64');
-  const child = spawnImpl(launcherPath, [worker], { cwd, stdio: 'ignore', windowsHide: true, detached: true });
+export function startUpdateWorker({ workerPath, planPath }, { cwd = os.tmpdir(), spawnImpl = spawn, onError } = {}) {
+  const child = spawnImpl(workerPath, ['--start', planPath], { cwd, stdio: 'ignore', windowsHide: true, detached: true });
   child.on?.('error', error => { if (typeof onError === 'function') onError(error); });
   child.unref?.();
   return { pid: Number(child.pid) || 0, via: 'native-breakaway' };
 }
-export async function waitForApplyScriptStart(logPath, { timeoutMs = 8000, intervalMs = 200 } = {}) {
+export async function waitForUpdateWorkerStart(logPath, { timeoutMs = 8000, intervalMs = 200 } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const log = await readFile(logPath, 'utf8').catch(() => '');

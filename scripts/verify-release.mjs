@@ -10,7 +10,7 @@ const root = process.cwd();
 const packageInfo = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const version = packageInfo.version;
 const releaseDir = path.resolve(process.argv.find(value => value.startsWith('--release-dir='))?.slice('--release-dir='.length) || 'release');
-const output = path.join(root, `.test/release-${version}`);
+const output = path.resolve(process.argv.find(value => value.startsWith('--output-dir='))?.slice('--output-dir='.length) || path.join(root, `.test/release-${version}`));
 const profile = path.join(output, 'portable-profile');
 await mkdir(profile, { recursive: true });
 await rm(path.join(profile, 'DevToolsActivePort'), { force: true });

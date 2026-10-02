@@ -19,7 +19,15 @@ Windows 10/11 x64。客户端与[网页版](https://roomcast-2dy.pages.dev/)同�
 
 各浏览器引擎检查及最终成品验收结果见[状态说明](https://github.com/lpossj/roomcast/blob/main/docs/STATUS.md)。手机默认浏览器、iPhone Safari 真机的后台行为和音频设备尚未完整验收；WebKit 引擎检查不能替代 iOS 硬件实测。
 
-beta.8 高于 beta.7，可由已有更新检查发现。同版本后续修订保持 beta.8，已安装同号版本需要重新下载覆盖。Windows 程序未签名，附件可用 SHA256.txt 核对。
+beta.8 高于 beta.7，可由已有更新检查发现。旧 beta.7 与首版 beta.8 的更新器存在以下包内读取错误，本次需关闭旧版后手动换用完整修订包一次。同版本后续修订保持 beta.8，已安装同号版本需要重新下载覆盖。Windows 程序未签名，附件可用 SHA256.txt 核对。
+
+## 2026-10-02 更新器修订（版本仍为 beta.8）
+
+更新执行改为独立原生事务程序，删除 PowerShell 脚本、编码命令与执行策略绕过；直接完成校验、完整暂存、旧版备份、替换、重启和失败恢复。移除 `ENOENT ... app.asar/electron/update-worker.ps1` 的脚本依赖，也移除火绒截图中“利用 PowerShell 执行可疑脚本”对应的更新执行链。未调整安全软件配置。
+
+旧客户端正在执行的更新器无法通过尚未安装的新包自修，因此这次需要手动下载完整 EXE 或 ZIP；ZIP 请解压到新目录运行。安装目录的旧版名称不影响实际版本判断。
+
+已实际克隆并核对 [electron-builder 更新器](https://github.com/electron-userland/electron-builder/tree/44c5265a9260ca6f319f111b5a2ca7e50b0a7cd6/packages/electron-updater)和 [Velopack Windows 更新事务](https://github.com/velopack/velopack/blob/92d6a1c91716729d449034df5c50307dcce39493/src/bins/src/commands/apply_windows_impl.rs)。补齐从最终 ASAR 内加载更新器的回归入口。网页代码与部署保持本版已有功能。
 
 ## 参考实现
 

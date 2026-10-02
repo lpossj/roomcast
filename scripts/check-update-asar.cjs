@@ -7,11 +7,14 @@ const { pathToFileURL } = require('node:url');
 const assert = require('node:assert/strict');
 async function main() {
   const root = process.cwd();
+  const version = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version;
   const output = await fs.mkdtemp(path.join(root, '.test/update-asar-'));
   const contents = path.join(output, 'contents');
   const payload = path.join(output, 'payload');
   await fs.mkdir(contents); await fs.mkdir(path.join(payload, 'resources'), { recursive: true });
   await fs.writeFile(path.join(contents, 'package.json'), '{"name":"asar-update-fixture","version":"1.0.0"}');
+  await fs.mkdir(path.join(contents, 'electron'));
+  await fs.copyFile(path.join(root, 'electron/update-install.mjs'), path.join(contents, 'electron/update-install.mjs'));
   await require('@electron/asar').createPackage(contents, path.join(payload, 'resources/app.asar'));
   await fs.writeFile(path.join(payload, 'Roomcast.exe'), 'exe-fixture');
   const zipPath = path.join(output, 'update.zip');
@@ -21,22 +24,28 @@ async function main() {
   const sha256 = createHash('sha256').update(await fs.readFile(zipPath)).digest('hex');
   const report = path.join(output, 'result.json');
   const entry = path.join(output, 'probe.cjs');
-  const moduleUrl = pathToFileURL(path.join(root, 'electron/update-install.mjs')).href;
+  const sourceArchive = process.argv[2] ? path.resolve(process.argv[2]) : path.join(payload, 'resources/app.asar');
+  const moduleUrl = pathToFileURL(path.join(sourceArchive, 'electron/update-install.mjs')).href;
+  const sourceWorker = process.argv[2] ? path.join(path.dirname(sourceArchive), 'runtime/update-launcher/RoomcastUpdateLauncher.exe') : path.join(root, 'runtime/update-launcher/RoomcastUpdateLauncher.exe');
   await fs.writeFile(entry, `const {app}=require('electron');const fs=require('node:fs');const raw=require('original-fs');
 app.whenReady().then(async()=>{try{
 const {prepareUpdateInstall}=await import(${JSON.stringify(moduleUrl)});
 const archive=${JSON.stringify(path.join(payload, 'resources/app.asar'))};
 if(!fs.statSync(archive).isDirectory()||!raw.statSync(archive).isFile())throw new Error('ASAR shim fixture inactive');
-const plan=await prepareUpdateInstall({target:{supported:true,kind:'directory',targetPath:${JSON.stringify(payload)},appDir:${JSON.stringify(payload)},launchPath:${JSON.stringify(path.join(payload, 'Roomcast.exe'))}},download:{path:${JSON.stringify(zipPath)},verified:true,sha256:${JSON.stringify(sha256)},expected:${JSON.stringify(sha256)}},pid:process.pid,version:'0.14.4-beta.7',workDir:${JSON.stringify(path.join(output, 'work'))}});
+const plan=await prepareUpdateInstall({target:{supported:true,kind:'directory',targetPath:${JSON.stringify(payload)},appDir:${JSON.stringify(payload)},launchPath:${JSON.stringify(path.join(payload, 'Roomcast.exe'))}},download:{path:${JSON.stringify(zipPath)},verified:true,sha256:${JSON.stringify(sha256)},expected:${JSON.stringify(sha256)}},pid:process.pid,version:${JSON.stringify(version)},workDir:${JSON.stringify(path.join(output, 'work'))},workerSourcePath:${JSON.stringify(sourceWorker)}});
 const data=JSON.parse(raw.readFileSync(require('node:path').join(plan.workDir,'update-plan.json'),'utf8'));
 if(data.files.length!==2||!data.files.some(file=>file.name.replace(/\\\\/g,'/')==='resources/app.asar'))throw new Error('ASAR contents were traversed instead of its physical file');
-raw.writeFileSync(${JSON.stringify(report)},JSON.stringify({ok:true,files:data.files,virtualAsar:true,physicalAsar:true},null,2));app.exit(0);
+const worker=raw.readFileSync(${JSON.stringify(sourceWorker)});
+if(!raw.readFileSync(plan.workerPath).equals(worker)||raw.existsSync(require('node:path').join(plan.workDir,'apply.ps1')))throw new Error('Directory native worker preparation failed');
+const portable=await prepareUpdateInstall({target:{supported:true,kind:'portable-exe',targetPath:${JSON.stringify(path.join(payload,'Roomcast.exe'))},launchPath:${JSON.stringify(path.join(payload,'Roomcast.exe'))}},download:{path:${JSON.stringify(zipPath)},verified:true,sha256:${JSON.stringify(sha256)},expected:${JSON.stringify(sha256)}},pid:process.pid,version:${JSON.stringify(version)},workDir:${JSON.stringify(path.join(output,'portable-work'))},workerSourcePath:${JSON.stringify(sourceWorker)}});
+if(!raw.readFileSync(portable.workerPath).equals(worker))throw new Error('Portable native worker preparation failed');
+raw.writeFileSync(${JSON.stringify(report)},JSON.stringify({ok:true,moduleUrl:${JSON.stringify(moduleUrl)},files:data.files,virtualAsar:true,physicalAsar:true,directoryNativeWorker:true,portableNativeWorker:true},null,2));app.exit(0);
 }catch(error){raw.writeFileSync(${JSON.stringify(report)},JSON.stringify({ok:false,error:error.stack}));app.exit(1);}});`);
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(require('electron'), [entry], { env, windowsHide: true, stdio: 'ignore' });
   const exit = await new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
   const result = JSON.parse(await fs.readFile(report, 'utf8'));
   assert.equal(exit, 0, result.error); assert.equal(result.ok, true);
-  console.log('[update-asar] PASS: real Electron shim reports virtual archive; transaction hashes the physical ASAR. Evidence: ' + output);
+  console.log('[update-asar] PASS: packed installer prepares external native workers and hashes the physical payload ASAR. Evidence: ' + output);
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

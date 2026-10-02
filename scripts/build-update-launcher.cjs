@@ -5,6 +5,6 @@ const root = path.join(__dirname, '..');
 const compiler = path.join(process.env.SystemRoot || 'C:\\Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
 const output = path.join(root, 'runtime/update-launcher/RoomcastUpdateLauncher.exe');
 fs.mkdirSync(path.dirname(output), { recursive: true });
-const result = spawnSync(compiler, ['/nologo', '/target:winexe', '/optimize+', '/out:' + output, path.join(root, 'electron/update-launcher.cs')], { stdio: 'inherit', windowsHide: true });
+const result = spawnSync(compiler, ['/nologo', '/target:winexe', '/optimize+', '/reference:System.Web.Extensions.dll', '/out:' + output, path.join(root, 'electron/update-launcher.cs')], { stdio: 'inherit', windowsHide: true });
 if (result.error || result.status !== 0) throw result.error || new Error('Windows update launcher compilation failed');
-console.log('[update-launcher] compiled native handoff host');
+console.log('[update-launcher] compiled standalone Windows update transaction worker');

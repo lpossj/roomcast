@@ -719,14 +719,14 @@ else {
           if (!await waitForMainWindowClose()) {
             throw Object.assign(new Error('程序还没有退出（房间迁移可能未完成），已取消自动更新，当前安装未被修改。可点"重试"，或手动退出程序后再更新。'), { code: 'close' });
           }
-          const started = installer.startApplyScript(plan.scriptPath, {
-            onError: error => setUpdaterState({ status: 'failed', phase: 'failed', error: `无法启动替换脚本：${error?.message || error}` }),
+          const started = installer.startUpdateWorker(plan, {
+            onError: error => setUpdaterState({ status: 'failed', phase: 'failed', error: `无法启动更新程序：${error?.message || error}` }),
           });
-          if (!started.pid) throw new Error('无法启动替换脚本，更新已取消，当前安装未被修改。');
-          // A pid alone is not proof the script runs: if it never writes its first log line,
+          if (!started.pid) throw new Error('无法启动更新程序，更新已取消，当前安装未被修改。');
+          // A pid alone is not proof the worker runs: if it never writes its first log line,
           // quitting here would leave the user with a closed app and no replacement at all.
-          if (!await installer.waitForApplyScriptStart(plan.logPath)) {
-            throw new Error('替换脚本没有真正开始运行（可能被安全软件或受限环境拦截），已取消自动更新，当前程序未被修改。可重试，或手动下载安装包。');
+          if (!await installer.waitForUpdateWorkerStart(plan.logPath)) {
+            throw new Error('更新程序没有开始运行，已取消自动更新，当前程序未被修改。可重试，或手动下载安装包。');
           }
           // Only now is it true that the app is going down for the replacement.
           setUpdaterState({ phase: 'restarting' });

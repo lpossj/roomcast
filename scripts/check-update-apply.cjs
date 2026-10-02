@@ -39,9 +39,16 @@ async function run() {
   const children = [];
   const preload = path.join(root, 'fixture.cjs');
   await fs.writeFile(preload, `const fs=require('node:fs');
-if(process.env.ROOMCAST_UPDATE_RECEIPT){const file=process.env.ROOMCAST_UPDATE_RECEIPT;fs.writeFileSync(file+'.tmp',JSON.stringify({version:process.env.ROOMCAST_FIXTURE_VERSION,token:process.env.ROOMCAST_UPDATE_TOKEN,pid:process.pid}));fs.renameSync(file+'.tmp',file);setTimeout(()=>{},30000);}`);
+if(process.env.ROOMCAST_UPDATE_RECEIPT){
+const file=process.env.ROOMCAST_UPDATE_RECEIPT;
+fs.writeFileSync(file+'.tmp',JSON.stringify({version:process.env.ROOMCAST_FIXTURE_VERSION,token:process.env.ROOMCAST_UPDATE_TOKEN,pid:process.pid}));fs.renameSync(file+'.tmp',file);
+const chain=process.env.ROOMCAST_FIXTURE_CHAIN&&JSON.parse(process.env.ROOMCAST_FIXTURE_CHAIN);
+if(chain&&file===chain.firstReceipt){const tick=setInterval(()=>{if(!fs.readFileSync(chain.firstLog,'utf8').includes('COMMITTED'))return;clearInterval(tick);
+const plan=JSON.parse(fs.readFileSync(chain.plan.planPath,'utf8'));plan.pid=process.pid;plan.parentPid=0;fs.writeFileSync(chain.plan.planPath,JSON.stringify(plan));
+const child=require('node:child_process').spawn(chain.plan.workerPath,['--start',chain.plan.planPath],{detached:true,windowsHide:true,stdio:'ignore'});child.unref();process.exit(0);},50);}
+else setTimeout(()=>{},30000);}`);
   try {
-    for (const mode of ['locked-success', 'tampered', 'restart-failure', 'startup-mismatch', 'directory-success', 'directory-mismatch']) {
+    for (const mode of ['locked-success', 'tampered', 'restart-failure', 'startup-mismatch', 'directory-success', 'directory-mismatch', 'successive-updates']) {
       const dir = path.join(root, mode);
       await fs.mkdir(dir);
       const isDirectory = mode.startsWith('directory-');
@@ -49,7 +56,8 @@ if(process.env.ROOMCAST_UPDATE_RECEIPT){const file=process.env.ROOMCAST_UPDATE_R
       await fs.mkdir(path.join(install, 'resources'), { recursive: true });
       const targetPath = path.join(install, 'Roomcast.exe');
       const assetPath = path.join(dir, isDirectory ? 'new.zip' : 'new.exe');
-      const asset = isDirectory ? makeZip([['Roomcast.exe', newImage], ['resources/app.asar', Buffer.from('new-asar')]]) : newImage;
+      const image = mode === 'restart-failure' ? Buffer.from('MZ invalid executable fixture') : newImage;
+      const asset = isDirectory ? makeZip([['Roomcast.exe', image], ['resources/app.asar', Buffer.from('new-asar')]]) : image;
       const workDir = path.join(dir, 'work');
       const marker = path.join(dir, 'update-failed.txt');
       await fs.writeFile(targetPath, oldImage);
@@ -66,18 +74,29 @@ if(process.env.ROOMCAST_UPDATE_RECEIPT){const file=process.env.ROOMCAST_UPDATE_R
         await assert.rejects(() => fs.copyFile(assetPath, targetPath), 'direct overwrite should fail while the image is mapped');
       }
       const plan = await prepareUpdateInstall({
-        target: { supported: true, kind: isDirectory ? 'directory' : 'portable-exe', targetPath: isDirectory ? install : targetPath, appDir: install, launchPath: mode === 'restart-failure' ? path.join(dir, 'missing.exe') : targetPath },
+        target: { supported: true, kind: isDirectory ? 'directory' : 'portable-exe', targetPath: isDirectory ? install : targetPath, appDir: install, launchPath: targetPath },
         download: { verified: true, path: assetPath, sha256: digest(asset), expected: digest(asset) },
         pid: holder.pid, parentPid: process.pid, version: '0.14.4-beta.6', failureMarkerPath: marker, workDir,
       });
+      let second, secondImage;
+      if (mode === 'successive-updates') {
+        secondImage = Buffer.concat([newImage, Buffer.from('second update fixture')]);
+        const secondAsset = path.join(dir, 'second.exe'); await fs.writeFile(secondAsset, secondImage);
+        second = await prepareUpdateInstall({
+          target: { supported: true, kind: 'portable-exe', targetPath, launchPath: targetPath },
+          download: { verified: true, path: secondAsset, sha256: digest(secondImage), expected: digest(secondImage) },
+          pid: holder.pid, version: '0.14.4-beta.6', failureMarkerPath: marker, workDir: path.join(dir, 'second-work'),
+        });
+      }
       if (mode === 'tampered') await fs.writeFile(assetPath, 'tampered');
       // Use the production launcher, then exit its parent before replacement.
       const driver = path.join(dir, 'driver.mjs');
-      await fs.writeFile(driver, `import {startApplyScript,waitForApplyScriptStart} from ${JSON.stringify(installerUrl)};
-const result=startApplyScript(${JSON.stringify(plan.scriptPath)});
-process.exit(result.pid && await waitForApplyScriptStart(${JSON.stringify(plan.logPath)}) ? 0 : 1);`);
+      await fs.writeFile(driver, `import {startUpdateWorker,waitForUpdateWorkerStart} from ${JSON.stringify(installerUrl)};
+const result=startUpdateWorker(${JSON.stringify(plan)});
+process.exit(result.pid && await waitForUpdateWorkerStart(${JSON.stringify(plan.logPath)}) ? 0 : 1);`);
       const started = Date.now();
       const env = { ...process.env, NODE_OPTIONS: '--require "' + preload.replace(/\\/g, '/') + '"', ROOMCAST_FIXTURE_VERSION: mode.includes('mismatch') ? 'wrong-version' : '0.14.4-beta.6' };
+      if (second) env.ROOMCAST_FIXTURE_CHAIN = JSON.stringify({ firstLog: plan.logPath, firstReceipt: plan.receiptPath, plan: second });
       const child = spawn(process.execPath, [driver], { stdio: 'ignore', windowsHide: true, env });
       children.push(child);
       const code = await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject); });
@@ -89,17 +108,23 @@ process.exit(result.pid && await waitForApplyScriptStart(${JSON.stringify(plan.l
         error.message += '\n' + await fs.readFile(plan.logPath, 'utf8').catch(() => 'no log');
         throw error;
       }
-      const log = await fs.readFile(plan.logPath, 'utf8');
+      let log = await fs.readFile(plan.logPath, 'utf8');
+      if (second) {
+        await waitFor(async () => /COMMITTED|FAILED/.test(await fs.readFile(second.logPath, 'utf8').catch(() => '')));
+        const secondLog = await fs.readFile(second.logPath, 'utf8'); assert.match(secondLog, /COMMITTED version=/, secondLog);
+        log += '\n' + secondLog;
+      }
       for (const match of log.matchAll(/(?:restart started|previous image restarted) pid=(\d+)/g)) {
         // PIDs created by this fixture's worker only; never inspect or stop user apps.
         try { process.kill(Number(match[1])); } catch {}
       }
       assert.ok(Date.now() - started >= 2000, 'worker skipped waiting for the recorded app');
-      if (mode === 'locked-success' || mode === 'directory-success') {
-        assert.equal(digest(await fs.readFile(targetPath)), digest(newImage), log);
+      if (mode === 'locked-success' || mode === 'directory-success' || second) {
+        assert.equal(digest(await fs.readFile(targetPath)), digest(secondImage || newImage), log);
         const backups = (await fs.readdir(dir)).filter(name => name.includes('.previous-'));
-        assert.equal(backups.length, 1);
-        assert.equal(digest(await fs.readFile(isDirectory ? path.join(dir, backups[0], 'Roomcast.exe') : path.join(dir, backups[0]))), digest(oldImage));
+        assert.equal(backups.length, second ? 2 : 1);
+        const backupHashes = await Promise.all(backups.map(name => fs.readFile(isDirectory ? path.join(dir, name, 'Roomcast.exe') : path.join(dir, name)).then(digest)));
+        assert.ok(backupHashes.includes(digest(oldImage))); if (second) assert.ok(backupHashes.includes(digest(newImage)));
         if (blocker) assert.equal(blocker.exitCode, null, 'must not kill another process to replace the image');
         assert.equal(await fs.stat(marker).catch(() => null), null);
         assert.match(log, /COMMITTED version=/);
