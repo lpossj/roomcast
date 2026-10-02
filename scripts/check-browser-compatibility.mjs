@@ -63,6 +63,7 @@ try {
           button.style.cssText = 'position:fixed;top:0;left:300px;z-index:99999';
           button.onclick = () => { window.testAudioReady = (async () => {
         const context = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
+        window.testAudioContext = context;
         const oscillator = context.createOscillator(), gain = context.createGain(), analyser = context.createAnalyser();
         const destination = context.createMediaStreamDestination?.(); if (destination) destination.channelCount = 1;
         oscillator.connect(gain); if (destination) gain.connect(destination); gain.connect(analyser); gain.connect(context.destination);
@@ -73,7 +74,8 @@ try {
           const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
           return { state: context.state, rate: context.sampleRate, nonzero: samples.some(value => Math.abs(value) > 0.001), track: destination?.stream.getAudioTracks()[0]?.readyState, viewTransition: typeof document.startViewTransition === 'function' };
         } finally {
-          clearTimeout(timeout); oscillator.stop(); oscillator.disconnect(); gain.disconnect(); analyser.disconnect(); destination?.stream.getTracks().forEach(track => track.stop()); await context.close();
+          clearTimeout(timeout); oscillator.stop(); oscillator.disconnect(); gain.disconnect(); analyser.disconnect(); destination?.stream.getTracks().forEach(track => track.stop());
+          void context.close().catch(() => {});
         }
           })(); };
           document.body.append(button);
@@ -122,7 +124,7 @@ try {
       await guest.getByRole('button', { name: '离开房间', exact: true }).click(); await host.waitForFunction(() => document.querySelectorAll('.member-row').length === 1);
       result.checks.push('real RTC room/chat, BFCache/background title without leave, 390px mobile drawer/theme and voluntary cleanup');
       result.ok = true;
-    } catch (error) { result.ok = false; result.failure = error.stack; try { result.debug = await host.evaluate(() => ({ body: document.body.innerText, width: document.querySelector('.channel-sidebar')?.offsetWidth, pointers: window.testPointers?.slice(-12), drag: document.querySelector('.app-shell')?.className })); await host.screenshot({ path: path.join(output, `${name}-failure.png`) }); } catch {} }
+    } catch (error) { result.ok = false; result.failure = error.stack; try { result.debug = await host.evaluate(() => ({ audioState: window.testAudioContext?.state, body: document.body.innerText, width: document.querySelector('.channel-sidebar')?.offsetWidth, pointers: window.testPointers?.slice(-12), drag: document.querySelector('.app-shell')?.className })); await host.screenshot({ path: path.join(output, `${name}-failure.png`) }); } catch {} }
     finally { await browser?.close(); }
   }
   assert.ok(report.engines.length > 0 && report.engines.every(result => result.ok), 'Every selected browser engine must pass');
