@@ -125,6 +125,9 @@ jobs:
       - name: Verify packaged release
         run: npm run verify:release
 
+      - name: Verify update inside a restricted Windows job
+        run: node scripts/check-update-job.cjs
+
       - name: Publish beta release
         shell: pwsh
         env:

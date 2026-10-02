@@ -279,9 +279,19 @@ internal sealed class UpdateLauncher {
                 string host = System.Reflection.Assembly.GetExecutingAssembly().Location;
                 var startup = new StartupInfo(); startup.size = Marshal.SizeOf(typeof(StartupInfo));
                 ProcessInfo child;
-                // Self-handoff outside inherited process jobs, no pipe handles.
-                if (!CreateProcess(host, new StringBuilder("\"" + host + "\" --apply \"" + file + "\""), IntPtr.Zero, IntPtr.Zero, false,
-                    0x01000000 | 0x08000000, IntPtr.Zero, Path.GetDirectoryName(file), ref startup, out child)) return Marshal.GetLastWin32Error();
+                // Prefer independent lifetime. A long-lived outer host may
+                // refuse breakaway; normal creation remains native and keeps
+                // the same wait-before-replace transaction protections.
+                string command = "\"" + host + "\" --apply \"" + file + "\"";
+                if (!CreateProcess(host, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false,
+                    0x01000000 | 0x08000000, IntPtr.Zero, Path.GetDirectoryName(file), ref startup, out child)) {
+                    int error = Marshal.GetLastWin32Error();
+                    File.AppendAllText(Path.Combine(Path.GetDirectoryName(file), "apply.log"),
+                        "[" + DateTimeOffset.Now.ToString("o") + "] native breakaway unavailable error=" + error + Environment.NewLine, Utf8);
+                    if (error != 5) throw new System.ComponentModel.Win32Exception(error, "Cannot start update worker");
+                    if (!CreateProcess(host, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false,
+                        0x08000000, IntPtr.Zero, Path.GetDirectoryName(file), ref startup, out child)) throw NativeError("Cannot start update worker within host job");
+                }
                 CloseHandle(child.thread); CloseHandle(child.process); return 0;
             }
             if (new FileInfo(file).Length > 16 * 1024 * 1024) return 2;

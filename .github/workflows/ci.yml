@@ -44,3 +44,6 @@ jobs:
 
       - name: Verify native update recovery and successive updates
         run: npm run check:update-apply
+
+      - name: Verify update inside a restricted Windows job
+        run: node scripts/check-update-job.cjs

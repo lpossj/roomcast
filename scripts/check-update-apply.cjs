@@ -100,7 +100,7 @@ process.exit(result.pid && await waitForUpdateWorkerStart(${JSON.stringify(plan.
       const child = spawn(process.execPath, [driver], { stdio: 'ignore', windowsHide: true, env });
       children.push(child);
       const code = await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject); });
-      assert.equal(code, 0, 'production launcher must acknowledge startup');
+      assert.equal(code, 0, 'production launcher must acknowledge startup\n' + await fs.readFile(plan.logPath, 'utf8').catch(() => 'no worker log'));
       assert.equal(digest(await fs.readFile(targetPath)), digest(oldImage), 'must wait for the old app PID');
       try {
         await waitFor(async () => /COMMITTED|previous image restarted|restart failed|ROLLBACK FAILED/.test(await fs.readFile(plan.logPath, 'utf8').catch(() => '')));
@@ -109,6 +109,7 @@ process.exit(result.pid && await waitForUpdateWorkerStart(${JSON.stringify(plan.
         throw error;
       }
       let log = await fs.readFile(plan.logPath, 'utf8');
+      if (process.env.ROOMCAST_EXPECT_HOST_JOB === '1') assert.match(log, /native breakaway unavailable error=5/, 'restricted host must exercise the actual native fallback');
       if (second) {
         await waitFor(async () => /COMMITTED|FAILED/.test(await fs.readFile(second.logPath, 'utf8').catch(() => '')));
         const secondLog = await fs.readFile(second.logPath, 'utf8'); assert.match(secondLog, /COMMITTED version=/, secondLog);
