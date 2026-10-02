@@ -2,7 +2,7 @@ import { AppWindow, ArrowRight, AudioLines, Camera, Check, ChevronDown, ChevronR
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ScreenPlayer from './ScreenPlayer.jsx';
 import Avatar, { safeAvatar } from './Avatar.jsx';
-import { ProfileSettings, VoiceSettings, VoiceControls } from './ProfileAudioSettings.jsx';
+import { ProfileSettings, VoiceSettings, VoiceControls, MemberVolumeControl } from './ProfileAudioSettings.jsx';
 import useRoomVoice from './useRoomVoice.js';
 import { ack, attachNativeAudio, getLifecycleDiagnostics, initials, integratedSources, nativeAudioSources, startIntegratedCapture, startObsFixedFpsCapture, timeLabel } from './lib.js';
 import { readImageDimensions } from './image-policy.js';
@@ -568,16 +568,6 @@ function MemberPermissionsModal({ member, self, onClose, command }) {
   </Modal>;
 }
 
-function MemberAudioModal({ member, voice, onClose }) {
-  const volume = voice.memberVolumes[member.id] ?? 1;
-  return <Modal title={`${member.name} 的音量`} subtitle="仅调节你听到的该成员麦克风声音，不影响共享画面的音量。" onClose={onClose}>
-    <div className="permission-member"><Avatar member={member} /><strong>{member.name}</strong></div>
-    <section className="settings-section"><label className="member-audio-volume">成员麦克风音量 <span>{Math.round(volume * 100)}%</span>
-      <input aria-label="成员麦克风音量" type="range" min="0" max="1" step="0.01" value={volume} onChange={event => voice.setMemberVolume(member.id, Number(event.target.value))} />
-    </label></section>
-  </Modal>;
-}
-
 function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInvite, inviteSecret, peerServer }) {
   const addresses = (localConfig?.addresses || []).map(value => typeof value === 'string' ? value : value.url).filter(Boolean);
   const loopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(server);
@@ -952,7 +942,6 @@ export default function App() {
   const setRelaySettings = useCallback(value => { const next = typeof value === 'function' ? value(loadRelaySettings()) : value; saveRelaySettings(next); setRelaySettingsState(next); }, []);
   const [modal, setModal] = useState(initialInvite ? 'join' : null);
   const [managedMember, setManagedMember] = useState(null);
-  const [audioMember, setAudioMember] = useState(null);
   const [inviteRoom, setInviteRoom] = useState(initialInvite);
   useEffect(() => window.roomcast?.onInvite?.(roomId => { setInviteRoom(roomId); setModal('join'); }), []);
   useEffect(() => {
@@ -1637,7 +1626,7 @@ export default function App() {
 
     <aside className="channel-sidebar"><header className="brand-header"><div><strong>同屏<span>Roomcast</span></strong><small>A SPACE FOR YOUR PEOPLE</small></div><span className="version-pill">BETA</span>{!desktopChrome && <button className="icon-button mobile-members-close" aria-label="关闭成员栏" onClick={() => setShowMembers(false)}><X size={18} /></button>}</header><div className="sidebar-section-heading"><span>房间</span></div><button className="channel-item selected" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><Volume2 size={19} /><span>{room?.name || (canHostRoom ? '开始你的房间' : '加入房间')}</span>{room ? <span className="channel-count">{room.members.length}</span> : <ChevronRight size={16} />}</button><div className="channel-subtitle"><span className={`status-dot ${room ? 'online' : ''}`} />{room ? `${room.members.length} 人在线 · 最多 10 人` : '房间准备好了，只差你们'}</div>
       <div className="sidebar-section-heading members-heading"><span>成员 <small>{room ? String(room.members.length).padStart(2, '0') : '00'}</small></span><Users size={14} /></div>
-      <div className="sidebar-members">{room ? room.members.map(member => { const manageable = member.id !== selfId && member.role !== 'owner' && ['owner', 'admin'].includes(self?.role); return <div className="member-row" key={member.id}><Avatar member={member} speaking={voice.speaking[member.id] === true} /><div className="member-details"><span>{member.name}{member.id === selfId && <small>你</small>}<em className={`role-badge ${member.role}`}>{member.role === 'owner' ? '房主' : member.role === 'admin' ? '管理员' : '用户'}</em></span></div>{member.id !== selfId && room.features?.voice === 1 && <button className="icon-button" aria-label={`调整成员 ${member.name} 的音量`} title="成员麦克风音量" onClick={() => setAudioMember(member)}><Volume2 size={14} /></button>}{manageable ? <button className="icon-button" aria-label={`管理成员 ${member.name}`} onClick={() => setManagedMember(member)}><Settings size={14} /></button> : member.sharing ? <MonitorUp size={15} className="green-icon" /> : !member.canShare ? <LockKeyhole size={14} /> : null}</div>; }) : <div className="members-empty"><div className="empty-member-icons"><span /><span /><span /></div></div>}</div>
+      <div className="sidebar-members">{room ? room.members.map(member => { const manageable = member.id !== selfId && member.role !== 'owner' && ['owner', 'admin'].includes(self?.role); return <div className="member-row" key={member.id}><Avatar member={member} speaking={voice.speaking[member.id] === true} /><div className="member-details"><span>{member.name}{member.id === selfId && <small>你</small>}<em className={`role-badge ${member.role}`}>{member.role === 'owner' ? '房主' : member.role === 'admin' ? '管理员' : '用户'}</em></span></div>{member.id !== selfId && room.features?.voice === 1 && <MemberVolumeControl member={member} voice={voice} />}{manageable ? <button className="icon-button" aria-label={`管理成员 ${member.name}`} onClick={() => setManagedMember(member)}><Settings size={14} /></button> : member.sharing ? <MonitorUp size={15} className="green-icon" /> : !member.canShare ? <LockKeyhole size={14} /> : null}</div>; }) : <div className="members-empty"><div className="empty-member-icons"><span /><span /><span /></div></div>}</div>
       <div className="sidebar-bottom"><span className={`network-latency ${latencyTone}`} aria-label={`网络延迟：${latencyMs == null ? '-- ms' : `${latencyMs} ms`}`}><Wifi className="network-latency-icon" size={17} strokeWidth={2.2} aria-hidden="true" /><span>{latencyMs == null ? '-- ms' : `${latencyMs} ms`}</span></span><VoiceControls voice={voice} inRoom={room?.features?.voice === 1} /></div>
     </aside>
 
@@ -1671,7 +1660,6 @@ export default function App() {
     {modal === 'settings' && <SettingsModal avatar={avatar} avatarName={self?.name || loadPreference('nickname', '访客')} onAvatar={changeAvatar} voice={voice} onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
     {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
     {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}
-    {audioMember && audioMember.id !== selfId && room?.members.some(member => member.id === audioMember.id) && <MemberAudioModal member={room.members.find(member => member.id === audioMember.id)} voice={voice} onClose={() => setAudioMember(null)} />}
     {previewImage && <ImagePreviewOverlay key={previewImage.src} image={previewImage} onClose={() => setPreviewImage(null)} onImageContextMenu={handleImageContextMenu} onCopy={copyPreviewImage} onDownload={downloadPreviewImage} />}
     {imageContextMenu && <div className="image-context-menu" role="menu" style={{ left: imageContextMenu.x, top: imageContextMenu.y }} onPointerDown={event => event.stopPropagation()}>
       <button type="button" role="menuitem" onClick={() => void copyContextImage()}>复制图片</button>

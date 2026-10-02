@@ -2328,10 +2328,11 @@ select {
 .voice-toggle { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 5px; color: #7d8d99; background: #ffffff08; }
 .voice-toggle.enabled { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .voice-toggle:disabled { opacity: .45; cursor: default; }
-.voice-volume-popover { position: absolute; bottom: 100%; right: 0; width: 184px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; color: #d4dfe7; background: #202933; box-shadow: 0 8px 24px #0006; display: none; z-index: 20; font-size: 11px; }
+.voice-volume-popover { position: absolute; bottom: 100%; right: 0; width: 152px; padding: 9px; border: 1px solid var(--border); border-radius: 7px; color: #d4dfe7; background: #202933; box-shadow: 0 6px 18px #0006; display: none; z-index: 20; font-size: 11px; }
 .voice-volume-popover span { float: right; }
-.voice-volume-popover input { display: block; width: 100%; margin-top: 12px; accent-color: var(--accent); }
+.voice-volume-popover input { display: block; width: 100%; margin: 7px 0 0; accent-color: var(--accent); }
 .voice-control:hover .voice-volume-popover, .voice-control:focus-within .voice-volume-popover { display: block; }
+.member-volume-popover { position: fixed; display: block; bottom: auto; right: auto; z-index: 30; }
 .voice-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .viewer-avatar {
@@ -3442,8 +3443,6 @@ select {
     color: #ffc9c9
 }
 
-.member-audio-volume { display: grid; grid-template-columns: 1fr auto; gap: 12px; font-size: 13px; }
-.member-audio-volume input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
 
 /* Startup update prompt: release notes get their own scroll area so a long changelog
    cannot push the "立即更新" button off screen. */

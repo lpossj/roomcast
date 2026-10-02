@@ -1,5 +1,6 @@
 import { ImagePlus, Mic, MicOff, Volume2, VolumeX, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Avatar, { prepareAvatar } from './Avatar.jsx';
 
 export function ProfileSettings({ avatar, name, onAvatar }) {
@@ -30,6 +31,49 @@ export function VoiceSettings({ voice, avatar, name }) {
       <button type="button" className="button secondary small" onClick={() => voice.setTesting(value => !value)}>{voice.testing ? '结束测试' : '开始测试'}</button>
     </div>{voice.error && <div className="inline-error" role="alert">{voice.error}<button aria-label="关闭音频错误" onClick={voice.clearError}><X size={14} /></button></div>}
   </section>;
+}
+
+export function MemberVolumeControl({ member, voice }) {
+  const [open, setOpen] = useState(false), [position, setPosition] = useState({});
+  const button = useRef(null), popover = useRef(null), id = useId();
+  const volume = voice.memberVolumes[member.id] ?? 1;
+  useLayoutEffect(() => {
+    if (!open) return;
+    const anchor = button.current.getBoundingClientRect(), box = popover.current.getBoundingClientRect();
+    const left = Math.max(8, Math.min(anchor.right - box.width, window.innerWidth - box.width - 8));
+    const above = anchor.top - box.height - 6;
+    const top = Math.max(8, Math.min(above >= 8 ? above : anchor.bottom + 6, window.innerHeight - box.height - 8));
+    setPosition({ left, top });
+    popover.current.querySelector('input').focus({ preventScroll: true });
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const outside = event => {
+      if (!button.current?.contains(event.target) && !popover.current?.contains(event.target)) setOpen(false);
+    };
+    const escape = event => {
+      if (event.key === 'Escape') { event.preventDefault(); setOpen(false); button.current?.focus({ preventScroll: true }); }
+    };
+    const dismiss = () => setOpen(false);
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('focusin', outside);
+    document.addEventListener('keydown', escape);
+    document.addEventListener('scroll', dismiss, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('focusin', outside);
+      document.removeEventListener('keydown', escape);
+      document.removeEventListener('scroll', dismiss, true);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [open]);
+  return <>
+    <button ref={button} className="icon-button" aria-label={`调整成员 ${member.name} 的音量`} title="成员麦克风音量" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}><Volume2 size={14} /></button>
+    {open && createPortal(<div ref={popover} id={id} className="voice-volume-popover member-volume-popover" role="group" aria-label={`${member.name} 的麦克风音量`} style={position}>
+      <label>成员麦克风音量 <span>{Math.round(volume * 100)}%</span><input aria-label="成员麦克风音量" type="range" min="0" max="1" step="0.01" value={volume} onChange={event => voice.setMemberVolume(member.id, Number(event.target.value))} /></label>
+    </div>, document.body)}
+  </>;
 }
 
 export function VoiceControls({ voice, inRoom }) {
