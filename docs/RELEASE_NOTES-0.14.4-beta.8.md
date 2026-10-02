@@ -27,7 +27,13 @@ beta.8 高于 beta.7，可由已有更新检查发现。旧 beta.7 与首版 bet
 
 旧客户端正在执行的更新器无法通过尚未安装的新包自修，因此这次需要手动下载完整 EXE 或 ZIP；ZIP 请解压到新目录运行。安装目录的旧版名称不影响实际版本判断。
 
-已实际克隆并核对 [electron-builder 更新器](https://github.com/electron-userland/electron-builder/tree/44c5265a9260ca6f319f111b5a2ca7e50b0a7cd6/packages/electron-updater)和 [Velopack Windows 更新事务](https://github.com/velopack/velopack/blob/92d6a1c91716729d449034df5c50307dcce39493/src/bins/src/commands/apply_windows_impl.rs)。补齐从最终 ASAR 内加载更新器的回归入口。网页代码与部署保持本版已有功能。
+已实际克隆并核对 [electron-builder 更新器](https://github.com/electron-userland/electron-builder/tree/44c5265a9260ca6f319f111b5a2ca7e50b0a7cd6/packages/electron-updater)和 [Velopack Windows 更新事务](https://github.com/velopack/velopack/blob/92d6a1c91716729d449034df5c50307dcce39493/src/bins/src/commands/apply_windows_impl.rs)。补齐从最终 ASAR 内加载更新器的回归入口。
+
+## 2026-10-02 界面配色补齐（版本仍为 beta.8）
+
+共享参数、声音选项、预览外框和等待界面补齐日间配色。共享、聊天、导航和播放按钮采用统一主题色，危险操作用浅红色，禁用状态清楚区分；调整卡片、弹窗、输入和分栏边界。聊天输入与容器融合，小窗随主界面同步明暗主题和强调色。网页同步同套样式，保持房间和媒体功能。
+
+实际 Edge 检查共享设置、预览/聊天、390px布局及日夜主题；实际 Electron 验证主预览与小窗控件、主题同步与关闭释放，媒体轨道保持不变。
 
 ## 参考实现
 

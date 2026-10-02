@@ -55,6 +55,9 @@ export function openFloatingPlayer(source, {
       --muted: #86919c;
       --green: #78ddbd;
       --border: #ffffff0c;
+      --control-bg: #2b4148;
+      --control-text: #e2edf4;
+      --control-border: #586b7e;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #06090c; }
@@ -82,6 +85,8 @@ export function openFloatingPlayer(source, {
       line-height: 1.35;
       transition: opacity .16s ease;
       -webkit-app-region: drag;
+      background: var(--member-background, #394631);
+      color: var(--member-foreground, #c5d4a7);
     }
     .floating-info-card strong { font-size: 11px; font-weight: 700; color: inherit; min-width: 0; max-width: 35%; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
     .floating-info-card span { color: inherit; opacity: .84; flex: 0 0 auto; padding-left: 6px; border-left: 1px solid #ffffff18; }
@@ -125,8 +130,9 @@ export function openFloatingPlayer(source, {
       height: 34px;
       padding: 7px;
       border-radius: 6px;
-      color: #d0e6dc;
-      background: #1c292acc;
+      color: var(--control-text);
+      background: var(--control-bg);
+      border: 1px solid var(--control-border);
     }
     .floating-control-button svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .floating-volume {
@@ -136,15 +142,33 @@ export function openFloatingPlayer(source, {
       padding: 3px 7px;
       height: 34px;
       border-radius: 6px;
-      color: #d0e6dc;
-      background: #1c292acc;
+      color: var(--control-text);
+      background: var(--control-bg);
+      border: 1px solid var(--control-border);
     }
     .floating-volume input { width: 92px; accent-color: var(--green); }
-    .floating-volume span { width: 29px; color: #d0e6dc; font-size: 8px; text-align: right; }
+    .floating-volume span { width: 29px; color: var(--control-text); font-size: 8px; text-align: right; }
+    html[data-appearance="light"] .floating-info-card { background: color-mix(in srgb, var(--member-background, #394631) 12%, white); color: #28445c; border-color: #9cafc5; }
+    html[data-appearance="light"] .floating-info-card span { border-color: #9cafc5; }
+    html[data-appearance="light"] .floating-controls { background: linear-gradient(transparent, #f8fafcf2); color: #28445c; }
     .audio-hidden { display: none !important; }
     html.cursor-hidden, html.cursor-hidden * { cursor: none !important; }
   `;
   doc.head.append(style);
+
+  const syncAppearance = () => {
+    if (disposed || popup.closed) return;
+    doc.documentElement.dataset.appearance = document.documentElement.dataset.appearance || 'dark';
+    doc.documentElement.style.colorScheme = doc.documentElement.dataset.appearance;
+    const palette = getComputedStyle(document.documentElement);
+    for (const name of ['--accent', '--control-bg', '--control-text', '--control-border']) {
+      const value = palette.getPropertyValue(name).trim();
+      if (value) doc.documentElement.style.setProperty(name === '--accent' ? '--green' : name, value);
+    }
+  };
+  const appearanceObserver = new MutationObserver(syncAppearance);
+  appearanceObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-appearance', 'style'] });
+  syncAppearance();
 
   const icon = paths => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
   const icons = {
@@ -172,8 +196,8 @@ export function openFloatingPlayer(source, {
 
   const renderInfo = () => {
     const [background, foreground] = AVATAR_PALETTE[infoState.avatarColor];
-    infoCard.style.background = background;
-    infoCard.style.color = foreground;
+    infoCard.style.setProperty('--member-background', background);
+    infoCard.style.setProperty('--member-foreground', foreground);
     infoCard.dataset.avatarColor = String(infoState.avatarColor);
     infoTitle.textContent = infoState.title;
     infoTitle.title = infoState.title;
@@ -444,6 +468,7 @@ export function openFloatingPlayer(source, {
     disposed = true;
 
     clearUiTimer();
+    appearanceObserver.disconnect();
     doc.documentElement.removeEventListener('pointerenter', pointerMoved);
     doc.documentElement.removeEventListener('pointermove', pointerMoved);
     doc.documentElement.removeEventListener('pointerleave', pointerLeft);

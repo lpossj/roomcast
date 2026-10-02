@@ -3,13 +3,27 @@ import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { randomUUID } from 'node:crypto';
 const { createStaticViewer } = createRequire(import.meta.url)('../electron/web-invite.cjs');
 const server = createStaticViewer(path.resolve('dist')); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const output = path.resolve('.test/appearance'); await mkdir(output, { recursive: true });
+const output = path.resolve(process.argv.find(value => value.startsWith('--output-dir='))?.slice('--output-dir='.length) || '.test/appearance'); await mkdir(output, { recursive: true });
 const report = { startedAt: new Date().toISOString(), checks: [], errors: [] }; let browser;
 try {
-  browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  browser = await chromium.launch({ channel: 'msedge', headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, permissions: ['camera', 'microphone'] });
+  const origin = `http://127.0.0.1:${server.address().port}`, peers = new Map();
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url());
+    if (url.origin === origin) return route.continue();
+    if (url.hostname.endsWith('peerjs.com') && url.pathname.endsWith('/id')) return route.fulfill({ body: randomUUID(), headers: { 'access-control-allow-origin': '*' } });
+    return route.abort();
+  });
+  await context.routeWebSocket('**/*', socket => {
+    const url = new URL(socket.url()), id = url.searchParams.get('id');
+    if (!url.hostname.endsWith('peerjs.com')) { socket.close(); return; }
+    peers.set(id, socket); socket.onMessage(data => { const message = JSON.parse(String(data)); if (message.dst) peers.get(message.dst)?.send(JSON.stringify({ ...message, src: id })); });
+    socket.onClose(() => peers.delete(id)); socket.send(JSON.stringify({ type: 'OPEN' }));
+  });
   await context.addInitScript(() => {
     window.testPops = [];
     const original = AudioContext.prototype.createOscillator;
@@ -29,12 +43,46 @@ try {
   assert.equal(surface, 'rgb(234, 240, 247)');
   await page.screenshot({ path: path.join(output, 'day-panels.png') });
   await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.waitForTimeout(260);
   await page.screenshot({ path: path.join(output, 'day-settings.png') });
   await page.getByRole('dialog').getByRole('button', { name: '音频与采集', exact: true }).click();
+  await page.waitForTimeout(260);
   await page.screenshot({ path: path.join(output, 'day-audio.png') });
   await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click(); await page.reload();
   assert.equal(await page.locator('html').getAttribute('data-appearance'), 'light');
   report.checks.push('day/night persistence, 680ms standard radial gradient, rapid click gives one pop/transition, no canvas leak; settings visual captures');
+  await page.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).click();
+  await page.getByLabel('你的昵称').fill('主题检查');
+  await page.getByLabel('房间名称').fill('明亮主题');
+  await page.getByRole('dialog').getByRole('button', { name: '创建并进入房间', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: '开始画面共享', exact: true }).click();
+  const share = page.getByRole('dialog'); await share.waitFor();
+  const brightness = locator => locator.evaluate(node => {
+    const color = getComputedStyle(node).backgroundColor;
+    const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d'); canvas.width = canvas.height = 1;
+    ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1); const data = ctx.getImageData(0, 0, 1, 1).data;
+    return (data[0] + data[1] + data[2]) / 3;
+  });
+  for (const selector of ['.custom-parameters', '.share-parameter-summary', '.audio-mode-options label']) assert.ok(await brightness(share.locator(selector).first()) > 185, selector + ' retained a dark surface');
+  await page.screenshot({ path: path.join(output, 'day-share-settings.png') });
+  await share.getByRole('button', { name: '摄像头', exact: true }).click();
+  await share.getByRole('button', { name: '开始共享', exact: true }).click(); await share.waitFor({ state: 'hidden' });
+  await page.locator('.stream-view').waitFor();
+  for (const selector of ['.screen-grid', '.stream-view', '.player-loading', '.stream-parameter-bar']) assert.ok(await brightness(page.locator(selector).first()) > 185, selector + ' retained a dark surface');
+  assert.equal(await page.locator('.chat-input-wrap textarea').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)');
+  assert.equal(await page.getByRole('button', { name: '发送消息', exact: true }).isDisabled(), true);
+  await page.getByRole('textbox', { name: '发送消息', exact: true }).fill('可发送');
+  assert.equal(await page.getByRole('button', { name: '发送消息', exact: true }).isEnabled(), true);
+  await page.getByRole('textbox', { name: '发送消息', exact: true }).evaluate(node => node.blur()); await page.waitForTimeout(260);
+  assert.equal(await page.getByRole('button', { name: '发送消息', exact: true }).evaluate(node => getComputedStyle(node).backgroundColor), await page.getByRole('button', { name: '选择图片', exact: true }).evaluate(node => getComputedStyle(node).backgroundColor));
+  await page.screenshot({ path: path.join(output, 'day-preview-chat.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(output, 'day-mobile.png') });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole('button', { name: '停止共享', exact: true }).click();
+  report.checks.push('actual sharing dialog, parameters/audio choices, preview surround/entry/metadata, transparent chat input and disabled/ready send states, 390px layout');
   await page.getByRole('button', { name: '切换夜间主题', exact: true }).click(); await page.waitForTimeout(100);
   await page.setViewportSize({ width: 1100, height: 800 }); await page.waitForTimeout(800);
   assert.equal(await page.locator('html').getAttribute('data-appearance'), 'dark'); assert.equal(await page.locator('.theme-confetti').count(), 0);

@@ -59,6 +59,11 @@ try {
       assert.equal(await host.locator('.theme-confetti').count(), 0);
       stage('reload'); await host.reload(); await host.locator('.app-shell').waitFor(); assert.equal(await host.locator('html').getAttribute('data-appearance'), 'light');
       await host.getByRole('button', { name: '设置', exact: true }).click(); let dialog = host.getByRole('dialog');
+      const pickerBrightness = await dialog.locator('.theme-color-picker').evaluate(node => {
+        const canvas=document.createElement('canvas'), ctx=canvas.getContext('2d');canvas.width=canvas.height=1;
+        ctx.fillStyle=getComputedStyle(node).backgroundColor;ctx.fillRect(0,0,1,1);const rgb=ctx.getImageData(0,0,1,1).data;return (rgb[0]+rgb[1]+rgb[2])/3;
+      });
+      assert.ok(pickerBrightness > 185, 'day color picker must have a light shell');
       assert.equal(await dialog.getByLabel('后台状态通知').count(), 0);
       if (result.capabilities.microphone) {
         await dialog.getByRole('button', { name: '音频与采集', exact: true }).click();

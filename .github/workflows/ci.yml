@@ -38,3 +38,9 @@ jobs:
 
       - name: Run project checks
         run: npm run check
+
+      - name: Compile native update worker
+        run: node scripts/build-update-launcher.cjs
+
+      - name: Verify native update recovery and successive updates
+        run: npm run check:update-apply

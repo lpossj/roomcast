@@ -5,7 +5,7 @@
 :root[data-appearance="light"] :is(.screen-stage, .modal, .app-select-menu, .image-context-menu, .voice-volume-popover, .toast) { background: #ffffff; color: #263546; }
 :root[data-appearance="light"] :is(.modal-backdrop) { background: #15263b66; }
 :root[data-appearance="light"] :is(.about-card, .permission-member, .chat-input-wrap, .theme-mode-toggle, .theme-color-row, .app-select-trigger, .update-prompt-notes) { background: #edf2f8; color: #263546; }
-:root[data-appearance="light"] :is(input:not([type="range"]):not([type="checkbox"]):not([type="color"]), textarea, select) { background: #f8fafc; color: #263546; border-color: #bcc8d6; }
+:root[data-appearance="light"] :where(input:not([type="range"]):not([type="checkbox"]):not([type="color"]), textarea, select) { background: #f8fafc; color: #263546; border-color: #bcc8d6; }
 :root[data-appearance="light"] :is(.brand-header strong, .room-header h2, .chat-panel h3, .stage-heading h3, .empty-copy h1, .settings-section h3, .modal h2, .member-details>span, .standalone-label, .about-brand strong, .microphone-meter, .device-grid label) { color: #263546; }
 :root[data-appearance="light"] :is(.channel-subtitle, .sidebar-section-heading, .about-note, .about-line, .setting-description, .settings-footer, .chat-date, .chat-system-message, .chat-input-footer, .muted-text, .about-details summary, .theme-color-value, .theme-windows-color) { color: #617185; }
 :root[data-appearance="light"] :is(.channel-item, .button.secondary, .button.subtle, .settings-nav button, .icon-button, .theme-mode-toggle button, .voice-toggle) { color: #52657b; }
@@ -18,10 +18,84 @@
 :root[data-appearance="light"] :is(.switch-row>span:first-child, .microphone-meter>span, .chat-message p, .chat-message-meta strong) { color: #42576b; }
 :root[data-appearance="light"] .screen-stage { border-color: #c7d3e1; }
 :root[data-appearance="light"] .empty-copy h1 { text-shadow: none; }
+
+/* One control palette for settings, sharing, chat and playback. */
+:root {
+  --control-bg: color-mix(in srgb, var(--accent) 18%, #24323e);
+  --control-text: #e2edf4;
+  --control-border: #586b7e;
+  --danger-bg: #f28fa0;
+  --danger-text: #491929;
+}
+.button.share-button, .rail-button.active, .chat-input-wrap button:not(:disabled) {
+  background: var(--accent); color: var(--accent-foreground);
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, #263e5b);
+}
+:is(.button.secondary, .button.subtle, .player-controls button, .player-volume) {
+  background: var(--control-bg); color: var(--control-text); border: 1px solid var(--control-border);
+}
+:is(.leave-room-rail, .danger-share, .leave-button, .exit-view-button) {
+  background: var(--danger-bg); color: var(--danger-text); border: 1px solid #d87387;
+}
+:root[data-appearance="light"] {
+  --border: #9cafc5;
+  --control-bg: color-mix(in srgb, var(--accent) 12%, white);
+  --control-text: #28445c;
+  --control-border: #91a7be;
+  --focus-ring: color-mix(in srgb, var(--accent) 55%, #244465);
+  --danger-bg: #ffe5eb;
+  --danger-text: #ae304d;
+}
+:root[data-appearance="light"] :is(.modal, .screen-stage, .stream-view, .voice-volume-popover, .app-select-menu, .image-context-menu, .toast) {
+  border: 1px solid var(--border); box-shadow: 0 3px 14px #24446512;
+}
+:root[data-appearance="light"] :is(.custom-parameters, .about-card, .permission-member, .theme-mode-toggle, .theme-color-row, .update-notes, .update-prompt-notes) {
+  background: #f2f6fa; color: #263546; border: 1px solid var(--border);
+}
+:root[data-appearance="light"] .theme-color-row { padding: 8px; border-radius: 8px; }
+:root[data-appearance="light"] .theme-color-picker { background: #e7eff8; border-color: var(--control-border); }
+:root[data-appearance="light"] :is(.share-parameter-summary, .quality-options button.selected, .audio-mode-options label.selected) {
+  background: color-mix(in srgb, var(--accent) 12%, white); color: #263546; border-color: var(--focus-ring);
+}
+:root[data-appearance="light"] :is(.share-parameter-summary strong, .audio-mode-options strong, .quality-options strong, .chat-pending-image-meta strong) { color: #263546; }
+:root[data-appearance="light"] :is(.section-label, .custom-parameters label, .device-grid label, .custom-parameters small, .quality-options span, .audio-mode-options small, .switch-row small, .share-parameter-summary span, .field-hint, .permission-note, .compact-select small) { color: #5b7086; }
+:root[data-appearance="light"] :is(.quality-options button, .audio-mode-options label) { background: #f6f9fc; border-color: var(--border); color: #263546; }
+:root[data-appearance="light"] :is(.quality-options button.selected, .audio-mode-options label.selected) { background: var(--control-bg); border-color: var(--focus-ring); }
+:root[data-appearance="light"] :is(.source-tabs>button.active, .text-button, .app-select-label) { color: var(--control-text); }
+:root[data-appearance="light"] :is(.button.secondary, .button.subtle, .icon-button, .voice-toggle, .add-room) {
+  background: var(--control-bg); border: 1px solid var(--control-border); color: var(--control-text);
+}
+:root[data-appearance="light"] :is(.rail-button.active, .voice-toggle.enabled, .icon-button.toggled, .theme-mode-toggle button.selected, .button.share-button, .chat-input-wrap button:not(:disabled)) {
+  background: var(--accent); color: var(--accent-foreground); border-color: var(--focus-ring);
+}
+:root[data-appearance="light"] :is(.leave-room-rail, .danger-share, .leave-button, .exit-view-button) { background: var(--danger-bg); color: var(--danger-text); border-color: #dd97a8; }
+:root[data-appearance="light"] :is(.channel-item.selected, .settings-nav button.selected) { border: 1px solid var(--focus-ring); background: var(--control-bg); color: var(--control-text); }
+:root[data-appearance="light"] .brand-icon { background: var(--accent); color: var(--accent-foreground); }
+:root[data-appearance="light"] .brand-mark span { border-color: var(--accent-foreground); }
+:root[data-appearance="light"] .rail-divider { border-color: var(--border); }
+:root[data-appearance="light"] .chat-input-wrap { background: #fff; border-color: var(--control-border); box-shadow: 0 2px 8px #2444650c; }
+:root[data-appearance="light"] .chat-input-wrap textarea { background: transparent; border: 0; color: #263546; }
+:root[data-appearance="light"] .chat-input-wrap textarea::placeholder { color: #60758c; }
+:root[data-appearance="light"] .switch { background: #bfccdb; box-shadow: inset 0 0 0 1px #8e9fb5; }
+:root[data-appearance="light"] .switch:before { background: #fff; }
+:root[data-appearance="light"] .switch-row input:checked+.switch { background: var(--accent); box-shadow: inset 0 0 0 1px var(--focus-ring); }
+:root[data-appearance="light"] .switch-row input:checked+.switch:before { background: var(--accent-foreground); }
+:root[data-appearance="light"] :is(.screen-grid, .stream-view, .screen-player) { background: #edf3f9; }
+:root[data-appearance="light"] .player-loading { background: #f8fafc; color: #263546; }
+:root[data-appearance="light"] .player-loading span { color: #5b7086; }
+:root[data-appearance="light"] .stream-parameter-bar { background: #e7eff8; color: #28445c; border-color: #9cafc5; }
+:root[data-appearance="light"] .stream-parameter-bar span { border-color: #94a8bf; }
+:root[data-appearance="light"] .player-controls { background: linear-gradient(transparent, #f8fafcf2); color: var(--control-text); }
+:root[data-appearance="light"] :is(.player-controls button, .player-volume) { background: var(--control-bg); color: var(--control-text); border-color: var(--control-border); }
+:root[data-appearance="light"] .player-volume span { color: var(--control-text); }
+:root[data-appearance="light"] :is(.floating-detached-placeholder, .image-preview-toolbar) { background: #eff4fa; color: #28445c; border-color: var(--border); }
+:root[data-appearance="light"] :is(.floating-detached-placeholder strong, .floating-detached-placeholder span, .image-preview-toolbar button) { color: #28445c; }
+:root[data-appearance="light"] :is(button, input, textarea, select):focus-visible { outline-color: var(--focus-ring); }
+:root[data-appearance="light"] button:disabled { opacity: 1; background: #e5ecf3; color: #7d8da0; border-color: #bcc9d8; box-shadow: none; filter: none; }
 .brand-icon { position: relative; }
 .brand-appearance { position: absolute; bottom: -3px; right: -3px; display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; color: #ffeab4; background: #26384e; border: 2px solid #0d1116; }
-:root[data-appearance="light"] .brand-icon { background: #263e5b; color: #ffffff; }
-:root[data-appearance="light"] .brand-mark span { border-color: #ffffff; }
+:root[data-appearance="light"] .brand-icon { background: var(--accent); color: var(--accent-foreground); }
+:root[data-appearance="light"] .brand-mark span { border-color: var(--accent-foreground); }
 :root[data-appearance="light"] .brand-appearance { background: #fff0b8; color: #a96700; border-color: #eaf0f7; }
 .theme-confetti { position: fixed; inset: 0; width: 100vw; height: 100dvh; z-index: 9999; pointer-events: none; view-transition-name: theme-confetti; }
 @property --theme-reveal { syntax: '<length>'; inherits: false; initial-value: 0px; }
