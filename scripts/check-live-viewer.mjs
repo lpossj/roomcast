@@ -6,8 +6,8 @@ import { chromium } from 'playwright';
 
 const expectedVersion = JSON.parse(await readFile('package.json', 'utf8')).version;
 const origin = 'https://roomcast-2dy.pages.dev';
-const output = path.resolve(`.test/live-${expectedVersion}`); await mkdir(output, { recursive: true });
-const site = path.resolve(`release/Roomcast-${expectedVersion}-WebViewer`);
+const output = path.resolve(process.argv.find(value => value.startsWith('--output-dir='))?.slice('--output-dir='.length) || `.test/live-${expectedVersion}`); await mkdir(output, { recursive: true });
+const site = path.resolve(process.argv.find(value => value.startsWith('--site-dir='))?.slice('--site-dir='.length) || `release/Roomcast-${expectedVersion}-WebViewer`);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const report = { startedAt: new Date().toISOString(), origin, checks: [], errors: [] }; let browser;
 try {
@@ -24,6 +24,7 @@ try {
   for (const relative of ['/api/config','/updater.exe']) assert.equal((await context.request.get(`${origin}${relative}`)).status(),404);
   report.checks.push('production domain current version; actual HTML/entry JS/CSS bytes equal validated local artifacts; desktop API/updater remain absent');
   const page = await context.newPage(); page.on('pageerror', error => report.errors.push(error.message)); await page.goto(origin);
+  await page.getByRole('button',{name:'切换日间主题',exact:true}).click(); await page.waitForFunction(()=>document.documentElement.dataset.appearance==='light'); await page.waitForTimeout(800);
   await page.evaluate(() => { window.testMonitors = [];
     const connect = AudioNode.prototype.connect, disconnect = AudioNode.prototype.disconnect;
     AudioNode.prototype.connect = function (target, ...args) { const result = connect.call(this, target, ...args); if (this instanceof GainNode && target === this.context.destination) window.testMonitors.push({ node: this, connected: true }); return result; };

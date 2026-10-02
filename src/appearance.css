@@ -83,8 +83,6 @@
 :root[data-appearance="light"] :is(.screen-grid, .stream-view, .screen-player) { background: #edf3f9; }
 :root[data-appearance="light"] .player-loading { background: #f8fafc; color: #263546; }
 :root[data-appearance="light"] .player-loading span { color: #5b7086; }
-:root[data-appearance="light"] .stream-parameter-bar { background: #e7eff8; color: #28445c; border-color: #9cafc5; }
-:root[data-appearance="light"] .stream-parameter-bar span { border-color: #94a8bf; }
 :root[data-appearance="light"] .player-controls { background: linear-gradient(transparent, #f8fafcf2); color: var(--control-text); }
 :root[data-appearance="light"] :is(.player-controls button, .player-volume) { background: var(--control-bg); color: var(--control-text); border-color: var(--control-border); }
 :root[data-appearance="light"] .player-volume span { color: var(--control-text); }

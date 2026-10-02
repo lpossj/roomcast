@@ -69,7 +69,8 @@ try {
   await share.getByRole('button', { name: '摄像头', exact: true }).click();
   await share.getByRole('button', { name: '开始共享', exact: true }).click(); await share.waitFor({ state: 'hidden' });
   await page.locator('.stream-view').waitFor();
-  for (const selector of ['.screen-grid', '.stream-view', '.player-loading', '.stream-parameter-bar']) assert.ok(await brightness(page.locator(selector).first()) > 185, selector + ' retained a dark surface');
+  for (const selector of ['.screen-grid', '.stream-view', '.player-loading']) assert.ok(await brightness(page.locator(selector).first()) > 185, selector + ' retained a dark surface');
+  assert.equal(await page.locator('.stream-parameter-bar').first().evaluate(node => getComputedStyle(node).backgroundColor), await page.locator('.member-row .avatar').first().evaluate(node => getComputedStyle(node).backgroundColor), 'sharing info must keep the member avatar color');
   assert.equal(await page.locator('.chat-input-wrap textarea').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)');
   assert.equal(await page.getByRole('button', { name: '发送消息', exact: true }).isDisabled(), true);
   await page.getByRole('textbox', { name: '发送消息', exact: true }).fill('可发送');

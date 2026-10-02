@@ -48,10 +48,14 @@ try {
     ctx.fillStyle=getComputedStyle(node).backgroundColor;ctx.fillRect(0,0,1,1);const rgb=ctx.getImageData(0,0,1,1).data;return (rgb[0]+rgb[1]+rgb[2])/3;
   }) > 185);
   assert.ok(await brightness(child) > 185); await child.mouse.move(160, 140);
+  assert.equal(await main.locator('.stream-parameter-bar').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(83, 59, 56)');
+  assert.equal(await child.locator('.floating-info-card').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(83, 59, 56)');
+  await main.mouse.move(600, 250); await main.waitForTimeout(180);
   await main.screenshot({ path: path.join(output, 'day-preview.png') }); await child.screenshot({ path: path.join(output, 'day-floating.png') });
   await child.mouse.move(20, 90); await child.waitForTimeout(2400);
   await main.evaluate(() => { document.documentElement.dataset.appearance = 'dark'; });
   await child.waitForFunction(() => document.documentElement.dataset.appearance === 'dark'); assert.ok(await brightness(child) < 130);
+  assert.equal(await child.locator('.floating-info-card').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(83, 59, 56)');
   await main.evaluate(() => { document.documentElement.dataset.appearance = 'light'; document.documentElement.style.setProperty('--accent','#78ddbd'); });
   await child.waitForFunction(() => document.documentElement.dataset.appearance === 'light' && getComputedStyle(document.documentElement).getPropertyValue('--green').trim() === '#78ddbd');
   assert.deepEqual(await main.evaluate(() => window.themeStream.getTracks().filter(track => track.readyState === 'live').map(track => track.id)), ids);

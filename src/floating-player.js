@@ -85,8 +85,6 @@ export function openFloatingPlayer(source, {
       line-height: 1.35;
       transition: opacity .16s ease;
       -webkit-app-region: drag;
-      background: var(--member-background, #394631);
-      color: var(--member-foreground, #c5d4a7);
     }
     .floating-info-card strong { font-size: 11px; font-weight: 700; color: inherit; min-width: 0; max-width: 35%; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
     .floating-info-card span { color: inherit; opacity: .84; flex: 0 0 auto; padding-left: 6px; border-left: 1px solid #ffffff18; }
@@ -148,8 +146,6 @@ export function openFloatingPlayer(source, {
     }
     .floating-volume input { width: 92px; accent-color: var(--green); }
     .floating-volume span { width: 29px; color: var(--control-text); font-size: 8px; text-align: right; }
-    html[data-appearance="light"] .floating-info-card { background: color-mix(in srgb, var(--member-background, #394631) 12%, white); color: #28445c; border-color: #9cafc5; }
-    html[data-appearance="light"] .floating-info-card span { border-color: #9cafc5; }
     html[data-appearance="light"] .floating-controls { background: linear-gradient(transparent, #f8fafcf2); color: #28445c; }
     .audio-hidden { display: none !important; }
     html.cursor-hidden, html.cursor-hidden * { cursor: none !important; }
@@ -196,8 +192,8 @@ export function openFloatingPlayer(source, {
 
   const renderInfo = () => {
     const [background, foreground] = AVATAR_PALETTE[infoState.avatarColor];
-    infoCard.style.setProperty('--member-background', background);
-    infoCard.style.setProperty('--member-foreground', foreground);
+    infoCard.style.background = background;
+    infoCard.style.color = foreground;
     infoCard.dataset.avatarColor = String(infoState.avatarColor);
     infoTitle.textContent = infoState.title;
     infoTitle.title = infoState.title;
