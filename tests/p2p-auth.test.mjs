@@ -425,7 +425,7 @@ test('revoked share permission stops capture and VDO even if the room remains op
   assert.equal(room.screenStream, null); assert.equal(room.room.id, 'room');
 });
 
-test('a silent web guest is removed without a close event while responsive and busy guests stay', async t => {
+test('background silence and host timer stalls preserve members until transport closes', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const room = new P2PRoom();
   room.roomId = 'ABCDEF12'; room.inviteSecret = 's'.repeat(43);
@@ -433,43 +433,23 @@ test('a silent web guest is removed without a close event while responsive and b
   const silent = await admittedGuest(room, 'silent', null);
   const healthy = await admittedGuest(room, 'healthy');
   const busy = await admittedGuest(room, 'busy', { ok: false });
-  t.mock.timers.tick(10_000); await flush();
-  assert.equal(silent.probes(), 1);
+  t.mock.timers.tick(300_000); await flush();
   assert.equal(silent.disconnected(), 0);
-  t.mock.timers.tick(14_999); await flush();
-  assert.equal(silent.disconnected(), 0, 'allow the full response budget');
-  t.mock.timers.tick(1); await flush();
+  assert.equal(silent.connection.open, true);
+  assert.equal(room.guestMembers.has('silent'), true);
+  assert.equal(room.guests.size, 3);
+  assert.equal(room.controlPending.size, 0, 'no presence requests queue up while a guest is frozen');
+  silent.connection.close();
   assert.equal(silent.disconnected(), 1);
-  assert.equal(silent.closed(), 1);
   assert.equal(room.guestMembers.has('silent'), false);
-  assert.equal(room.guests.has(silent.connection), false);
-  assert.equal(healthy.disconnected(), 0);
-  assert.equal(busy.disconnected(), 0, 'busy replies still prove presence');
   assert.equal(room.guests.size, 2);
+  assert.equal(healthy.disconnected(), 0); assert.equal(busy.disconnected(), 0);
+  busy.connection.emit('error', new Error('transport ended'));
+  assert.equal(busy.disconnected(), 1);
+  assert.equal(room.guestMembers.has('busy'), false);
   room.disconnect();
-  const probes = healthy.probes();
   t.mock.timers.tick(60_000); await flush();
-  assert.equal(healthy.probes(), probes, 'no probes after closing the room');
   assert.equal(room.controlPending.size, 0);
-});
-
-test('host timer suspension resets presence instead of expiring its web guest', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  let clock = 0;
-  t.mock.method(performance, 'now', () => clock);
-  const room = new P2PRoom();
-  room.roomId = 'ABCDEF12'; room.inviteSecret = 's'.repeat(43);
-  t.after(() => room.disconnect());
-  const guest = await admittedGuest(room, 'paused', null);
-  t.mock.timers.tick(10_000); await flush();
-  clock = 60_000;
-  t.mock.timers.tick(15_000); await flush();
-  assert.equal(guest.disconnected(), 0);
-  t.mock.timers.tick(10_000); await flush();
-  assert.equal(guest.probes(), 2, 'resume with a fresh probe');
-  clock += 15_000;
-  t.mock.timers.tick(15_000); await flush();
-  assert.equal(guest.disconnected(), 1, 'a new timely unanswered probe expires the guest');
 });
 
 test('closing an older guest session cannot delete its replacement mapping', async t => {

@@ -18,7 +18,8 @@ const killTree = pid => new Promise(resolve => {
 });
 async function main() {
   const root = process.cwd();
-  const build = path.resolve(process.argv[2] || path.join(root, 'release/update-rewrite-beta7'));
+  const version = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version;
+  const build = path.resolve(process.argv[2] || path.join(root, 'release'));
   const output = await fs.mkdtemp(path.join(root, '.test/packaged-update-'));
   const targetPath = path.join(output, '当前 Roomcast.exe');
   const profile = path.join(output, 'profile');
@@ -26,7 +27,7 @@ async function main() {
   await fs.copyFile(path.join(root, 'release/Roomcast-0.14.4-beta.6-Windows.exe'), targetPath);
   const env = { ROOMCAST_TEST_MODE: '1', ROOMCAST_PROFILE_DIR: profile, ROOMCAST_DATA_DIR: path.join(output, 'data') };
   Object.assign(process.env, env); delete process.env.ELECTRON_RUN_AS_NODE;
-  const source = path.join(build, 'Roomcast-0.14.4-beta.7-Windows.exe');
+  const source = path.join(build, `Roomcast-${version}-Windows.exe`);
   const downloaded = path.join(output, 'verified-new.exe');
   await fs.copyFile(source, downloaded);
   const sha256 = createHash('sha256').update(await fs.readFile(source)).digest('hex');
@@ -46,7 +47,7 @@ async function main() {
     plan = await prepareUpdateInstall({
       target: { supported: true, kind: 'portable-exe', targetPath, launchPath: targetPath },
       download: { path: downloaded, verified: true, sha256, expected: sha256 }, pid,
-      parentPid: old.pid, version: '0.14.4-beta.7', workDir: path.join(output, 'work'), failureMarkerPath: path.join(profile, 'update-failed.txt'),
+      parentPid: old.pid, version, workDir: path.join(output, 'work'), failureMarkerPath: path.join(profile, 'update-failed.txt'),
     });
     const launch = startApplyScript(plan.scriptPath, { launcherPath: path.join(build, 'win-unpacked/resources/runtime/update-launcher/RoomcastUpdateLauncher.exe') });
     assert.ok(launch.pid); assert.equal(await waitForApplyScriptStart(plan.logPath), true);
@@ -55,12 +56,12 @@ async function main() {
     await waitFor(async () => /COMMITTED|FAILED/.test(await fs.readFile(plan.logPath, 'utf8').catch(() => '')));
     const log = await fs.readFile(plan.logPath, 'utf8');
     const match = log.match(/restart started pid=(\d+)/); nextPid = Number(match?.[1]);
-    assert.match(log, /COMMITTED version=0\.14\.4-beta\.7/, log);
+    assert.ok(log.includes(`COMMITTED version=${version}`), log);
     const receipt = JSON.parse(await fs.readFile(plan.receiptPath, 'utf8'));
-    assert.equal(receipt.version, '0.14.4-beta.7');
+    assert.equal(receipt.version, version);
     assert.equal(createHash('sha256').update(await fs.readFile(targetPath)).digest('hex'), sha256);
     await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ old: '0.14.4-beta.6', new: receipt.version, wrapperExited: old.exitCode !== null, confirmedMainPid: receipt.pid, targetHash: sha256 }, null, 2));
-    console.log('[packaged-update] PASS beta.6 -> beta.7: real NSIS wrapper exit, atomic swap, real renderer ready, version receipt, committed. Evidence: ' + output);
+    console.log(`[packaged-update] PASS beta.6 -> ${version}: real NSIS wrapper exit, atomic swap, real renderer ready, version receipt, committed. Evidence: ${output}`);
   } catch (error) {
     error.message += '\n' + (plan ? await fs.readFile(plan.logPath, 'utf8').catch(() => 'no worker log') : 'no plan'); throw error;
   } finally {

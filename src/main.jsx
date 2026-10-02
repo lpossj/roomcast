@@ -18,3 +18,5 @@ if (window.top === window.self) {
 } else {
   document.getElementById('root').textContent = '请直接打开网页观看链接。';
 }
+
+import './appearance.css';

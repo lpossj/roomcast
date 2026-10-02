@@ -63,9 +63,6 @@ const INVITE_SECRET = /^[A-Za-z0-9_-]{43}$/;
 const PEER_AUTH_ICE_TIMEOUT_MS = 25_000;
 const PEER_AUTH_TOTAL_TIMEOUT_MS = PEER_AUTH_ICE_TIMEOUT_MS + PEER_AUTH_TIMEOUT_MS;
 
-const GUEST_PROBE_INTERVAL_MS = 10_000;
-const GUEST_PROBE_TIMEOUT_MS = 15_000;
-
 const defaultScreenSettings = {
   width: 1920,
   height: 1080,
@@ -1895,7 +1892,6 @@ export class P2PRoom {
     let requests = 0;
 
     let timeout;
-    let presenceTimer;
     let authReceive;
     let rejectAuth;
 
@@ -1906,7 +1902,6 @@ export class P2PRoom {
       this.failControlPending(connection);
 
       clearTimeout(timeout);
-      clearTimeout(presenceTimer);
       if (authReceive) connection.off('data', authReceive);
       rejectAuth?.(new Error('P2P 连接已关闭。'));
 
@@ -1929,28 +1924,8 @@ export class P2PRoom {
       }
     };
 
-    const checkPresence = () => {
-      clearTimeout(presenceTimer);
-      if (closed || this.closed) return;
-      presenceTimer = setTimeout(async () => {
-        if (closed || this.closed) return;
-        const started = performance.now();
-        try {
-          // This read-only probe is also supported by older web viewers. A
-          // negative reply means busy, not absent; only no reply expires a guest.
-          await this.sendControl(connection, 'migration:probe', {}, GUEST_PROBE_TIMEOUT_MS);
-        } catch {
-          // A paused host cannot assess a guest during its own timer stall.
-          if (performance.now() - started <= GUEST_PROBE_TIMEOUT_MS + 5_000) {
-            cleanup();
-            try { connection.close(); } catch { }
-            return;
-          }
-        }
-        checkPresence();
-      }, GUEST_PROBE_INTERVAL_MS);
-    };
-
+    // A frozen/background web guest can keep its data channel alive without
+    // answering JavaScript probes. Only transport close/error removes it.
     connection.on(
       'close',
       cleanup,
@@ -2324,7 +2299,6 @@ export class P2PRoom {
                 memberId,
                 connection,
               );
-            checkPresence();
           }
 
           if (

@@ -3513,3 +3513,29 @@ select {
         width: 100%
     }
 }
+
+/* Desktop panel boundaries; mobile panels retain their drawer layout. */
+.panel-resize-handle { display: none; }
+.about-details summary { cursor: pointer; font-size: 12px; color: #a8b7c3; }
+.about-details[open] summary { margin-bottom: 12px; }
+@media (min-width: 851px) {
+  .channel-sidebar { position: relative; width: var(--members-width, 240px); }
+  .chat-panel { position: relative; width: var(--chat-width, 285px); }
+  .panel-resize-handle { display: block; position: absolute; top: 0; bottom: 0; width: 8px; z-index: 8; cursor: col-resize; touch-action: none; }
+  .panel-resize-handle.members { right: -4px; }
+  .panel-resize-handle.chat { left: -4px; }
+  .panel-resize-handle:hover, .panel-resize-handle:focus-visible { background: color-mix(in srgb, var(--accent) 40%, transparent); outline: none; }
+  .panels-resizing, .panels-resizing * { cursor: col-resize !important; user-select: none !important; }
+}
+@media (min-width: 851px) and (max-width: 1050px) {
+  .channel-sidebar { width: var(--members-width, 190px); }
+  .chat-panel { width: var(--chat-width, 230px); }
+}
+@media (min-width: 1051px) and (max-width: 1250px) {
+  .channel-sidebar { width: var(--members-width, 210px); }
+  .chat-panel { width: var(--chat-width, 250px); }
+}
+@media (min-width: 1700px) {
+  .channel-sidebar { width: var(--members-width, 265px); }
+  .chat-panel { width: var(--chat-width, 320px); }
+}

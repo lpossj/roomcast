@@ -45,7 +45,7 @@ export default function useRoomVoice({ room, selfId, socket, config, devicePrefe
   useEffect(() => { capture.current?.setVolume(settings.microphoneVolume); }, [settings.microphoneVolume]);
   useEffect(() => {
     if (!testing || !stream) return undefined;
-    return monitorMicrophone(stream, devicePreferences.outputId, setError);
+    return monitorMicrophone(stream, devicePreferences.outputId, setError, capture.current?.monitorGraph);
   }, [testing, stream, devicePreferences.outputId]);
   useEffect(() => {
     if (!supported || !roomId || !socket || !selfId) return undefined;

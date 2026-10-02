@@ -9,17 +9,14 @@ import { attachRooms } from '../server/rooms.mjs';
 import { createPeerAuthProof } from '../src/p2p-auth.js';
 import { ack } from '../src/lib.js';
 
-// Accelerate only the two presence clocks; authentication, RPCs and the actual
-// room server remain in use. The production 25-second budget has its own test.
+// Real room membership must survive a backgrounded guest with an open channel.
 const source = (await readFile(new URL('../src/p2p.js', import.meta.url), 'utf8'))
   .replace("import { Peer } from 'peerjs';", 'const Peer = null;')
   .replace("from 'socket.io-client'", `from '${import.meta.resolve('socket.io-client')}'`)
-  .replace(/from '(\.\/[\w-]+\.js)'/g, (_, file) => `from '${new URL('../src/' + file.slice(2), import.meta.url).href}'`)
-  .replace('GUEST_PROBE_INTERVAL_MS = 10_000', 'GUEST_PROBE_INTERVAL_MS = 100')
-  .replace('GUEST_PROBE_TIMEOUT_MS = 15_000', 'GUEST_PROBE_TIMEOUT_MS = 100');
+  .replace(/from '(\.\/[\w-]+\.js)'/g, (_, file) => `from '${new URL('../src/' + file.slice(2), import.meta.url).href}'`);
 const { P2PRoom } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
-test('silent page cleanup reaches the real room member list without affecting a responsive guest', async t => {
+test('background silence keeps real membership; actual close removes only that guest', async t => {
   const http = createServer();
   const server = new Server(http, { transports: ['websocket'] });
   const service = attachRooms(server);
@@ -68,6 +65,11 @@ test('silent page cleanup reaches the real room member list without affecting a 
   assert.equal(stored.members.size, 3);
   let state;
   room.local.on('room:state', value => { state = value; });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(stored.members.size, 3);
+  assert.equal(stored.members.has(silent.id), true);
+  assert.equal(silent.connection.open, true);
+  silent.connection.close();
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline && (!state || stored.members.size !== 2)) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(stored.members.size, 2);

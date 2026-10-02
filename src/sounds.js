@@ -21,3 +21,17 @@ export function playSound(kind) {
     }).catch(() => {});
   } catch {}
 }
+
+export function playPop() {
+  try {
+    context ||= new AudioContext({ latencyHint: 'interactive' });
+    void context.resume().then(() => {
+      if (context.state !== 'running') return;
+      const oscillator = context.createOscillator(), gain = context.createGain(), start = context.currentTime;
+      oscillator.type = 'sine'; oscillator.frequency.setValueAtTime(650, start); oscillator.frequency.exponentialRampToValueAtTime(150, start + 0.09);
+      gain.gain.setValueAtTime(0.001, start); gain.gain.exponentialRampToValueAtTime(0.1, start + 0.008); gain.gain.exponentialRampToValueAtTime(0.001, start + 0.11);
+      oscillator.connect(gain); gain.connect(context.destination); oscillator.start(start); oscillator.stop(start + 0.12);
+      oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+    }).catch(() => {});
+  } catch {}
+}

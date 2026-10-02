@@ -15,7 +15,7 @@ export function ProfileSettings({ avatar, name, onAvatar }) {
     <div className="profile-avatar-row"><Avatar member={{ name, avatar }} /><div className="settings-buttons">
       <label className={`button secondary small ${busy ? 'disabled' : ''}`}>选择图片<input aria-label="选择头像图片" type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void change(file); }} /></label>
       <button type="button" className="button subtle small" disabled={busy || !avatar} onClick={() => change(null)}>恢复默认头像</button>
-    </div></div><p className="about-note">图片居中裁剪，头像会同步到人物栏、共享预览、小窗和全屏。</p>
+    </div></div>
     {error && <p className="inline-error" role="alert">{error}</p>}
   </section>;
 }
@@ -23,11 +23,10 @@ export function ProfileSettings({ avatar, name, onAvatar }) {
 export function VoiceSettings({ voice, avatar, name }) {
   useEffect(() => () => voice.setTesting(false), [voice.setTesting]);
   return <section className="settings-section"><h3><Mic size={17} />房间语音</h3>
-    <label className="switch-row"><span>默认开启麦克风</span><input type="checkbox" checked={voice.settings.defaultMicrophone} onChange={event => voice.setSettings(value => ({ ...value, defaultMicrophone: event.target.checked }))} /><span className="switch" aria-hidden="true" /></label>
-    <label className="switch-row"><span>默认开启成员声音</span><input type="checkbox" checked={voice.settings.defaultOutput} onChange={event => voice.setSettings(value => ({ ...value, defaultOutput: event.target.checked }))} /><span className="switch" aria-hidden="true" /></label>
-    <p className="about-note">默认开启选项在下次加入房间时生效。成员声音只控制其他成员的麦克风，共享声音与软件提示音独立。</p>
+    <label className="switch-row"><span title="下次加入房间时生效">默认开启麦克风</span><input type="checkbox" checked={voice.settings.defaultMicrophone} onChange={event => voice.setSettings(value => ({ ...value, defaultMicrophone: event.target.checked }))} /><span className="switch" aria-hidden="true" /></label>
+    <label className="switch-row"><span title="下次加入房间时生效">默认开启成员声音</span><input type="checkbox" checked={voice.settings.defaultOutput} onChange={event => voice.setSettings(value => ({ ...value, defaultOutput: event.target.checked }))} /><span className="switch" aria-hidden="true" /></label>
     <div className="microphone-test"><Avatar member={{ name, avatar }} speaking={voice.testing && voice.testSpeaking} />
-      <div className="microphone-meter"><span>麦克风测试</span><meter aria-label="麦克风输入电平" min="0" max="1" value={voice.testing ? voice.level : 0} /><span>{voice.testing ? '请说话，耳返会播放你的麦克风声音' : '测试时本地耳返，不会开启房间麦克风'}</span></div>
+      <div className="microphone-meter"><span>麦克风测试</span><meter aria-label="麦克风输入电平" min="0" max="1" value={voice.testing ? voice.level : 0} />{voice.testing && <span>耳返开启</span>}</div>
       <button type="button" className="button secondary small" onClick={() => voice.setTesting(value => !value)}>{voice.testing ? '结束测试' : '开始测试'}</button>
     </div>{voice.error && <div className="inline-error" role="alert">{voice.error}<button aria-label="关闭音频错误" onClick={voice.clearError}><X size={14} /></button></div>}
   </section>;

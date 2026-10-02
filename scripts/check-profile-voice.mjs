@@ -43,6 +43,20 @@ try {
     });
     await context.addInitScript(() => {
       Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', { configurable: true, value: undefined });
+
+      window.testMonitors = []; window.testContexts = [];
+      const NativeContext = window.AudioContext;
+      window.AudioContext = class extends NativeContext { constructor(...args) { super(...args); window.testContexts.push(this); } };
+      const connectNode = AudioNode.prototype.connect, disconnectNode = AudioNode.prototype.disconnect;
+      AudioNode.prototype.connect = function (target, ...args) {
+        const result = connectNode.call(this, target, ...args);
+        if (this instanceof GainNode && target === this.context.destination) {
+          const analyser = this.context.createAnalyser(); connectNode.call(this, analyser);
+          window.testMonitors.push({ node: this, analyser, connected: true });
+        }
+        return result;
+      };
+      AudioNode.prototype.disconnect = function (...args) { for (const monitor of window.testMonitors) if (monitor.node === this) monitor.connected = false; return disconnectNode.apply(this, args); };
       window.testTracks = []; window.testConnections = []; window.testAudios = []; window.testTones = [];
       const oscillator = AudioContext.prototype.createOscillator;
       AudioContext.prototype.createOscillator = function (...args) { const node = oscillator.apply(this, args); window.testTones.push(node); return node; };
@@ -73,12 +87,13 @@ try {
   await dialog.getByRole('button', { name: '开始测试', exact: true }).click();
   await host.waitForFunction(() => document.querySelector('meter')?.value > 0.01);
   await dialog.locator('.microphone-test .is-speaking').waitFor();
-  await host.waitForFunction(() => window.testAudios.some(audio => audio.srcObject && !audio.muted && !audio.paused && audio.currentTime > 0));
+  await host.waitForFunction(() => window.testMonitors.some(monitor => { const samples = new Float32Array(128); monitor.analyser.getFloatTimeDomainData(samples); return monitor.connected && monitor.node.gain.value === 1 && monitor.node.context.state === 'running' && samples.some(value => Math.abs(value) > 0.001); }));
   assert.equal(await host.getByRole('button', { name: '开启成员声音', exact: true }).getAttribute('aria-pressed'), 'false');
+  report.localMonitor = await host.evaluate(() => window.testMonitors.filter(monitor => monitor.connected).map(monitor => ({ sampleRate: monitor.node.context.sampleRate, baseLatency: monitor.node.context.baseLatency, outputLatency: monitor.node.context.outputLatency })));
   await host.screenshot({ path: path.join(output, 'settings-test.png') });
   await close(dialog);
   await host.waitForFunction(() => window.testTracks.length && window.testTracks.every(track => track.readyState === 'ended'));
-  assert.equal(await host.evaluate(() => window.testAudios.every(audio => !audio.srcObject && audio.paused)), true);
+  assert.equal(await host.evaluate(() => window.testAudios.every(audio => !audio.srcObject && audio.paused) && window.testMonitors.every(monitor => !monitor.connected || monitor.node.gain.value === 0)), true);
   report.checks.push('local ear return plays while room output is muted and is detached on close; avatar crop/persistence, both default gains 50%, both closed; local mic test shows meter/ring and closing settings releases capture');
   await host.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).click();
   dialog = host.getByRole('dialog'); await dialog.getByLabel('你的昵称').fill('头像房主'); await dialog.getByLabel('房间名称').fill('头像语音验证');
@@ -205,9 +220,9 @@ try {
   await guest.waitForFunction(() => window.testAudios.some(audio => audio.srcObject));
   dialog = await settings(host); await dialog.getByRole('button', { name: '音频与采集', exact: true }).click();
   await dialog.getByRole('button', { name: '开始测试', exact: true }).click();
-  await host.waitForFunction(() => window.testAudios.some(audio => audio.srcObject && !audio.paused && !audio.muted));
+  await host.waitForFunction(() => window.testMonitors.some(monitor => monitor.connected && monitor.node.gain.value === 1 && monitor.node.context.state === 'running'));
   await dialog.getByRole('button', { name: '结束测试', exact: true }).click();
-  await host.waitForFunction(() => window.testAudios.every(audio => !audio.srcObject));
+  await host.waitForFunction(() => window.testAudios.every(audio => !audio.srcObject) && window.testMonitors.every(monitor => !monitor.connected || monitor.node.gain.value === 0));
   assert.equal(await host.evaluate(() => window.testTracks.filter(track => track.kind === 'audio').some(track => track.readyState === 'live')), true);
   await close(dialog);
   await guest.getByRole('button', { name: '调整成员 头像房主 的音量', exact: true }).click();
@@ -246,7 +261,7 @@ try {
   dialog = host.getByRole('dialog'); await dialog.getByRole('button', { name: '关闭该成员麦克风', exact: true }).click();
   await guest.getByRole('button', { name: '开启麦克风', exact: true }).waitFor();
   await guest.waitForFunction(() => window.testTracks.every(track => track.readyState === 'ended'));
-  await host.waitForFunction(() => window.testAudios.every(audio => !audio.srcObject));
+  await host.waitForFunction(() => window.testAudios.every(audio => !audio.srcObject) && window.testMonitors.every(monitor => !monitor.connected || monitor.node.gain.value === 0));
   await guest.getByRole('button', { name: '开启麦克风', exact: true }).click();
   await host.locator('.member-row').filter({ hasText: '语音朋友' }).locator('.is-speaking').waitFor();
   await guest.getByRole('button', { name: '关闭麦克风', exact: true }).click();

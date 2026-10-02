@@ -312,7 +312,7 @@ else {
       // is used or safeStorage is temporarily unavailable.
       const themePreferencesPath = path.join(app.getPath('userData'), 'theme-preferences.json');
       const legacyThemePreferencesPath = path.join(rootDir, 'theme-preferences.json');
-      const preferenceKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion', 'avatar', 'voiceSettings']);
+      const preferenceKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion', 'avatar', 'voiceSettings', 'panelWidths', 'appearance']);
       let preferences = {};
       let themePreferences = {};
       let loadedThemeFromStablePath = false;

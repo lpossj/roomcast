@@ -17,14 +17,26 @@ export function createSpeakingDetector() {
   };
 }
 
-export function meterStream(stream, onLevel, context = new AudioContext()) {
+export function meterStream(stream, onLevel, context) {
+  const ownedContext = !context;
+  context ||= new AudioContext({ latencyHint: 'interactive' });
   const source = context.createMediaStreamSource(stream);
   const analyser = context.createAnalyser(); analyser.fftSize = 1024;
   source.connect(analyser);
   const samples = new Float32Array(analyser.fftSize), detect = createSpeakingDetector();
   const timer = setInterval(() => { analyser.getFloatTimeDomainData(samples); onLevel(detect(samples, performance.now())); }, 50);
   void context.resume().catch(() => {});
-  return () => { clearInterval(timer); source.disconnect(); analyser.disconnect(); void context.close().catch(() => {}); };
+  return () => { clearInterval(timer); source.disconnect(); analyser.disconnect(); if (ownedContext) void context.close().catch(() => {}); };
+}
+
+// LiveKit RemoteTrack exposes the same playout hint. Prefer the standardized
+// millisecond property, retaining the browser's adaptive jitter/loss protection.
+export function preferVoicePlayout(receiver) {
+  if (!receiver) return;
+  try {
+    if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 20;
+    else if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = 0.02;
+  } catch { /* Older engines can expose the property without permitting writes. */ }
 }
 
 export async function captureMicrophone(inputId, volume, onLevel) {
@@ -33,16 +45,18 @@ export async function captureMicrophone(inputId, volume, onLevel) {
     input = await navigator.mediaDevices.getUserMedia({ audio: {
       ...(inputId ? { deviceId: { exact: inputId } } : {}),
       echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+      channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 }, latency: { ideal: 0.01 },
     }, video: false });
-    context = new AudioContext();
+    context = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
     const source = context.createMediaStreamSource(input), gain = context.createGain(), destination = context.createMediaStreamDestination();
     gain.gain.value = clampVolume(volume);
+    destination.channelCount = 1;
     source.connect(gain); gain.connect(destination);
     await context.resume();
-    // One context for capture, a separate meter context with explicit cleanup.
-    stopMeter = meterStream(destination.stream, onLevel);
+    // Metering shares the capture graph and never owns its context or tracks.
+    stopMeter = meterStream(destination.stream, onLevel, context);
     let stopped = false;
-    return { stream: destination.stream,
+    return { stream: destination.stream, monitorGraph: { context, node: gain },
       setVolume: value => gain.gain.setTargetAtTime(clampVolume(value), context.currentTime, 0.02),
       stop() {
         if (stopped) return; stopped = true;
@@ -58,7 +72,26 @@ export async function captureMicrophone(inputId, volume, onLevel) {
 
 // Monitor the processed microphone locally; this never changes room mute state
 // or owns the capture tracks. Ending a test must not stop an open room mic.
-export function monitorMicrophone(stream, deviceId, onError) {
+export function monitorMicrophone(stream, deviceId, onError, graph) {
+  if (graph && (!deviceId || graph.context.setSinkId)) {
+    const { context, node } = graph, monitor = context.createGain();
+    // Connect silently until the chosen output device is ready. The room's
+    // MediaStreamDestination remains separate from this local monitor branch.
+    monitor.gain.value = 0; node.connect(monitor); monitor.connect(context.destination);
+    let active = true;
+    const stop = () => {
+      active = false; monitor.gain.value = 0;
+      try { node.disconnect(monitor); } catch {}
+      monitor.disconnect();
+    };
+    void (async () => {
+      if (context.setSinkId) await context.setSinkId(deviceId || 'default');
+      if (!active) return;
+      await context.resume();
+      if (active) monitor.gain.value = 1;
+    })().catch(error => { if (active) { stop(); onError(`麦克风耳返播放失败：${error.message}`); } });
+    return stop;
+  }
   const audio = document.createElement('audio');
   audio.autoplay = true; audio.srcObject = stream; audio.volume = 1; audio.muted = false;
   let active = true;
@@ -96,6 +129,7 @@ export class RoomVoice {
     };
     pc.ontrack = event => {
       if (side !== 'listener' || this.closed || entry.audio) return;
+      preferVoicePlayout(event.receiver);
       const stream = new MediaStream([event.track]);
       const audio = document.createElement('audio'); audio.autoplay = true; audio.srcObject = stream; entry.audio = audio;
       entry.stopMeter = meterStream(stream, value => this.onSpeaking(memberId, value.speaking));

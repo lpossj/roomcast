@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { cleanAvatar, MAX_AVATAR_LENGTH } from '../server/avatar-policy.mjs';
-import { createSpeakingDetector, monitorMicrophone, normalizeVoiceSettings, RoomVoice } from '../src/room-voice.js';
+import { createSpeakingDetector, preferVoicePlayout, monitorMicrophone, normalizeVoiceSettings, RoomVoice } from '../src/room-voice.js';
 
 test('avatars accept bounded inline raster data and reject remote/SVG/oversized content', () => {
   assert.equal(cleanAvatar(), '');
@@ -57,4 +57,27 @@ test('local microphone monitor follows sink, detaches on stop and never owns cap
   audio.setSinkId = () => new Promise(resolve => { release = resolve; });
   const stopPending = monitorMicrophone(stream, '', assert.fail); stopPending(); release();
   await new Promise(resolve => setImmediate(resolve)); assert.equal(plays, 1);
+});
+
+test('voice playout uses millisecond targets, legacy seconds and safe unsupported fallback', () => {
+  const modern = { jitterBufferTarget: null, playoutDelayHint: null };
+  preferVoicePlayout(modern); assert.equal(modern.jitterBufferTarget, 20); assert.equal(modern.playoutDelayHint, null);
+  const legacy = { playoutDelayHint: null }; preferVoicePlayout(legacy); assert.equal(legacy.playoutDelayHint, 0.02);
+  const unsupported = {}; preferVoicePlayout(unsupported); assert.deepEqual(unsupported, {});
+  assert.doesNotThrow(() => preferVoicePlayout({ set jitterBufferTarget(value) { throw new Error('read only'); } }));
+});
+
+test('direct ear return follows the chosen sink, detaches only its graph and cancels pending start', async () => {
+  let sink, resumes = 0, disconnects = 0, captureDisconnects = 0;
+  const monitor = { gain: { value: 0 }, connect() {}, disconnect() { disconnects++; } };
+  const context = { destination: {}, createGain: () => monitor, setSinkId: async id => { sink = id; }, resume: async () => { resumes++; } };
+  const node = { connect(target) { assert.equal(target, monitor); }, disconnect(target) { assert.equal(target, monitor); captureDisconnects++; } };
+  const stop = monitorMicrophone({}, 'headphones', assert.fail, { context, node });
+  assert.equal(monitor.gain.value, 0);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sink, 'headphones'); assert.equal(resumes, 1); assert.equal(monitor.gain.value, 1);
+  stop(); assert.equal(monitor.gain.value, 0); assert.equal(disconnects, 1); assert.equal(captureDisconnects, 1);
+  let release; context.setSinkId = () => new Promise(resolve => { release = resolve; });
+  const cancel = monitorMicrophone({}, '', assert.fail, { context, node }); cancel(); release();
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(resumes, 1); assert.equal(monitor.gain.value, 0);
 });

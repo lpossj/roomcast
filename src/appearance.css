@@ -1,0 +1,34 @@
+:root { color-scheme: dark; }
+:root[data-appearance="light"] { color-scheme: light; color: #263546; background: #f3f6fa; --muted: #637386; --border: #162b491b; --status-good: #137a53; --status-warning: #926400; --status-bad: #bc3946; }
+:root[data-appearance="light"] :is(.app-shell, .main-content, .stage-column) { background: #f5f7fb; }
+:root[data-appearance="light"] :is(.icon-rail, .channel-sidebar, .chat-panel, .voice-dock, .room-header) { background: #eaf0f7; }
+:root[data-appearance="light"] :is(.screen-stage, .modal, .app-select-menu, .image-context-menu, .voice-volume-popover, .toast) { background: #ffffff; color: #263546; }
+:root[data-appearance="light"] :is(.modal-backdrop) { background: #15263b66; }
+:root[data-appearance="light"] :is(.about-card, .permission-member, .chat-input-wrap, .theme-mode-toggle, .theme-color-row, .app-select-trigger, .update-prompt-notes) { background: #edf2f8; color: #263546; }
+:root[data-appearance="light"] :is(input:not([type="range"]):not([type="checkbox"]):not([type="color"]), textarea, select) { background: #f8fafc; color: #263546; border-color: #bcc8d6; }
+:root[data-appearance="light"] :is(.brand-header strong, .room-header h2, .chat-panel h3, .stage-heading h3, .empty-copy h1, .settings-section h3, .modal h2, .member-details>span, .standalone-label, .about-brand strong, .microphone-meter, .device-grid label) { color: #263546; }
+:root[data-appearance="light"] :is(.channel-subtitle, .sidebar-section-heading, .about-note, .about-line, .setting-description, .settings-footer, .chat-date, .chat-system-message, .chat-input-footer, .muted-text, .about-details summary, .theme-color-value, .theme-windows-color) { color: #617185; }
+:root[data-appearance="light"] :is(.channel-item, .button.secondary, .button.subtle, .settings-nav button, .icon-button, .theme-mode-toggle button, .voice-toggle) { color: #52657b; }
+:root[data-appearance="light"] :is(.channel-item.selected, .settings-nav button.selected, .voice-toggle.enabled, .icon-button.toggled) { color: #145c75; background: color-mix(in srgb, var(--accent) 20%, white); }
+:root[data-appearance="light"] .button.secondary { background: #eef3f8; border-color: #b8c7d7; }
+:root[data-appearance="light"] .app-select-menu button:hover { background: #edf3f9; color: #24394f; }
+:root[data-appearance="light"] :is(.message-content, .message-bubble, .chat-message-content) { color: #263546; }
+:root[data-appearance="light"] .role-badge.user { background: #dce5ee; color: #4c6178; }
+:root[data-appearance="light"] .role-badge.owner { background: #f5e7bd; color: #805811; }
+:root[data-appearance="light"] :is(.switch-row>span:first-child, .microphone-meter>span, .chat-message p, .chat-message-meta strong) { color: #42576b; }
+:root[data-appearance="light"] .screen-stage { border-color: #c7d3e1; }
+:root[data-appearance="light"] .empty-copy h1 { text-shadow: none; }
+.brand-icon { position: relative; }
+.brand-appearance { position: absolute; bottom: -3px; right: -3px; display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; color: #ffeab4; background: #26384e; border: 2px solid #0d1116; }
+:root[data-appearance="light"] .brand-icon { background: #263e5b; color: #ffffff; }
+:root[data-appearance="light"] .brand-mark span { border-color: #ffffff; }
+:root[data-appearance="light"] .brand-appearance { background: #fff0b8; color: #a96700; border-color: #eaf0f7; }
+.theme-confetti { position: fixed; inset: 0; width: 100vw; height: 100dvh; z-index: 9999; pointer-events: none; view-transition-name: theme-confetti; }
+@property --theme-reveal { syntax: '<length>'; inherits: false; initial-value: 0px; }
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-image-pair(root) { isolation: isolate; }
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) { z-index: 2; mask-image: radial-gradient(circle at var(--theme-x) var(--theme-y), #000 max(0px, calc(var(--theme-reveal) - 24px)), transparent var(--theme-reveal)); }
+::view-transition-group(theme-confetti) { z-index: 3; animation: none; }
+::view-transition-old(theme-confetti) { display: none; }
+::view-transition-new(theme-confetti) { animation: none; }

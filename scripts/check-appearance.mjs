@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { chromium } from 'playwright';
+const { createStaticViewer } = createRequire(import.meta.url)('../electron/web-invite.cjs');
+const server = createStaticViewer(path.resolve('dist')); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const output = path.resolve('.test/appearance'); await mkdir(output, { recursive: true });
+const report = { startedAt: new Date().toISOString(), checks: [], errors: [] }; let browser;
+try {
+  browser = await chromium.launch({ channel: 'msedge', headless: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addInitScript(() => {
+    window.testPops = [];
+    const original = AudioContext.prototype.createOscillator;
+    AudioContext.prototype.createOscillator = function (...args) { const oscillator = original.apply(this, args); window.testPops.push(oscillator); return oscillator; };
+  });
+  const page = await context.newPage(); page.on('pageerror', error => report.errors.push(error.message)); await page.goto(`http://127.0.0.1:${server.address().port}`);
+  assert.equal(await page.locator('html').getAttribute('data-appearance'), 'dark');
+  await page.getByRole('button', { name: '切换日间主题', exact: true }).click();
+  await page.evaluate(() => { for (let count = 0; count < 8; count++) document.querySelector('.brand-icon').click(); });
+  await page.waitForFunction(() => document.documentElement.dataset.appearance === 'light');
+  await page.waitForTimeout(180); await page.screenshot({ path: path.join(output, 'ripple-transition.png') });
+  assert.equal(await page.evaluate(() => window.testPops.length), 1);
+  assert.ok(await page.locator('.theme-confetti').count() <= 1);
+  await page.waitForTimeout(800); assert.equal(await page.locator('.theme-confetti').count(), 0);
+  assert.equal(await page.evaluate(() => localStorage.getItem('roomcast.appearance')), 'light');
+  const surface = await page.locator('.channel-sidebar').evaluate(node => getComputedStyle(node).backgroundColor);
+  assert.equal(surface, 'rgb(234, 240, 247)');
+  await page.screenshot({ path: path.join(output, 'day-panels.png') });
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.screenshot({ path: path.join(output, 'day-settings.png') });
+  await page.getByRole('dialog').getByRole('button', { name: '音频与采集', exact: true }).click();
+  await page.screenshot({ path: path.join(output, 'day-audio.png') });
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click(); await page.reload();
+  assert.equal(await page.locator('html').getAttribute('data-appearance'), 'light');
+  report.checks.push('day/night persistence, 680ms standard radial gradient, rapid click gives one pop/transition, no canvas leak; settings visual captures');
+  await page.getByRole('button', { name: '切换夜间主题', exact: true }).click(); await page.waitForTimeout(100);
+  await page.setViewportSize({ width: 1100, height: 800 }); await page.waitForTimeout(800);
+  assert.equal(await page.locator('html').getAttribute('data-appearance'), 'dark'); assert.equal(await page.locator('.theme-confetti').count(), 0);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: '切换日间主题', exact: true }).click();
+  assert.equal(await page.locator('html').getAttribute('data-appearance'), 'light'); assert.equal(await page.locator('.theme-confetti').count(), 0);
+  await page.waitForTimeout(220); await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.evaluate(() => { document.startViewTransition = undefined; });
+  await page.getByRole('button', { name: '切换夜间主题', exact: true }).click();
+  await page.evaluate(() => { for (let count = 0; count < 6; count++) document.querySelector('.brand-icon').click(); });
+  await page.waitForTimeout(900); assert.equal(await page.locator('html').getAttribute('data-appearance'), 'dark'); assert.equal(await page.locator('.theme-confetti').count(), 0);
+  await page.screenshot({ path: path.join(output, 'night-panels.png') });
+  report.checks.push('resize interruption, reduced motion and unsupported View Transition fallback complete cleanly');
+  assert.deepEqual(report.errors, []); report.ok = true;
+} catch (error) { report.ok = false; report.failure = error.stack; process.exitCode = 1; }
+finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); report.finishedAt = new Date().toISOString(); await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2)); }

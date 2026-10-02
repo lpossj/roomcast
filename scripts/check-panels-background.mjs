@@ -1,0 +1,117 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { chromium } from 'playwright';
+
+const { createStaticViewer } = createRequire(import.meta.url)('../electron/web-invite.cjs');
+const server = createStaticViewer(path.resolve('dist'));
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const origin = `http://127.0.0.1:${server.address().port}`, output = path.resolve('.test/panels-background');
+await mkdir(output, { recursive: true });
+const report = { startedAt: new Date().toISOString(), scope: 'real RTC, synthetic visibility plus actual CDP page freeze; fake camera/microphone', checks: [], errors: [] };
+let browser;
+try {
+  browser = await chromium.launch({ channel: 'msedge', headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
+  const peers = new Map();
+  const page = async () => {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, permissions: ['camera', 'microphone'] });
+    await context.route('**/*', async route => {
+      const url = new URL(route.request().url());
+      if (url.origin === origin) return route.continue();
+      if (url.hostname.endsWith('peerjs.com') && url.pathname.endsWith('/id')) return route.fulfill({ body: randomUUID(), headers: { 'access-control-allow-origin': '*' } });
+      return route.abort();
+    });
+    await context.routeWebSocket('**/*', socket => {
+      const url = new URL(socket.url()), id = url.searchParams.get('id');
+      if (!url.hostname.endsWith('peerjs.com')) { socket.close(); return; }
+      peers.set(id, socket); socket.onMessage(data => { const message = JSON.parse(String(data)); if (message.dst) peers.get(message.dst)?.send(JSON.stringify({ ...message, src: id })); });
+      socket.onClose(() => peers.delete(id)); socket.send(JSON.stringify({ type: 'OPEN' }));
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', { configurable: true, value: undefined });
+      window.testPCs = []; window.testCaptures = [];
+      const Native = RTCPeerConnection; window.RTCPeerConnection = class extends Native { constructor(...args) { super(...args); window.testPCs.push(this); } };
+      const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = options => capture(options).then(stream => { window.testCaptures.push({ options, settings: stream.getAudioTracks()[0]?.getSettings(), stream }); return stream; });
+      window.testBackground = false;
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => window.testBackground ? 'hidden' : 'visible' });
+    });
+    const tab = await context.newPage(); tab.on('pageerror', error => report.errors.push(error.message)); return tab;
+  };
+  const host = await page(), guest = await page(); await host.goto(origin);
+  const railWidth = await host.locator('.icon-rail').evaluate(node => node.offsetWidth);
+  const resize = async (label, dx) => {
+    const handle = host.getByRole('separator', { name: label }), box = await handle.boundingBox();
+    await host.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await host.mouse.down();
+    await host.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2); await host.mouse.up();
+  };
+  await resize('调整成员栏宽度', 65); await resize('调整聊天栏宽度', -55);
+  assert.equal(await host.locator('.channel-sidebar').evaluate(node => node.offsetWidth), 305);
+  assert.equal(await host.locator('.chat-panel').evaluate(node => node.offsetWidth), 340);
+  assert.equal(await host.locator('.icon-rail').evaluate(node => node.offsetWidth), railWidth);
+  await host.reload(); assert.equal(await host.locator('.channel-sidebar').evaluate(node => node.offsetWidth), 305);
+  await host.getByRole('separator', { name: '调整成员栏宽度' }).press('ArrowLeft');
+  assert.equal(await host.locator('.channel-sidebar').evaluate(node => node.offsetWidth), 295);
+  await host.setViewportSize({ width: 920, height: 720 });
+  await host.waitForFunction(() => document.querySelector('.stage-column').getBoundingClientRect().width >= 299);
+  await host.screenshot({ path: path.join(output, 'resized-panels.png') });
+  await host.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await host.getByRole('separator', { name: '调整成员栏宽度' }).isVisible(), false);
+  await host.getByRole('button', { name: '查看成员', exact: true }).click();
+  assert.equal(await host.locator('.channel-sidebar').isVisible(), true);
+  await host.screenshot({ path: path.join(output, 'mobile-members.png') });
+  await host.getByRole('button', { name: '关闭成员栏', exact: true }).click();
+  await host.setViewportSize({ width: 1280, height: 900 });
+  await host.getByRole('button', { name: '展开聊天', exact: true }).click();
+  await host.getByRole('separator', { name: '调整成员栏宽度' }).dblclick();
+  assert.equal(await host.locator('.channel-sidebar').evaluate(node => node.offsetWidth), 240);
+  report.checks.push('both boundaries drag, widths persist, keyboard/default restore, fixed rail, center minimum and mobile drawers');
+  await host.locator('.empty-actions').getByRole('button', { name: '创建房间', exact: true }).click();
+  let dialog = host.getByRole('dialog'); await dialog.getByLabel('你的昵称').fill('后台房主'); await dialog.getByRole('button', { name: '创建并进入房间' }).click(); await dialog.waitFor({ state: 'hidden' });
+  await host.getByRole('button', { name: '邀请朋友', exact: true }).click(); dialog = host.getByRole('dialog');
+  const invite = await dialog.getByLabel('邀请链接', { exact: true }).inputValue(); await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await guest.goto(`${origin}/#room=${encodeURIComponent(invite)}`); dialog = guest.getByRole('dialog');
+  await dialog.getByLabel('你的昵称').fill('后台成员'); await dialog.getByRole('button', { name: '进入房间', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
+  await guest.getByRole('button', { name: '设置', exact: true }).click(); dialog = guest.getByRole('dialog');
+  assert.equal(await dialog.getByText('图片居中裁剪，头像会同步到人物栏、共享预览、小窗和全屏。').count(), 0);
+  assert.equal(await dialog.getByLabel('后台状态通知').count(), 0);
+  await dialog.getByRole('button', { name: '音频与采集', exact: true }).click();
+  assert.equal(await dialog.getByText('测试时本地耳返，不会开启房间麦克风').count(), 0);
+  await guest.screenshot({ path: path.join(output, 'concise-audio-settings.png') });
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await guest.getByRole('button', { name: '开启麦克风', exact: true }).click();
+  await host.locator('.member-row').filter({ hasText: '后台成员' }).locator('.is-speaking').waitFor();
+  report.capture = await guest.evaluate(() => window.testCaptures.map(value => ({ options: value.options, settings: value.settings })));
+  report.receivers = await host.evaluate(() => window.testPCs.flatMap(pc => pc.getReceivers().filter(receiver => receiver.track.kind === 'audio').map(receiver => ({ target: receiver.jitterBufferTarget, legacyHint: receiver.playoutDelayHint }))));
+  assert.ok(report.receivers.some(receiver => receiver.target === 20 || receiver.legacyHint === 0.02));
+  await guest.getByRole('button', { name: '共享画面', exact: true }).click(); dialog = guest.getByRole('dialog');
+  await dialog.getByRole('button', { name: '开始共享', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
+  await host.getByRole('button', { name: '点击进入共享', exact: true }).click();
+  await host.waitForFunction(() => document.querySelector('video')?.videoWidth > 0);
+  const tracks = await guest.evaluate(() => window.testCaptures.flatMap(value => value.stream.getTracks()).filter(track => track.readyState === 'live').map(track => track.id));
+  await guest.getByRole('button', { name: '切换日间主题', exact: true }).click();
+  await guest.waitForFunction(() => document.documentElement.dataset.appearance === 'light');
+  await guest.locator('.theme-confetti').waitFor({ state: 'detached' });
+  assert.deepEqual(await guest.evaluate(() => window.testCaptures.flatMap(value => value.stream.getTracks()).filter(track => track.readyState === 'live').map(track => track.id)), tracks);
+  assert.ok(await host.locator('video').evaluate(node => node.videoWidth > 0 && node.readyState >= 2));
+  report.checks.push('theme change during actual microphone/screen sharing preserves live capture tracks and remote playback');
+  await guest.evaluate(() => { window.testBackground = true; document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })); });
+  assert.ok((await guest.title()).includes('后台共享'));
+  const cdp = await guest.context().newCDPSession(guest); await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
+  await host.waitForTimeout(33_000);
+  assert.equal(await host.locator('.member-row').count(), 2);
+  await cdp.send('Page.setWebLifecycleState', { state: 'active' });
+  await guest.evaluate(() => { window.testBackground = false; document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); });
+  assert.equal(await guest.title(), '同屏 Roomcast');
+  assert.equal(await guest.getByRole('button', { name: '停止共享', exact: true }).count(), 1);
+  assert.equal(await guest.getByRole('button', { name: '关闭麦克风', exact: true }).count(), 1);
+  await guest.getByRole('textbox', { name: '发送消息', exact: true }).fill('后台返回继续聊天');
+  await guest.getByRole('textbox', { name: '发送消息', exact: true }).press('Enter'); await host.getByText('后台返回继续聊天', { exact: true }).waitFor();
+  report.checks.push('cross-browser tab status; 33-second real frozen guest retains member/share/mic; BFCache does not leave; foreground restores title and chat resumes');
+  await guest.getByRole('button', { name: '离开房间', exact: true }).click(); await host.waitForFunction(() => document.querySelectorAll('.member-row').length === 1);
+  report.checks.push('explicit leave removes member and sharing');
+  assert.deepEqual(report.errors, []); report.ok = true;
+} catch (error) { report.ok = false; report.failure = error.stack; process.exitCode = 1; }
+finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); report.finishedAt = new Date().toISOString(); await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2)); }

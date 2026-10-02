@@ -1,9 +1,12 @@
-import { AppWindow, ArrowRight, AudioLines, Camera, Check, ChevronDown, ChevronRight, Copy, Download, Headphones, ImagePlus, Info, Link, LoaderCircle, LockKeyhole, LogOut, Maximize2, MessageSquare, Mic, Monitor, MonitorUp, Palette, Plus, RefreshCw, RotateCcw, RotateCw, ScreenShare, Send, Server, Settings, ShieldCheck, Square, Users, Volume2, Wifi, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { AppWindow, ArrowRight, AudioLines, Camera, Check, ChevronDown, ChevronRight, Copy, Download, Headphones, ImagePlus, Info, Link, LoaderCircle, LockKeyhole, LogOut, Maximize2, MessageSquare, Mic, Monitor, MonitorUp, Palette, Plus, RefreshCw, RotateCcw, RotateCw, ScreenShare, Send, Server, Settings, ShieldCheck, Square, Sun, Moon, Users, Volume2, Wifi, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ScreenPlayer from './ScreenPlayer.jsx';
 import Avatar, { safeAvatar } from './Avatar.jsx';
 import { ProfileSettings, VoiceSettings, VoiceControls, MemberVolumeControl } from './ProfileAudioSettings.jsx';
 import useRoomVoice from './useRoomVoice.js';
+import PanelResizeHandle, { usePanelWidths } from './PanelResizeHandle.jsx';
+import useBackgroundStatus from './useBackgroundStatus.js';
+import useAppearance from './useAppearance.js';
 import { ack, attachNativeAudio, getLifecycleDiagnostics, initials, integratedSources, nativeAudioSources, startIntegratedCapture, startObsFixedFpsCapture, timeLabel } from './lib.js';
 import { readImageDimensions } from './image-policy.js';
 import { loadPreference, savePreference } from './preferences.js';
@@ -45,9 +48,6 @@ function loadShareSettings() {
 const params = new URLSearchParams(window.location.search);
 const initialInvite = readPageInvite(window);
 const MAX_CHAT_IMAGES = 4;
-// A backgrounded page cannot answer the room handover probe, so web clients leave the
-// room after this long hidden instead of blocking the desktop owner from exiting.
-const BACKGROUND_LEAVE_DELAY_MS = 30000;
 // Phone photos decode to tens of MB at full resolution while the chat only ever shows a
 // small thumbnail, so oversized photos are downscaled once before being staged.
 const MAX_SHARED_IMAGE_EDGE = 2000;
@@ -395,8 +395,8 @@ function ShareModal({ onClose, onStart, busy, audioDevices, capabilities, editin
     {audioError && <div className="setting-inline-note" role="status" title={audioError}>应用声音列表暂不可用；仍可正常共享画面、全部应用声音或麦克风。Roomcast 会自动重试。</div>}
     {(sharesApplicationAudio || excludesApplicationAudio) && <Dropdown label={excludesApplicationAudio ? '从系统声音中排除' : '选择游戏或应用'} value={settings.audioSourceId || ''} onChange={value => update({ audioSourceId: value })} disabled={busy} options={[...(!settings.audioSourceId ? [{ value: '', label: '请选择应用' }] : []), ...(sources.applications || []).map(item => ({ value: String(item.id), label: audioApplicationLabel(item) }))]} />}
     {(sharesSystemAudio || sharesApplicationAudio || excludesApplicationAudio) && <label className="switch-row compact-audio-switch"><span><Volume2 size={18} /><span>静音共享声音</span></span><input type="checkbox" checked={settings.applicationMuted === true} onChange={event => update({ applicationMuted: event.target.checked })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
-    {(desktop || capabilities.microphone) && <label className="switch-row"><span><Mic size={18} /><span>加入麦克风<small>{audioDevices?.preferences.inputId ? '使用设置中选择的麦克风，可与共享声音分别静音。' : '使用系统默认麦克风，可与共享声音分别静音。'}</small></span></span><input type="checkbox" checked={sharesMicrophone} onChange={event => update({ audioMode: composeAudioMode(sharesSystemAudio ? 'system' : sharesApplicationAudio ? 'application' : excludesApplicationAudio ? 'exclude' : '', event.target.checked) })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
-    {sharesMicrophone && <label className="switch-row"><span><Mic size={18} /><span>静音共享麦克风<small>保留麦克风音轨，但暂时不发送声音。</small></span></span><input type="checkbox" checked={settings.microphoneMuted === true} onChange={event => update({ microphoneMuted: event.target.checked })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
+    {(desktop || capabilities.microphone) && <label className="switch-row"><span><Mic size={18} /><span>加入麦克风<small>{audioDevices?.preferences.inputId ? '所选麦克风' : '系统默认'}</small></span></span><input type="checkbox" checked={sharesMicrophone} onChange={event => update({ audioMode: composeAudioMode(sharesSystemAudio ? 'system' : sharesApplicationAudio ? 'application' : excludesApplicationAudio ? 'exclude' : '', event.target.checked) })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
+    {sharesMicrophone && <label className="switch-row"><span><Mic size={18} /><span>静音共享麦克风</span></span><input type="checkbox" checked={settings.microphoneMuted === true} onChange={event => update({ microphoneMuted: event.target.checked })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
     {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
     <footer className="modal-actions"><button className="button secondary" onClick={onClose} disabled={busy || loading}>取消</button><button className="button primary" onClick={submit} disabled={!settings.sourceId || busy || loading}>{busy ? <LoaderCircle size={17} className="spin" /> : <ScreenShare size={17} />}{busy ? editing ? '正在应用设置…' : '正在建立共享…' : editing ? '应用并重新共享' : '开始共享'}</button></footer>
   </Modal>;
@@ -435,7 +435,7 @@ function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, inst
           reachable even when the API check or a download times out behind a proxy. */}
       <button className={`button ${failure ? 'secondary' : 'subtle'} small`} onClick={() => { setPageError(''); window.roomcast?.openReleasePage?.().catch(failure => setPageError(cleanIpcError(failure))); }}><Link size={15} />打开发布页（手动下载）</button>
     </div>
-    <p className="about-note">更新检查只向 GitHub 公开发布接口请求版本信息（不发送任何标识）。自动更新会下载官方发布包、用发布页的 SHA256.txt 校验，校验通过后关闭程序、覆盖程序目录并自动重新打开；找不到 SHA256.txt 或校验不一致时不会安装。Windows 产物未签名，校验值只能说明文件与发布页一致。网络受限时可点「打开发布页」手动下载。</p>
+    <details className="about-details"><summary>更新说明</summary><p className="about-note">更新包经 SHA256 校验后安装并重启；失败会回滚。Windows 程序未签名，网络受限时可手动下载。</p></details>
   </section>;
 }
 
@@ -494,18 +494,18 @@ function AboutPanel({ version = '' }) {
         <p className="about-line">源码仓库：<a href="https://github.com/lpossj/roomcast" target="_blank" rel="noreferrer noopener">github.com/lpossj/roomcast</a></p>
       </div>
     </section>
-    <section className="settings-section"><h3><ShieldCheck size={17} />使用声明</h3>
+    <details className="settings-section about-details"><summary>隐私与使用说明</summary>
       <p className="about-note">仅用于合法、知情同意的屏幕共享与聊天。禁止用于未经同意的监控、偷拍、监听、跟踪、骚扰或其他违法用途；使用者应自行遵守当地法律与平台规则。</p>
       <p className="about-note">房间状态与聊天是内存态，房间结束后释放，不写入数据库。屏幕媒体通过 WebRTC DTLS-SRTP 在成员之间传输。</p>
       <div className="settings-buttons"><button className="button subtle small" onClick={exportDiagnostics}><Download size={15} />导出诊断</button></div>
       <p className="about-note">诊断保留本次页面会话最近 200 条操作阶段和耗时，以及有限的画质、编码和网络统计；不记录画面内容、网络地址、邀请、密钥、成员信息或聊天，不自动上传。</p>
       <p className="about-note">网页观看入口使用固定 HTTPS 站点，分享者和观看者无需注册或登录；邀请链接等同于入房凭据，请只发给预期成员。站点可访问不代表信令和媒体连接一定可用。</p>
       <p className="about-note">未使用商业代码签名，Windows SmartScreen 可能提示未知发布者；下载后请核对发布页提供的 SHA-256。</p>
-    </section>
-    <section className="settings-section"><h3><Palette size={17} />许可与第三方组件</h3>
+    </details>
+    <details className="settings-section about-details"><summary>许可与第三方组件</summary>
       <p className="about-note">Roomcast 主体源码采用 Apache License 2.0。</p>
       <p className="about-note">随包组件：OBS Studio 32.1.2（GPL-2.0-or-later，附对应源码归档）、Windows 系统音频 loopback 采集组件（第三方 MIT 预编译二进制）。完整清单见安装目录下的 <code>NOTICE</code> 与 <code>THIRD-PARTY-NOTICES.txt</code>，隐私与安全边界见 <code>PRIVACY.md</code> 与 <code>SECURITY.md</code>。</p>
-    </section>
+    </details>
   </>;
 }
 
@@ -558,7 +558,7 @@ function MemberPermissionsModal({ member, self, onClose, command }) {
   const [error, setError] = useState('');
   const run = async (event, payload) => { setBusy(event); setError(''); try { await command(event, payload); onClose(); } catch (failure) { setError(failure.message); } finally { setBusy(''); } };
   const owner = self?.role === 'owner';
-  return <Modal title={`管理 ${member.name}`} subtitle="角色和共享权限由房间服务校验，修改会立即同步给所有成员。" onClose={onClose} busy={!!busy}>
+  return <Modal title={`管理 ${member.name}`} subtitle="" onClose={onClose} busy={!!busy}>
     <div className="permission-member"><Avatar member={member} /><div><strong>{member.name}</strong><span>{member.role === 'admin' ? '管理员' : '用户'} · {member.canShare ? '允许共享' : '已禁止共享'}</span></div></div>
     {owner && <section className="settings-section"><h3><ShieldCheck size={17} />成员角色</h3><div className="settings-buttons"><button className={`button small ${member.role === 'admin' ? 'primary' : 'secondary'}`} onClick={() => run('member:role', { memberId: member.id, role: 'admin' })} disabled={!!busy || member.role === 'admin'}>设为管理员</button><button className={`button small ${member.role === 'user' ? 'primary' : 'secondary'}`} onClick={() => run('member:role', { memberId: member.id, role: 'user' })} disabled={!!busy || member.role === 'user'}>设为用户</button></div></section>}
     {(owner || (self?.role === 'admin' && member.role === 'user')) && <section className="settings-section"><h3><Mic size={17} />麦克风管理</h3><button className="button danger-share small" disabled={!!busy || !member.voiceEnabled} onClick={() => run('member:mute', { memberId: member.id })}>关闭该成员麦克风</button></section>}
@@ -868,7 +868,7 @@ function EmptyScreen({ room, onShare, onCreate, onJoin, desktop }) {
   return <div className="empty-screen">
     <div className="empty-grid" aria-hidden="true" />
     <div className="screen-illustration" aria-hidden="true"><div className="illustration-orbit orbit-one" /><div className="illustration-orbit orbit-two" /><div className="floating-tile tile-a"><AudioLines size={23} /></div><div className="floating-tile tile-b"><MessageSquare size={20} /></div><div className="monitor-assembly"><div className="illustration-monitor"><div className="illustration-title"><i /><i /><i /><span /></div><div className="illustration-content"><div className="share-glyph"><ScreenShare size={36} strokeWidth={1.35} /></div><div className="illustration-line" /><div className="illustration-line short" /></div><div className="illustration-cursor"><ArrowRight size={17} /></div></div><div className="monitor-neck" /><div className="monitor-foot" /></div></div>
-    <div className="empty-copy"><span className="eyebrow">A LITTLE CLOSER, EVEN FROM AFAR</span><h1>{room ? onShare ? '你的屏幕，就是聚会的开始' : '等待朋友共享屏幕' : <>分享一个屏幕，<br />一起多待一会儿。</>}</h1><div className="empty-actions">{room ? onShare ? <button className="button primary" onClick={onShare}><ScreenShare size={18} />{desktop ? '开始屏幕共享' : '开始画面共享'}<ArrowRight size={16} /></button> : <p className="setting-description">当前浏览器未提供可用的画面采集权限，可以观看和聊天。</p> : <>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={18} />创建房间</button>}<button className={onCreate ? 'button secondary' : 'button primary'} onClick={onJoin}><Link size={17} />加入房间</button></>}</div></div>
+    <div className="empty-copy"><h1>{room ? '暂无共享' : '创建或加入房间'}</h1><div className="empty-actions">{room ? onShare ? <button className="button primary" onClick={onShare}><ScreenShare size={18} />{desktop ? '开始屏幕共享' : '开始画面共享'}<ArrowRight size={16} /></button> : <p className="setting-description">此浏览器仅支持观看和聊天</p> : <>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={18} />创建房间</button>}<button className={onCreate ? 'button secondary' : 'button primary'} onClick={onJoin}><Link size={17} />加入房间</button></>}</div></div>
     <span className="stage-corner top-left" /><span className="stage-corner top-right" /><span className="stage-corner bottom-left" /><span className="stage-corner bottom-right" />
   </div>;
 }
@@ -1047,6 +1047,9 @@ export default function App() {
   const self = room?.members.find(member => member.id === selfId);
   const streams = room?.streams || [];
   const ownShare = streams.some(stream => stream.memberId === selfId);
+  const panels = usePanelWidths(showChat);
+  const appearance = useAppearance();
+  useBackgroundStatus({ desktop: desktopChrome, room, sharing: ownShare });
   const previewCardWidth = previewCardWidthFor(streams.length, screenGridWidth, previewScale);
   const latencyTone = latencyToneFor(latencyMs);
   useEffect(() => { setPreviewScale(1); }, [room?.id]);
@@ -1158,14 +1161,15 @@ export default function App() {
     if ((!room || self?.canShare === false) && ownsCapture.current) { ownsCapture.current = false; stopLocalShare().catch(error => notify(`停止采集失败：${error.message}`)); }
   }, [room, self?.canShare, notify, stopLocalShare]);
   useEffect(() => {
-    const unload = () => {
+    const unload = event => {
+      if (event.type === 'pagehide' && event.persisted) return;
       if (!window.roomcast?.desktop) { void leave(true); return; }
       if (ownsCapture.current) socketRef.current?.stopScreenStream?.();
     };
-    window.addEventListener('beforeunload', unload);
+    if (desktopChrome) window.addEventListener('beforeunload', unload);
     window.addEventListener('pagehide', unload);
     return () => { window.removeEventListener('beforeunload', unload); window.removeEventListener('pagehide', unload); };
-  }, [leave]);
+  }, [leave, desktopChrome]);
 
   const copy = async text => {
     try {
@@ -1209,28 +1213,6 @@ export default function App() {
       if (outcome?.closed) notify(outcome.reason || '房间已关闭。');
     } catch (error) { if (action === roomAction.current) notify(error.message); }
   };
-  // A backgrounded web page cannot answer the room handover probe, which used to leave the
-  // desktop owner unable to exit. Web clients therefore leave the room themselves once the
-  // page has been hidden for a while; the remembered invite makes rejoining a single tap.
-  const backgroundLeaveRef = useRef(handleLeave);
-  backgroundLeaveRef.current = handleLeave;
-  useEffect(() => {
-    if (desktopChrome) return undefined;
-    let timer;
-    const onVisibilityChange = () => {
-      clearTimeout(timer);
-      if (document.visibilityState !== 'hidden') return;
-      timer = setTimeout(() => {
-        if (!socketRef.current) return;
-        void backgroundLeaveRef.current();
-        setModal(initialInvite ? 'join' : null);
-        notify('页面在后台停留过久，已退出房间；返回后可直接重新加入。');
-      }, BACKGROUND_LEAVE_DELAY_MS);
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', onVisibilityChange); };
-  }, [desktopChrome, notify]);
-
   // Desktop-only update check. The web client is served from the host's own bundle, so it
   // has nothing to update; the main process owns the request, the asset URLs and hashing.
   const [update, setUpdate] = useState({ status: 'idle', result: null, error: '' });
@@ -1391,7 +1373,7 @@ export default function App() {
   };
   const openShare = () => {
     if (!room) { setModal(canHostRoom ? 'create' : 'join'); return; }
-    if (!canShareScreen) { notify('当前浏览器未提供可用的画面采集权限，可以观看和聊天。'); return; }
+    if (!canShareScreen) { notify('此浏览器仅支持观看和聊天'); return; }
     if (!self?.canShare && !ownShare) { notify('管理员已关闭你的屏幕共享权限。'); return; }
     setModal('share');
   };
@@ -1620,11 +1602,11 @@ export default function App() {
     }).catch(error => notify(error.message));
   };
 
-  return <div className={`app-shell ${showChat ? '' : 'chat-hidden'} ${showMembers ? 'members-open' : ''} ${desktopChrome ? 'desktop-chrome' : ''}`}>
+  return <div ref={panels.shell} style={panels.style} className={`app-shell ${showChat ? '' : 'chat-hidden'} ${showMembers ? 'members-open' : ''} ${desktopChrome ? 'desktop-chrome' : ''}`}>
     {desktopChrome && <div className="roomcast-titlebar" aria-hidden="true"><span className="roomcast-titlebar-logo"><span className="roomcast-titlebar-mark"><i /><i /></span></span><span className="roomcast-titlebar-name">同屏 Roomcast</span></div>}
-    <aside className="icon-rail"><button className="brand-icon" title="同屏 Roomcast" aria-label="同屏首页" onClick={() => { if (!room) setModal(null); }}><span className="brand-mark"><span /><span /></span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} aria-label={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} onClick={() => setModal(room ? 'invite' : canHostRoom ? 'create' : 'join')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title="离开房间" aria-label="离开房间" onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className={`rail-button ${updateAvailable ? 'has-update' : ''}`} title={updateAvailable ? `设置 · 有可用更新 ${update.result.version}` : '设置'} aria-label={updateAvailable ? `设置，有可用更新 ${update.result.version}` : '设置'} onClick={() => setModal('settings')}><Settings size={21} />{updateAvailable && <span className="rail-update-dot" aria-hidden="true" />}</button><Avatar className="rail-avatar" member={{ ...self, avatar, name: self?.name || loadPreference('nickname', '访客') }} title={self?.name || '访客'} /></aside>
+    <aside className="icon-rail"><button className="brand-icon" title={appearance.appearance === 'dark' ? '切换日间主题' : '切换夜间主题'} aria-label={appearance.appearance === 'dark' ? '切换日间主题' : '切换夜间主题'} aria-pressed={appearance.appearance === 'light'} onClick={appearance.toggle}><span className="brand-mark"><span /><span /></span><span className="brand-appearance" aria-hidden="true">{appearance.appearance === 'dark' ? <Moon size={10} /> : <Sun size={10} />}</span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} aria-label={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} onClick={() => setModal(room ? 'invite' : canHostRoom ? 'create' : 'join')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title="离开房间" aria-label="离开房间" onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className={`rail-button ${updateAvailable ? 'has-update' : ''}`} title={updateAvailable ? `设置 · 有可用更新 ${update.result.version}` : '设置'} aria-label={updateAvailable ? `设置，有可用更新 ${update.result.version}` : '设置'} onClick={() => setModal('settings')}><Settings size={21} />{updateAvailable && <span className="rail-update-dot" aria-hidden="true" />}</button><Avatar className="rail-avatar" member={{ ...self, avatar, name: self?.name || loadPreference('nickname', '访客') }} title={self?.name || '访客'} /></aside>
 
-    <aside className="channel-sidebar"><header className="brand-header"><div><strong>同屏<span>Roomcast</span></strong><small>A SPACE FOR YOUR PEOPLE</small></div><span className="version-pill">BETA</span>{!desktopChrome && <button className="icon-button mobile-members-close" aria-label="关闭成员栏" onClick={() => setShowMembers(false)}><X size={18} /></button>}</header><div className="sidebar-section-heading"><span>房间</span></div><button className="channel-item selected" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><Volume2 size={19} /><span>{room?.name || (canHostRoom ? '开始你的房间' : '加入房间')}</span>{room ? <span className="channel-count">{room.members.length}</span> : <ChevronRight size={16} />}</button><div className="channel-subtitle"><span className={`status-dot ${room ? 'online' : ''}`} />{room ? `${room.members.length} 人在线 · 最多 10 人` : '房间准备好了，只差你们'}</div>
+    <aside className="channel-sidebar"><PanelResizeHandle side="members" handlers={panels.handle('members')} /><header className="brand-header"><div><strong>同屏<span>Roomcast</span></strong></div><span className="version-pill">BETA</span>{!desktopChrome && <button className="icon-button mobile-members-close" aria-label="关闭成员栏" onClick={() => setShowMembers(false)}><X size={18} /></button>}</header><div className="sidebar-section-heading"><span>房间</span></div><button className="channel-item selected" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><Volume2 size={19} /><span>{room?.name || (canHostRoom ? '开始你的房间' : '加入房间')}</span>{room ? <span className="channel-count">{room.members.length}</span> : <ChevronRight size={16} />}</button><div className="channel-subtitle"><span className={`status-dot ${room ? 'online' : ''}`} />{room ? `${room.members.length} 人在线 · 最多 10 人` : '未加入房间'}</div>
       <div className="sidebar-section-heading members-heading"><span>成员 <small>{room ? String(room.members.length).padStart(2, '0') : '00'}</small></span><Users size={14} /></div>
       <div className="sidebar-members">{room ? room.members.map(member => { const manageable = member.id !== selfId && member.role !== 'owner' && ['owner', 'admin'].includes(self?.role); return <div className="member-row" key={member.id}><Avatar member={member} speaking={voice.speaking[member.id] === true} /><div className="member-details"><span>{member.name}{member.id === selfId && <small>你</small>}<em className={`role-badge ${member.role}`}>{member.role === 'owner' ? '房主' : member.role === 'admin' ? '管理员' : '用户'}</em></span></div>{member.id !== selfId && room.features?.voice === 1 && <MemberVolumeControl member={member} voice={voice} />}{manageable ? <button className="icon-button" aria-label={`管理成员 ${member.name}`} onClick={() => setManagedMember(member)}><Settings size={14} /></button> : member.sharing ? <MonitorUp size={15} className="green-icon" /> : !member.canShare ? <LockKeyhole size={14} /> : null}</div>; }) : <div className="members-empty"><div className="empty-member-icons"><span /><span /><span /></div></div>}</div>
       <div className="sidebar-bottom"><span className={`network-latency ${latencyTone}`} aria-label={`网络延迟：${latencyMs == null ? '-- ms' : `${latencyMs} ms`}`}><Wifi className="network-latency-icon" size={17} strokeWidth={2.2} aria-hidden="true" /><span>{latencyMs == null ? '-- ms' : `${latencyMs} ms`}</span></span><VoiceControls voice={voice} inRoom={room?.features?.voice === 1} /></div>
@@ -1634,7 +1616,7 @@ export default function App() {
       <div className="content-columns"><section className="stage-column"><div className="stage-heading"><div><span className="small-icon-box"><Monitor size={17} /></span><h3>共享屏幕</h3><span className="stage-state">{streams.length ? `${streams.length} 路共享` : '等待分享'}</span></div></div>
         <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>{streams.length ? <div ref={screenGridRef} className={`screen-grid count-${streams.length}`} data-preview-scale={previewScale.toFixed(1)} style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}>{streams.map(stream => <ScreenPlayer key={[stream.memberId, stream.startedAt].join("-")} stream={stream} iceServers={config?.mediaIceServers} outputDeviceId={audioDevices.preferences.outputId} viewerMemberId={selfId} initialSound={true} transport={socketRef.current?.mediaP2P ? socketRef.current : undefined} reportViewing={reportViewing} initiallyEntered={watchingStreams.current.has(stream.memberId)} onViewingChange={rememberViewing} />)}</div> : <EmptyScreen desktop={desktopChrome} room={room} onShare={canShareScreen ? openShare : null} onCreate={canHostRoom ? () => setModal('create') : null} onJoin={() => setModal('join')} />}</div>
       </section>
-        {showChat && <aside className={`chat-panel ${chatDragActive ? 'chat-drag-active' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}><header><h3><MessageSquare size={17} />房间聊天</h3></header><div className="chat-messages" ref={chatList} onScroll={scrollChat} role="log" aria-label="房间聊天记录" aria-live="polite">{room && (historyLoading || hasOlderMessages) && <div className="chat-history-status">{historyLoading ? <><LoaderCircle size={13} className="spin" />正在加载消息…</> : '向上滚动加载更早消息'}</div>}{messages.length > 0 && <div className="chat-date"><span />今天<span /></div>}{messages.map(message => <ChatItem key={message.seq} message={message} selfId={selfId} onRecall={recall} onPreview={setPreviewImage} onImageContextMenu={handleImageContextMenu} />)}<div ref={chatEnd} /></div><form className="chat-compose" onSubmit={sendChat}>
+        {showChat && <aside className={`chat-panel ${chatDragActive ? 'chat-drag-active' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}><PanelResizeHandle side="chat" handlers={panels.handle('chat')} /><header><h3><MessageSquare size={17} />房间聊天</h3></header><div className="chat-messages" ref={chatList} onScroll={scrollChat} role="log" aria-label="房间聊天记录" aria-live="polite">{room && (historyLoading || hasOlderMessages) && <div className="chat-history-status">{historyLoading ? <><LoaderCircle size={13} className="spin" />正在加载消息…</> : '向上滚动加载更早消息'}</div>}{messages.length > 0 && <div className="chat-date"><span />今天<span /></div>}{messages.map(message => <ChatItem key={message.seq} message={message} selfId={selfId} onRecall={recall} onPreview={setPreviewImage} onImageContextMenu={handleImageContextMenu} />)}<div ref={chatEnd} /></div><form className="chat-compose" onSubmit={sendChat}>
           <input ref={imageInput} className="visually-hidden" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" onChange={chooseImage} />
           <div className="chat-input-wrap">
             {pendingImages.length > 0 && <div className={`chat-pending-images count-${pendingImages.length}`}>
@@ -1645,7 +1627,7 @@ export default function App() {
             </div>}
             <textarea aria-label="发送消息" placeholder={room ? `发消息给 ${room.name}` : '加入房间后发送消息'} value={chat} onChange={event => setChat(event.target.value)} onPaste={pasteImage} maxLength={2000} disabled={!room || sending || sendingImage} rows={2} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendChat(event); } }} />
             <div className="chat-input-footer">
-              <span>Enter 发送 · 图片最大 10MB</span>
+              <span>Enter 发送</span>
               <span className="chat-actions"><button type="button" title="选择图片" aria-label="选择图片" disabled={!room || sendingImage || pendingImages.length >= MAX_CHAT_IMAGES} onClick={() => imageInput.current?.click()}>{sendingImage ? <LoaderCircle size={16} className="spin" /> : <ImagePlus size={16} />}</button><button type="submit" title="发送消息" aria-label="发送消息" disabled={!room || (!chat.trim() && !pendingImages.length) || sending || sendingImage}>{sending ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}</button></span>
             </div>
           </div>
