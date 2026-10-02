@@ -1,6 +1,6 @@
 # Roomcast 状态与验证边界
 
-当前本地开发版本：0.14.4-beta.8，按用户授权准备打包、同步网页及发布；当前公开版本仍为 beta.7。变更见 [beta.8说明](RELEASE_NOTES-0.14.4-beta.8.md)。beta.7 附件与网页部署 d46198fe 保留为历史基线。
+当前本地 Windows 桌面与线上网页版本：0.14.4-beta.8。Windows 成品本地验收通过，下载入口见 [beta.8 Release](https://github.com/lpossj/roomcast/releases/tag/v0.14.4-beta.8)；网页同步到 https://roomcast-2dy.pages.dev/ （部署 8bc31550）。变更见 [beta.8说明](RELEASE_NOTES-0.14.4-beta.8.md)，本轮按用户授权提交、同步并发布。beta.7 附件与网页部署 d46198fe 保留为历史基线。
 
 ## 当前功能
 
@@ -16,7 +16,10 @@
 - 实际 Edge 双端 WebRTC/假设备验证：两边界拖动、键盘与保存、固定图标栏、中心最小宽度、手机抽屉；共享中换主题保持活跃轨道与观看；33 秒真实页面冻结保留成员/共享/麦克风，BFCache 不离房，前台聊天与主动离房释放通过。
 - 主题实测：渐变波纹、连点只产生一次提示音、动画清理、缩放中断、减少动态及旧接口回退通过。日间主界面和设置视觉检查通过。
 - 桌面直接耳返以明确 440Hz 假麦克风输入验证实际 PCM 输出及关闭释放；头像、音频、三栏宽度与明暗偏好经真实 Electron 重启保持。实际声学端到端延迟尚未测量。
-- 当前 Windows Firefox 测试引擎受 SideBySide 环境错误无法启动；Windows WebKit 未暴露音频/WebRTC，因此不能把它的布局检查视为 Safari 媒体实测。独立云端兼容检查与成品验收仍待完成。
+- 独立云端 Firefox（Ubuntu）与 WebKit（macOS 15）检查通过：桌面/390px 移动布局、主题保存、互动 WebAudio 实际非零 PCM、真实 RTC 建房/聊天、BFCache/后台标题与主动离房。对应 [Firefox 任务](https://github.com/lpossj/roomcast/actions/runs/36957671439/job/110684167599)及 [WebKit 任务](https://github.com/lpossj/roomcast/actions/runs/36958324098)。iPhone/Android 各厂商默认浏览器真机及声学端到端延迟未完整验收，不能把引擎结果扩大为全部移动硬件通过。
+- Windows 本地 Firefox 曾因 SideBySide 环境无法启动；Windows WebKit 缺媒体 API；macOS 14 WebKit 打开空白页挂起、尚未加载产品。旧失败未作为通过，新环境独立验证有效；云端 Firefox 音频环境提供虚拟输出后通过。
+- `release/beta8-panels-background-theme/` 的 EXE/ZIP 版本、六个关键源码和八份生产资源摘要、ZIP 六个关键文件、压缩完整性通过；实际便携 EXE 启动及隔离 beta.6→beta.8 原子更新/重启确认通过。
+- 网页部署 8bc31550：主域名 beta.8、HTML 与全部 JS/CSS 内容摘要一致，桌面 API/更新器入口不存在；线上耳返图播放及结束释放通过。当前 main 4ac5b99 的 CI 通过。
 
 ## beta.7 历史实际验证
 
