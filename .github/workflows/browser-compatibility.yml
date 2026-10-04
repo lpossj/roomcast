@@ -37,7 +37,7 @@ jobs:
           pactl set-default-sink roomcast_test
       - run: npm run build
       - run: node scripts/check-browser-compatibility.mjs --engine ${{ matrix.browser }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: compatibility-${{ matrix.browser }}
