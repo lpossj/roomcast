@@ -3,6 +3,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('roomcast', {
   desktop: true,
+  startCampusNetwork: value => ipcRenderer.invoke('roomcast:campus-start', value),
+  stopCampusNetwork: lease => ipcRenderer.invoke('roomcast:campus-stop', lease),
+  onCampusEnded: callback => {
+    const listener = (_event, lease) => callback(lease);
+    ipcRenderer.on('roomcast:campus-ended', listener);
+    return () => ipcRenderer.removeListener('roomcast:campus-ended', listener);
+  },
 
   setTitleBarTheme: color =>
     ipcRenderer.send('roomcast:titlebar-theme', color),

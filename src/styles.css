@@ -1636,6 +1636,9 @@ select {
     color: #576b79
 }
 
+.entry-form .campus-switch { display: flex; position: relative; }
+.entry-form .campus-switch input { width: 1px; height: 1px; padding: 0; margin: 0; }
+
 .field-hint {
     display: block;
     line-height: 1.7;

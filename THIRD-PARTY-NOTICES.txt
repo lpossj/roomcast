@@ -2813,4 +2813,30 @@ Copyright (c) 2010 passive.ly LLC
 
 cloudflared 2026.9.2 (Cloudflare, Inc.) was distributed through beta.7 under Apache-2.0; it is not included starting with beta.8. Source: https://github.com/cloudflare/cloudflared/tree/2026.9.2 . Its historical Windows amd64 binary SHA256 is 214f5d74f66941d147d054f6cc9d821c60ff6a9b2d5355f6c854c6bee217c548. The Apache-2.0 license text is retained in LICENSE.
 
+EasyTier 2.6.4 (Roomcast restricted sidecar build)
+Upstream: https://github.com/EasyTier/EasyTier/tree/8428a89d2dabc94c97d370ec607c6ca142473626
+License: LGPL-3.0. Clients include EASYTIER-LICENSE.txt and SOURCE-NOTICE.txt.
+Complete patched source and dependency sources are supplied separately as the
+same-version Roomcast-<version>-EasyTier-sources.zip download attachment.
+See resources/runtime/easytier/SOURCE-NOTICE.txt for the exact name and SHA256.
+Roomcast changes disable management RPC and raw packet capture and restrict DHCP
+to the configured room subnet. The separate executable communicates over IP.
+pnet_datalink 0.35.0 license and modified source are included in the source attachment.
+Npcap Packet.dll is not redistributed.
+Wintun 0.14.1: https://www.wintun.net/ . The unmodified signed AMD64 DLL is
+distributed under the accompanying runtime/easytier/WINTUN-LICENSE.txt.
+YY-Thunks 1.1.7: https://github.com/Chuyu-Team/YY-Thunks/tree/v1.1.7 .
+MIT license, supplied as runtime/easytier/YY-THUNKS-LICENSE.txt.
+VC-LTL 5.2.2: https://github.com/Chuyu-Team/VC-LTL5/tree/v5.2.2 .
+EPL-2.0 license, supplied as runtime/easytier/VC-LTL-LICENSE.txt.
+Both compatibility components' corresponding sources and original notices are
+included under roomcast-compat-sources in the source attachment. Their upstream notices list
+Microsoft CRT components; those original source notices are preserved.
+
+turn-server 0.6.6 (colocohen)
+Source: https://github.com/colocohen/turn-server
+License: Apache-2.0. Used only as a loopback ICE adapter for EasyTier.
+The original license is included in node_modules/turn-server/LICENSE within the app.
+Optional transport/discovery modules are not activated by Roomcast.
+
 End of third-party notices.

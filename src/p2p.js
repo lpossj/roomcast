@@ -1,3 +1,5 @@
+import { configureScreenVideoSender } from './video-sender-settings.js';
+import { configureCampusSession, prepareCampusConnection, stopCampusSession, campusRequestProof, verifyCampusRequest, campusStatsRoute } from './campus-session.js';
 import { Peer } from 'peerjs';
 import { io } from 'socket.io-client';
 import { createRoomcastPeerConnection, DEFAULT_STUN_ICE, mediaIceServers, turnIceServers } from './ice-policy.js';
@@ -5,6 +7,7 @@ import { ack, recordLifecycle } from './lib.js';
 import { createPeerAuthProof, MAX_UNAUTHENTICATED_PEERS, PEER_AUTH_PROTOCOL, PEER_AUTH_TIMEOUT_MS, randomPeerAuthNonce, verifyPeerAuthProof } from './p2p-auth.js';
 import { encodeRelayInvite, optionalRelayIce } from './relay.js';
 import { createP2pVideoPolicy, p2pResolutionScale } from './p2p-video-policy.js';
+import { CAMPUS_ANSWER_TIMEOUT_MS } from './fallback-policy.js';
 
 export const P2P_ICE = DEFAULT_STUN_ICE;
 
@@ -432,6 +435,7 @@ export class P2PRoom {
       {
         reconnection: false,
         autoConnect: false,
+        transports: ['websocket'],
       },
     );
 
@@ -470,7 +474,7 @@ export class P2PRoom {
         iceServers:
           this.controlIceServers,
         iceTransportPolicy: 'all',
-        roomcastIcePolicy: false,
+        roomcastIcePolicy: true,
       },
       debug: 0,
     };
@@ -572,12 +576,18 @@ export class P2PRoom {
       this.inviteSecret =
         randomSecret();
 
-      const relayResult =
-        await optionalRelayIce({
+      const preparing = performance.now();
+      const [relayResult, local] = await Promise.all([
+        optionalRelayIce({
           settings:
             details.relaySettings
             || { enabled: false },
-        });
+        }),
+        this.localSocket(),
+      ]);
+      this.local = local;
+      if (this.closed) local.disconnect();
+      recordLifecycle('create-prepare', 'completed', performance.now() - preparing);
 
       this.assertOpen();
       const relay =
@@ -600,11 +610,6 @@ export class P2PRoom {
         relay.length
           ? encodeRelayInvite(relay)
           : '';
-
-      this.local =
-        await this.localSocket();
-      if (this.closed) this.local.disconnect();
-      this.assertOpen();
 
       for (
         const event
@@ -630,6 +635,7 @@ export class P2PRoom {
         },
       );
 
+      const creating = performance.now();
       const result = await ack(
         this.local,
         'room:create',
@@ -643,6 +649,7 @@ export class P2PRoom {
             this.iceServers,
         },
       );
+      recordLifecycle('create-local', 'completed', performance.now() - creating);
 
       this.assertOpen();
       this.id =
@@ -657,10 +664,14 @@ export class P2PRoom {
       this.ownerToken =
         result.ownerToken || '';
 
+      await configureCampusSession(this, window.roomcast?.startCampusNetwork ? randomSecret() : '');
+      this.assertOpen();
+      const signaling = performance.now();
       await this.openPeer(
         `roomcast-v1-${this.roomId}`,
         config.peerServer,
       );
+      recordLifecycle('create-signal', 'completed', performance.now() - signaling);
       this.assertOpen();
 
       this.peer.on(
@@ -674,6 +685,8 @@ export class P2PRoom {
 
       return {
         ...result,
+        roomConnection: 'P2P',
+        campusSecret: this.campusSecret || '',
         iceServers:
           this.controlIceServers,
         controlIceServers:
@@ -701,6 +714,7 @@ export class P2PRoom {
     let relayValue = '';
     let inviteSecret = '';
     let signalServer = '';
+    let campusSecret = '';
 
     if (/^roomcast:\/\//i.test(raw)) {
       let parsed;
@@ -741,6 +755,8 @@ export class P2PRoom {
         || '';
 
       signalServer = parsed.searchParams.get('signal') || '';
+      campusSecret = parsed.searchParams.get('campus') || '';
+      if (parsed.searchParams.has('campus') && !INVITE_SECRET.test(campusSecret)) throw new Error('校园互联邀请密钥无效。');
 
       if (
         !INVITE_SECRET.test(
@@ -815,6 +831,8 @@ export class P2PRoom {
           : ''
       );
 
+    await configureCampusSession(this, campusSecret);
+    this.assertOpen();
     await this.openPeer(
       undefined,
       this.peerServer,
@@ -857,8 +875,12 @@ export class P2PRoom {
     this.room =
       result.room;
 
+    const connectionStats = await this.remote?.peerConnection?.getStats().catch(() => null);
+    this.assertOpen();
     return {
       ...result,
+      roomConnection: connectionStats ? campusStatsRoute(connectionStats) : '路线检测中',
+      campusSecret: this.campusSecret || '',
       iceServers:
         this.controlIceServers,
       controlIceServers:
@@ -878,7 +900,19 @@ export class P2PRoom {
   }
 
   async connectRemote() {
+    try {
+      return await this.connectRemoteAttempt(false);
+    } catch (error) {
+      this.assertOpen();
+      if (!this.campusSecret || !window.roomcast?.startCampusNetwork || !error.campusRetryable) throw error;
+      return this.connectRemoteAttempt(true);
+    }
+  }
+
+  async connectRemoteAttempt(campus) {
     const authMode = 'invite';
+    const campusRequest = campus ? await campusRequestProof(this) : undefined;
+    this.assertOpen();
 
     const remote =
       this.peer.connect(
@@ -890,11 +924,13 @@ export class P2PRoom {
             protocol:
               PEER_AUTH_PROTOCOL,
             authMode,
+            ...(campusRequest ? { campusRequest } : {}),
           },
         },
       );
 
     this.remote = remote;
+    if (campus) void prepareCampusConnection(this, remote.peerConnection);
 
     let ready;
     let rejectReady;
@@ -1055,6 +1091,7 @@ export class P2PRoom {
         }
         if (
           !this.closed
+          && this.connected
           && !this.migrating
           && this.remote
           === remote
@@ -1066,16 +1103,29 @@ export class P2PRoom {
       },
     );
 
+    // Keep established ordinary ICE/authentication on its original deadline.
+    // Only a still-unconnected desktop attempt with a shared fallback may switch.
+    const fallbackTimer = !campus && this.canUseCampus() ? setTimeout(() => {
+      const state = remote.peerConnection?.iceConnectionState;
+      if (!authChallenge && !authVerified && !remote.open && !['connected', 'completed'].includes(state)) {
+        failed(new Error('普通连接尚未建立，尝试备用路线。'));
+      }
+    }, 8000) : null;
+
     try {
       await withTimeout(
         hostReady,
-        PEER_AUTH_TOTAL_TIMEOUT_MS,
+        campus ? 220000 : PEER_AUTH_TOTAL_TIMEOUT_MS,
         '无法与房主建立 P2P 连接。',
       );
     } catch (error) {
+      error.campusRetryable = !authChallenge && !authVerified && !this.closed
+        && !['peer-unavailable', 'network', 'server-error', 'socket-error', 'socket-closed'].includes(error.message);
+      if (!this.connected && this.remote === remote) this.remote = null;
       remote.close();
       throw error;
     } finally {
+      clearTimeout(fallbackTimer);
       peer.off(
         'error',
         failed,
@@ -1871,7 +1921,7 @@ export class P2PRoom {
       >= MAX_UNAUTHENTICATED_PEERS
       || !authMode
       || !authSecret
-      || [...this.unauthenticated].some(peer => peer.peer && peer.peer === connection.peer)
+      || (!metadata.campusRequest && [...this.unauthenticated].some(peer => peer.peer && peer.peer === connection.peer))
       || (this.authFailures.get(connection.peer) || 0) > Date.now()
     ) {
       connection.close();
@@ -1881,9 +1931,21 @@ export class P2PRoom {
     this.unauthenticated
       .add(connection);
 
+    const campus = !!metadata.campusRequest;
+    if (campus) {
+      const pc = connection.peerConnection;
+      pc.roomcastCampus = true;
+      pc.roomcastCampusPreparation = verifyCampusRequest(this, connection.peer, metadata.campusRequest).then(valid => {
+        if (!valid || this.closed || pc.signalingState === 'closed') throw new Error('EasyTier 备用请求无效。');
+        return prepareCampusConnection(this, pc);
+      }).catch(error => { connection.close(); throw error; });
+      pc.roomcastCampusPreparation.catch(() => {});
+    }
+
     let socket;
     let closed = false;
     let authenticated = false;
+    let authStarted = false;
     let memberId = '';
 
     let windowStarted =
@@ -1953,10 +2015,11 @@ export class P2PRoom {
           connection.once('open', opened);
           connection.once('close', ended);
           connection.once('error', ended);
-          timeout = setTimeout(() => finish(new Error('P2P 连接建立超时。')), PEER_AUTH_ICE_TIMEOUT_MS);
+          timeout = setTimeout(() => finish(new Error('P2P 连接建立超时。')), campus ? 115000 : PEER_AUTH_ICE_TIMEOUT_MS);
         });
       }
       if (closed || !connection.open) return;
+      authStarted = true;
       timeout = setTimeout(() => {
         if (!authenticated) connection.close();
       }, PEER_AUTH_TIMEOUT_MS);
@@ -2322,7 +2385,7 @@ export class P2PRoom {
         });
       }
     } catch {
-      if (!authenticated && connection.peer) {
+      if (authStarted && !authenticated && connection.peer) {
         this.authFailures.delete(connection.peer);
         this.authFailures.set(connection.peer, Date.now() + 3000);
         if (this.authFailures.size > 128) this.authFailures.delete(this.authFailures.keys().next().value);
@@ -2578,8 +2641,14 @@ export class P2PRoom {
     }
 
     if (
-      kind === 'close'
+      kind === 'close' || kind === 'cancel'
     ) {
+      if (kind === 'cancel') {
+        for (const [session, entry] of this.screenSessions) {
+          if (entry.owner === from && entry.requestId === requestId) this.closeLocalScreen(from, session);
+        }
+        return;
+      }
       this.closeLocalScreen(
         from,
         message.session,
@@ -2954,6 +3023,7 @@ export class P2PRoom {
       ![
         'p2p',
         'turn',
+        'campus',
       ].includes(route)
     ) {
       throw new Error(
@@ -2962,17 +3032,17 @@ export class P2PRoom {
     }
 
     const relayOnly =
-      route === 'turn';
+      route === 'turn' || route === 'campus';
 
     const routeIceServers =
-      relayOnly
+      route === 'campus' ? [] : relayOnly
         ? turnIceServers(
           this.controlIceServers,
         )
         : this.mediaIceServers;
 
     if (
-      relayOnly
+      route === 'turn'
       && !routeIceServers.length
     ) {
       throw new Error(
@@ -3023,6 +3093,8 @@ export class P2PRoom {
       );
 
     try {
+      if (route === 'campus') await prepareCampusConnection(this, pc);
+      if (this.closed || !this.screenStream?.active || this.screenSessions.get(session) !== entry) throw new Error('共享画面已结束。');
       await pc.setRemoteDescription({
         type: 'offer',
         sdp,
@@ -3095,91 +3167,14 @@ export class P2PRoom {
         this.screenSettings;
 
       let videoSender;
-
-      for (
-        const sender
-        of pc.getSenders()
-      ) {
-        if (
-          sender.track?.kind
-          !== 'video'
-        ) {
-          continue;
-        }
-
-        videoSender =
-          sender;
-
-        const parameters =
-          sender.getParameters();
-
-        if (
-          !parameters.encodings
-            ?.length
-        ) {
-          parameters.encodings =
-            [{}];
-        }
-
-        delete parameters
-          .encodings[0]
-          .scaleResolutionDownTo;
-
-        parameters
-          .encodings[0]
-          .scaleResolutionDownBy =
-          route === 'p2p' ? p2pResolutionScale(sender.track, quality) : 1;
-
-        if (
-          quality.bitrate > 0
-        ) {
-          parameters
-            .encodings[0]
-            .maxBitrate =
-            quality.bitrate
-            * 1000;
-        } else {
-          delete parameters
-            .encodings[0]
-            .maxBitrate;
-        }
-
-        parameters
-          .encodings[0]
-          .maxFramerate =
-          quality.fps;
-
-        parameters
-          .encodings[0]
-          .priority =
-          'high';
-
-        parameters
-          .encodings[0]
-          .networkPriority =
-          'high';
-
-        parameters
-          .encodings[0]
-          .bitratePriority =
-          2;
-
-        parameters
-          .degradationPreference =
-          route === 'p2p' ? 'maintain-resolution' : quality.performanceMode
-            === 'smooth'
-            ? 'maintain-framerate'
-            : 'maintain-resolution';
-
-        await sender
-          .setParameters(
-            parameters,
-          )
-          .catch(() => { });
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.kind !== 'video') continue;
+        videoSender = sender;
+        await configureScreenVideoSender(sender, quality, route);
       }
 
       if (videoSender) {
-        entry.videoPolicy = createP2pVideoPolicy({ pc, sender: videoSender, quality, route, adapt: route === 'p2p' });
+        entry.videoPolicy = createP2pVideoPolicy({ pc, sender: videoSender, quality, route, adapt: route === 'p2p' || route === 'campus' });
       }
 
       const calibrateResolution =
@@ -3270,7 +3265,7 @@ export class P2PRoom {
             === 'connected'
           ) {
             entry.videoPolicy?.start();
-            if (route !== 'p2p') entry.calibrateTimer =
+            if (route === 'turn') entry.calibrateTimer =
               setTimeout(
                 calibrateResolution,
                 350,
@@ -3316,12 +3311,17 @@ export class P2PRoom {
     );
   }
 
+  canUseCampus() {
+    return !!this.campusSecret && !!window.roomcast?.startCampusNetwork && !this.closed;
+  }
+
   async openScreen(
     owner,
     pc,
     {
       signal,
       route = 'p2p',
+      onStage,
     } = {},
   ) {
     if (
@@ -3338,6 +3338,7 @@ export class P2PRoom {
       ![
         'p2p',
         'turn',
+        'campus',
       ].includes(route)
     ) {
       throw new Error(
@@ -3362,6 +3363,7 @@ export class P2PRoom {
       );
 
     let offerSent = false;
+    let offerRequested = false;
     const outgoingCandidates = [];
 
     const sendCandidate =
@@ -3403,6 +3405,11 @@ export class P2PRoom {
       };
 
     try {
+      if (route === 'campus') {
+        onStage?.('local');
+        await withAbort(prepareCampusConnection(this, pc), signal);
+      }
+      onStage?.('answer');
       const offer =
         await withAbort(
           pc.createOffer(),
@@ -3427,29 +3434,19 @@ export class P2PRoom {
           ),
         );
 
-      const sent =
-        await withAbort(
-          this.request(
-            'screen:signal',
-            {
-              kind: 'offer',
-              requestId,
-              to: owner,
-              route,
-              sdp:
-                pc.localDescription
-                  .sdp,
-            },
-          ),
-          signal,
-        );
-
-      if (!sent.ok) {
-        throw new Error(
-          sent.error,
-        );
-      }
-
+      offerRequested = true;
+      const offerRequest = this.request(
+        'screen:signal',
+        {
+          kind: 'offer',
+          requestId,
+          to: owner,
+          route,
+          sdp: pc.localDescription.sdp,
+        },
+      );
+      // The control channel is ordered. Dispatch the offer first, then trickle
+      // candidates without waiting an extra control round trip for its ACK.
       offerSent = true;
 
       for (
@@ -3462,13 +3459,16 @@ export class P2PRoom {
         );
       }
 
+      const sent = await withAbort(offerRequest, signal);
+      if (!sent.ok) throw new Error(sent.error);
+
       const result =
         await withTimeout(
           withAbort(
             promise,
             signal,
           ),
-          12000,
+          route === 'campus' ? CAMPUS_ANSWER_TIMEOUT_MS : 12000,
           '共享者画面连接响应超时。',
         );
 
@@ -3507,10 +3507,13 @@ export class P2PRoom {
 
       signal?.throwIfAborted();
 
+      onStage?.('ice');
       return result;
     } catch (error) {
       this.screenViewers
         .delete(requestId);
+
+      if (offerRequested) void this.request('screen:signal', { kind: 'cancel', requestId, to: owner }).catch(() => {});
 
       pc.onicecandidate = null;
 
@@ -3672,6 +3675,7 @@ export class P2PRoom {
     this.pendingMigrationCommit = null;
     // Failure in one cleanup must not retain the other room connections.
     const release = callback => { try { callback(); } catch { } };
+    release(() => stopCampusSession(this));
 
     this.resolveMigration?.();
 

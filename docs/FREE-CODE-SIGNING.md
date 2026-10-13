@@ -99,7 +99,7 @@ $env:WIN_CSC_KEY_PASSWORD = $env:CSC_KEY_PASSWORD
 再打包：
 
 ```powershell
-npm.cmd run dist:obs-verified
+npm.cmd run dist
 npm.cmd run dist:zip
 ```
 
@@ -115,7 +115,7 @@ npm.cmd run dist:zip
 ### 3. 验证
 
 ```powershell
-.\scripts\Check-RoomcastSignature.ps1 -Version 0.14.2-beta.1
+Get-AuthenticodeSignature .\release\Roomcast-0.14.2-beta.1-Windows.exe
 ```
 
 自签名通常会显示不是 `Valid`，这是正常的。

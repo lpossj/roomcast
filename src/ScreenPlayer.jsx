@@ -1,8 +1,11 @@
 import { AppWindow, Expand, LoaderCircle, Minimize, Radio, RefreshCw, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { P2P_CONNECT_TIMEOUT_MS, watchPlayableFrame } from './fallback-policy.js';
+import { P2P_CONNECT_TIMEOUT_MS, MEDIA_FIRST_FRAME_TIMEOUT_MS, MEDIA_DISCONNECT_GRACE_MS,
+  CAMPUS_LOCAL_TIMEOUT_MS, CAMPUS_ANSWER_TIMEOUT_MS, CAMPUS_TOTAL_TIMEOUT_MS, watchPlayableFrame } from './fallback-policy.js';
+import { recordLifecycle } from './lifecycle-diagnostics.js';
 import { createMediaRaceCoordinator } from './media-race-manager.js';
 import { FULLSCREEN_ELEMENT, FULLSCREEN_VIDEO, pickFullscreenMode } from './fullscreen-policy.js';
+import { campusStatsRoute } from './campus-session.js';
 import { createVdoScreenViewer } from './transports/vdo-screen-viewer.js';
 import { createRoomcastPeerConnection, mediaIceServers } from './ice-policy.js';
 import { selectScreenPlayback } from './local-preview.js';
@@ -40,6 +43,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
   const viewingReported = useRef(false);
   const viewingAuthorization = useRef(Promise.resolve());
   const playbackGeneration = useRef(0);
+  const automaticRecoveryUsed = useRef(false);
   const uiTimer = useRef(null);
   const interaction = useRef({ inside: false, hover: false, pointer: false, focus: false });
   const wasFullscreen = useRef(false);
@@ -53,6 +57,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
 
   // 是否真正进入这个共享
   const [entered, setEntered] = useState(() => initiallyEntered);
+  useEffect(() => { automaticRecoveryUsed.current = false; }, [entered, stream.memberId, transport]);
   const [windowMode, setWindowMode] = useState('MAIN');
   const floating = windowMode !== 'MAIN';
   const floatingPlayer = useRef(null);
@@ -132,9 +137,11 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         const track = local.getVideoTracks()[0];
         const value = track?.getSettings?.() || {};
         let bytes = 0, outbound, codec;
+        const routes = new Set();
         const sessions = [...(transport.screenSessions?.values?.() || [])];
         for (const { pc } of sessions) {
           const report = await pc.getStats().catch(() => null);
+          if (report) routes.add(campusStatsRoute(report));
           report?.forEach(item => {
             if (item.type === 'outbound-rtp' && item.kind === 'video') { bytes += item.bytesSent || 0; if (!outbound) { outbound = item; codec = report.get(item.codecId); } }
           });
@@ -145,7 +152,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         lastSample = { at: now, bytes };
         // Without a viewer there is no outbound-rtp report, so the numbers fall back to the
         // capture settings. `source` keeps those two meanings from being confused.
-        setMetrics({ ...emptyMetrics, source: outbound ? 'outbound' : 'capture', viewers: sessions.length, width: outbound?.frameWidth || videoRef.current?.videoWidth || value.width || 0, height: outbound?.frameHeight || videoRef.current?.videoHeight || value.height || 0, fps: outbound?.framesPerSecond || value.frameRate || 0, bitrate, codec: codec?.mimeType?.split('/')[1] || 'H.264 优先', route: 'P2P直连', encoder: outbound?.encoderImplementation || '' });
+        setMetrics({ ...emptyMetrics, source: outbound ? 'outbound' : 'capture', viewers: sessions.length, width: outbound?.frameWidth || videoRef.current?.videoWidth || value.width || 0, height: outbound?.frameHeight || videoRef.current?.videoHeight || value.height || 0, fps: outbound?.framesPerSecond || value.frameRate || 0, bitrate, codec: codec?.mimeType?.split('/')[1] || 'H.264 优先', route: [...routes].join(' / ') || '本机预览', encoder: outbound?.encoderImplementation || '' });
       };
       setSound(false); setState('live'); setError('');
       if (videoRef.current) { videoRef.current.srcObject = local; videoRef.current.play().catch(() => { }); }
@@ -171,13 +178,15 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
     const attempts = new Map();
     const isCurrent = value => !disposed && playbackGeneration.current === value;
 
-    setSound(false);
+    // Reconnecting replaces the transport, not the viewer's sound preference.
     setState('connecting');
     setError('');
     setMetrics(emptyMetrics);
 
     const routeText = route => (
-      route === 'vdo'
+      route === 'campus'
+        ? 'EasyTier'
+        : route === 'vdo'
         ? 'VDO'
         : route === 'turn'
           ? 'TURN'
@@ -262,22 +271,27 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         inbound.timestamp
         || performance.now();
 
+      const previousSample = lastSample?.id === inbound.id && now > lastSample.at
+        ? lastSample : null;
+
       const bitrate =
-        lastSample
-        && now > lastSample.at
+        previousSample
           ? Math.max(
             0,
             (
               inbound.bytesReceived
-              - lastSample.bytes
+              - previousSample.bytes
             ) * 8 / (
-              now - lastSample.at
+              now - previousSample.at
             ),
           )
           : 0;
 
       lastSample = {
+        id: inbound.id,
         at: now,
+        framesDecoded: inbound.framesDecoded,
+        totalDecodeTime: inbound.totalDecodeTime,
         bytes:
           inbound.bytesReceived
           || 0,
@@ -353,19 +367,12 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
           ),
         ) * 1000;
 
-      const decodeMs =
-        inbound.framesDecoded
-          ? (
-            Number(
-              inbound.totalDecodeTime
-              || 0,
-            )
-            * 1000
-            / Number(
-              inbound.framesDecoded,
-            )
-          )
-          : 0;
+      // Use recent decode cost: a session-wide average retains old stalls and
+      // hides new decoder pressure. Ignore absent/reset counters or no new frames.
+      const decodedFrames = inbound.framesDecoded - previousSample?.framesDecoded;
+      const decodeTime = inbound.totalDecodeTime - previousSample?.totalDecodeTime;
+      const decodeMs = decodedFrames > 0 && Number.isFinite(decodeTime) && decodeTime >= 0
+        ? decodeTime * 1000 / decodedFrames : 0;
 
       bufferTargetMs =
         adaptivePlayoutTarget(
@@ -406,9 +413,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
           || '检测中',
 
         route:
-          routeText(
-            attempt.route,
-          ),
+          campusStatsRoute(report, routeText(attempt.route)),
 
         lost:
           inbound.packetsLost
@@ -434,6 +439,53 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         );
     };
 
+    const finishStage = (attempt, phase) => {
+      if (!attempt?.stage) return;
+      recordLifecycle(`playback-${attempt.stage}`, phase, performance.now() - attempt.stageStarted);
+      attempt.stage = null;
+      clearTimeout(attempt.deadlineTimer);
+      attempt.deadlineTimer = null;
+    };
+
+    const beginStage = (attempt, requestedStage) => {
+      if (!isCurrent(generation) || attempt.closed || activeAttempt === attempt) return;
+      const stage = requestedStage === 'ice' && attempt.pc?.connectionState === 'connected' ? 'frame' : requestedStage;
+      if (attempt.stage === stage || (attempt.stage === 'frame' && stage === 'ice')) return;
+      finishStage(attempt, 'completed');
+      attempt.stage = stage;
+      attempt.stageStarted = performance.now();
+      recordLifecycle(`playback-${stage}`, 'started');
+      const duration = stage === 'local' ? CAMPUS_LOCAL_TIMEOUT_MS
+        : stage === 'answer' ? (attempt.route === 'campus' ? CAMPUS_ANSWER_TIMEOUT_MS : P2P_CONNECT_TIMEOUT_MS)
+          : stage === 'frame' ? MEDIA_FIRST_FRAME_TIMEOUT_MS : P2P_CONNECT_TIMEOUT_MS;
+      attempt.deadlineTimer = setTimeout(() => {
+        if (!isCurrent(generation) || attempt.closed) return;
+        const label = { local: '本机备用组件准备', answer: '共享者响应', ice: '媒体连接', frame: '首帧画面' }[stage];
+        const failure = new Error(`${label}超时。`);
+        if (attempt.route === 'p2p' || attempt.route === 'vdo') markFailed(attempt.route, failure);
+        else markTurnFailed(failure, attempt.route);
+      }, duration);
+    };
+
+    const observeConnection = attempt => {
+      if (!isCurrent(generation) || attempt.closed) return;
+      const connectionState = attempt.pc?.connectionState;
+      if (connectionState !== 'disconnected') {
+        clearTimeout(attempt.disconnectTimer);
+        attempt.disconnectTimer = null;
+      }
+      if (connectionState === 'connected') beginStage(attempt, 'frame');
+      if (connectionState === 'disconnected' && !attempt.disconnectTimer) {
+        attempt.disconnectTimer = setTimeout(() => {
+          attempt.disconnectTimer = null;
+          if (!isCurrent(generation) || attempt.closed || attempt.pc?.connectionState !== 'disconnected') return;
+          const failure = new Error('媒体连接持续中断。');
+          if (attempt.route === 'p2p' || attempt.route === 'vdo') markFailed(attempt.route, failure);
+          else markTurnFailed(failure, attempt.route);
+        }, MEDIA_DISCONNECT_GRACE_MS);
+      }
+    };
+
     const activateAttempt = (
       route,
       attempt,
@@ -454,6 +506,10 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
 
       activeRoute =
         route;
+
+      finishStage(attempt, 'completed');
+      clearTimeout(attempt.totalTimer);
+      attempt.totalTimer = null;
 
       attempt.candidate.pause();
       attempt.candidate.srcObject =
@@ -495,7 +551,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
           || 0,
 
         route:
-          routeText(route),
+          route === 'campus' ? '路线检测中' : routeText(route),
       });
 
       setState('live');
@@ -527,6 +583,10 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         receivers: [],
         cancelFrame: null,
         deadlineTimer: null,
+        totalTimer: null,
+        disconnectTimer: null,
+        stage: null,
+        stageStarted: 0,
         connectionListener: null,
         closed: false,
       };
@@ -554,6 +614,9 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
       }
 
       attempt.closed = true;
+      finishStage(attempt, 'cancelled');
+      clearTimeout(attempt.totalTimer);
+      clearTimeout(attempt.disconnectTimer);
       attempt.controller.abort(
         reason,
       );
@@ -585,6 +648,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         [
           'p2p',
           'turn',
+          'campus',
         ].includes(route)
         && attempt.pc
       ) {
@@ -602,6 +666,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         [
           'p2p',
           'turn',
+          'campus',
         ].includes(route)
         && attempt.resource
       ) {
@@ -682,15 +747,18 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         'turn',
         reason,
       );
+      closeAttempt('campus', reason);
     };
 
     let turnStarted = false;
+    let campusStarted = false;
 
     const markTurnFailed = (
       failure,
+      route = 'turn',
     ) => {
       const attempt =
-        attempts.get('turn');
+        attempts.get(route);
 
       if (
         !isCurrent(generation)
@@ -700,13 +768,11 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         return;
       }
 
-      closeAttempt(
-        'turn',
-        'turn-failed',
-      );
+      finishStage(attempt, 'failed');
+      closeAttempt(route, 'turn-failed');
 
       if (
-        activeRoute === 'turn'
+        activeRoute === route
       ) {
         activeAttempt = null;
         activeRoute = null;
@@ -720,6 +786,8 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         }
       }
 
+      if (route === 'campus') { startTurnFallback(); return; }
+
       setMetrics(
         emptyMetrics,
       );
@@ -728,6 +796,45 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
       setError(
         failure?.message
         || 'TURN 中继未建立可播放画面。',
+      );
+    };
+
+    const startTurnFallback = () => {
+      if (!isCurrent(generation)) return;
+      const turnServers =
+        transport
+          .getTurnMediaIceServers
+          ?.()
+        || [];
+
+      if (
+        turnServers.length
+      ) {
+        setMetrics({
+          ...emptyMetrics,
+          route:
+            'TURN连接中',
+        });
+
+        setState('connecting');
+        setError(
+          'P2P 与 VDO 直连均不可用，正在尝试 TURN 中继…',
+        );
+
+        void connectTurn(
+          turnServers,
+        );
+
+        return;
+      }
+
+      setMetrics(
+        emptyMetrics,
+      );
+
+      setState('failed');
+      setError(
+        'P2P 与 VDO 直连均未建立可播放画面；TURN 未启用或不可用。',
       );
     };
 
@@ -752,6 +859,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
         failure?.message
         || String(failure || '');
 
+      finishStage(attempt, 'failed');
       const result =
         race.markFailed(
           route,
@@ -852,41 +960,11 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
                 null;
             }
 
-            const turnServers =
-              transport
-                .getTurnMediaIceServers
-                ?.()
-              || [];
-
-            if (
-              turnServers.length
-            ) {
-              setMetrics({
-                ...emptyMetrics,
-                route:
-                  'TURN连接中',
-              });
-
+            if (transport.canUseCampus?.()) {
               setState('connecting');
-              setError(
-                'P2P 与 VDO 直连均不可用，正在尝试 TURN 中继…',
-              );
-
-              void connectTurn(
-                turnServers,
-              );
-
-              return;
-            }
-
-            setMetrics(
-              emptyMetrics,
-            );
-
-            setState('failed');
-            setError(
-              'P2P 与 VDO 直连均未建立可播放画面；TURN 未启用或不可用。',
-            );
+              setError('普通直连未建立画面，正在尝试 EasyTier…');
+              void connectTurn([], 'campus');
+            } else startTurnFallback();
           },
 
         onWinnerFailed:
@@ -901,6 +979,14 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
               snapshot.route
               || activeRoute;
 
+            if (!automaticRecoveryUsed.current) {
+              automaticRecoveryUsed.current = true;
+              recordLifecycle('playback-recovery', 'started');
+              closeAllAttempts('automatic-recovery');
+              setRetry(value => value + 1);
+              return;
+            }
+
             activeAttempt = null;
             activeRoute = null;
             clearStats();
@@ -912,6 +998,14 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
                 null;
             }
 
+            if (transport.canUseCampus?.() && !campusStarted) {
+              closeAttempt('p2p', 'direct-lost');
+              closeAttempt('vdo', 'direct-lost');
+              setState('connecting');
+              setError('普通直连已中断，正在尝试 EasyTier…');
+              void connectTurn([], 'campus');
+              return;
+            }
             setState('failed');
             setError(
               `${routeText(route)} 媒体连接已中断，请重新连接。`,
@@ -1085,6 +1179,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
                 ),
               );
             }
+            observeConnection(attempt);
           };
 
         try {
@@ -1095,6 +1190,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
                 pc,
                 {
                   signal,
+                  onStage: stage => beginStage(attempt, stage),
                 },
               );
 
@@ -1339,6 +1435,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
                   ),
                 );
               }
+              observeConnection(attempt);
             };
 
           attempt.connectionListener =
@@ -1367,18 +1464,18 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
       };
 
     const connectTurn =
-      async turnServers => {
+      async (turnServers, route = 'turn') => {
         if (
-          turnStarted
+          (route === 'campus' ? campusStarted : turnStarted)
           || !isCurrent(generation)
         ) {
           return;
         }
 
-        turnStarted = true;
+        if (route === 'campus') campusStarted = true; else turnStarted = true;
 
         const attempt =
-          makeAttempt('turn');
+          makeAttempt(route);
 
         const signal =
           attempt.controller.signal;
@@ -1395,22 +1492,23 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
               }
 
               activateAttempt(
-                'turn',
+                route,
                 attempt,
               );
             },
           );
 
-        attempt.deadlineTimer =
+        attempt.totalTimer =
           setTimeout(
             () => {
               markTurnFailed(
                 new Error(
-                  'TURN 中继连接超时。',
+                  `${routeText(route)} 连接超时。`,
                 ),
+                route,
               );
             },
-            P2P_CONNECT_TIMEOUT_MS,
+            route === 'campus' ? CAMPUS_TOTAL_TIMEOUT_MS : P2P_CONNECT_TIMEOUT_MS,
           );
 
         const pc =
@@ -1531,10 +1629,12 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
             ) {
               markTurnFailed(
                 new Error(
-                  'TURN 中继媒体连接失败。',
+                  `${routeText(route)} 媒体连接失败。`,
                 ),
+                route,
               );
             }
+            observeConnection(attempt);
           };
 
         try {
@@ -1545,7 +1645,8 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
                 pc,
                 {
                   signal,
-                  route: 'turn',
+                  route,
+                  onStage: stage => beginStage(attempt, stage),
                 },
               );
 
@@ -1581,6 +1682,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
 
           markTurnFailed(
             failure,
+            route,
           );
         }
       };
@@ -1615,11 +1717,11 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
     };
 
     const credentialChanged = () => {
-      // Healthy native P2P/TURN viewers keep their current connection. Only a
+      // Native P2P and the EasyTier/TURN fallback keep their current connection. Only a
       // VDO viewer (including a pending contender) needs fresh credentials.
       // The old VDO connection may fail before the control-channel update
       // arrives. Its closed attempt must still be eligible for recovery.
-      if (isCurrent(generation) && !turnStarted && activeRoute !== 'p2p'
+      if (isCurrent(generation) && !campusStarted && !turnStarted && activeRoute !== 'p2p'
         && attempts.has('vdo')) setRetry(value => value + 1);
     };
     transport.on?.('room:credential', credentialChanged);

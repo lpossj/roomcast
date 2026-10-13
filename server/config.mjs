@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { DEFAULT_STUN_ICE } from './stun-servers.mjs';
 
 export const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export function loadConfig(overrides = {}) {
@@ -12,7 +13,7 @@ export function loadConfig(overrides = {}) {
   return {
     rootDir, staticDir: path.join(projectDir, 'dist'), host: process.env.HOST || '127.0.0.1', port,
     allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
-    iceServers: turn ? [{ urls: turn, username: process.env.TURN_USERNAME || '', credential: process.env.TURN_CREDENTIAL || '' }] : [{ urls: 'stun:stun.cloudflare.com:3478' }],
+    iceServers: turn ? [{ urls: turn, username: process.env.TURN_USERNAME || '', credential: process.env.TURN_CREDENTIAL || '' }] : [...DEFAULT_STUN_ICE],
     peerServer: process.env.PEER_SERVER_URL || '',
     turnUrls: (process.env.TURN_URLS || '').split(',').map(s => s.trim()).filter(Boolean),
     turnSharedSecret: process.env.TURN_SHARED_SECRET || '',

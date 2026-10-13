@@ -20,13 +20,14 @@ async function cleanAbandonedBuildScratch() {
   }
 }
 
-exports.default = async function beforePack() {
+exports.default = async function beforePack(context) {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     throw new Error('Roomcast 当前发布目标仅支持 Windows x64；无法准备内置 OBS Runtime。');
   }
   await cleanAbandonedBuildScratch();
   require('./build-update-launcher.cjs');
   for (const [name, args] of [
+    ['prepare-easytier.mjs', []],
     ['prepare-embedded-obs.mjs', ['--release']],
   ]) {
     await new Promise((resolve, reject) => {
@@ -39,6 +40,34 @@ exports.default = async function beforePack() {
       child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${name} 准备失败：${code}`)));
     });
   }
+  // Keep complete corresponding sources beside the distributables, not inside
+  // every installed client. The runtime cache and its trust manifest stay intact.
+  const root = path.resolve(__dirname, '..');
+  const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  const sourceName = `Roomcast-${version}-EasyTier-sources.zip`;
+  const source = path.join(root, 'runtime/easytier/sources.zip');
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'electron/campus-runtime-manifest.json'), 'utf8'));
+  const sourceHash = createHash('sha256').update(fs.readFileSync(source)).digest('hex');
+  if (sourceHash !== manifest.files['sources.zip']) throw new Error('EasyTier corresponding source digest mismatch');
+  fs.mkdirSync(context.outDir, { recursive: true });
+  const destination = path.join(context.outDir, sourceName);
+  fs.copyFileSync(source, destination);
+  if (createHash('sha256').update(fs.readFileSync(destination)).digest('hex') !== sourceHash) {
+    throw new Error('EasyTier source attachment copy failed');
+  }
+  fs.writeFileSync(path.join(root, 'runtime/easytier/SOURCE-NOTICE.txt'), [
+    `Roomcast ${version}: EasyTier ${manifest.version}`,
+    `Corresponding source archive: ${sourceName}`,
+    `SHA256: ${sourceHash}`,
+    `Upstream commit: ${manifest.commit}`,
+    'The archive includes Roomcast modifications, dependency sources, Cargo.lock and ROOMCAST-BUILD.txt.',
+    'For local/offline distribution, supply this archive alongside the EXE or ZIP.',
+    'For public distribution, provide this archive without charge next to the client download at:',
+    `https://github.com/lpossj/roomcast/releases/tag/v${version}`,
+    'Do not distribute the client without providing access to its corresponding source archive.',
+    'Keep source access available for as long as this binary is distributed.',
+    '',
+  ].join('\n'), 'utf8');
   for (const bit of [32, 64]) {
     const dll = path.join(__dirname, '..', 'runtime/obs-bundle/data/obs-plugins/win-dshow', `obs-virtualcam-module${bit}.dll`);
     const hash = createHash('sha256').update(fs.readFileSync(dll)).digest('hex');

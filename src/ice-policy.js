@@ -1,7 +1,9 @@
 // Apply candidate ordering only to explicitly marked Roomcast connections.
+import { isCampusCandidate } from './campus-session.js';
+import { DEFAULT_STUN_ICE } from '../server/stun-servers.mjs';
+export { DEFAULT_STUN_ICE } from '../server/stun-servers.mjs';
 // Native ICE still validates/nominates pairs; never remove IPv4 or force relay.
 export const ICE_DELAYS = { ipv6: 0, ipv4: 450, relay: 2400 };
-export const DEFAULT_STUN_ICE = Object.freeze([{ urls: 'stun:stun.cloudflare.com:3478' }]);
 
 const urlsOf = item => Array.isArray(item?.urls) ? item.urls : [item?.urls];
 
@@ -64,15 +66,39 @@ export function installIcePolicy(target = window) {
       this.roomcastCandidateTimers = new Map();
       this.roomcastCandidatePromises = new Set();
       this.roomcastIceStarted = 0;
+      this.addEventListener('icecandidate', event => {
+        if (!this.roomcastCampus && isCampusCandidate(event.candidate?.candidate)) event.stopImmediatePropagation();
+      });
+    }
+    get localDescription() {
+      const description = super.localDescription;
+      if (!description?.sdp) return description;
+      const sdp = this.roomcastCampus ? description.sdp : stripCampusCandidates(description.sdp);
+      return sdp === description.sdp ? description : new RTCSessionDescription({ type: description.type, sdp });
     }
     setConfiguration(config) {
+      if (this.roomcastCampus) {
+        this.roomcastIcePolicyEnabled = false;
+        const nativeConfig = { ...config };
+        delete nativeConfig.roomcastIcePolicy;
+        return super.setConfiguration(nativeConfig);
+      }
       if (!this.roomcastIcePolicyEnabled && config?.roomcastIcePolicy !== true) return super.setConfiguration(config);
       this.roomcastIcePolicyEnabled = true;
       const nativeConfig = { ...config };
       delete nativeConfig.roomcastIcePolicy;
       return super.setConfiguration({ ...nativeConfig, iceTransportPolicy: 'all' });
     }
+    async setLocalDescription(description) {
+      if (this.roomcastCampusPreparation) await this.roomcastCampusPreparation;
+      if (!this.roomcastCampus && description?.sdp) description = { type: description.type, sdp: stripCampusCandidates(description.sdp) };
+      return super.setLocalDescription(description);
+    }
     async setRemoteDescription(description) {
+      // PeerJS emits its incoming connection synchronously after constructing
+      // this PC. Allow the receiver to mark the independently authorized retry.
+      await Promise.resolve();
+      if (!this.roomcastCampus && description?.sdp) description = { type: description.type, sdp: stripCampusCandidates(description.sdp) };
       if (!this.roomcastIcePolicyEnabled || !description?.sdp) return super.setRemoteDescription(description);
       this.roomcastIceStarted = performance.now();
       const deferred = [];
@@ -94,6 +120,7 @@ export function installIcePolicy(target = window) {
       if (endOfCandidates) await this.addIceCandidate(null);
     }
     addIceCandidate(candidate) {
+      if (!this.roomcastCampus && isCampusCandidate(candidate?.candidate)) return Promise.resolve();
       if (!this.roomcastIcePolicyEnabled) return super.addIceCandidate(candidate);
       if (this.signalingState === 'closed') return Promise.resolve();
       const value = candidate?.toJSON ? candidate.toJSON() : candidate;
@@ -123,10 +150,17 @@ export function installIcePolicy(target = window) {
     close() {
       for (const [timer, resolve] of this.roomcastCandidateTimers) { clearTimeout(timer); resolve(); }
       this.roomcastCandidateTimers.clear();
-      return super.close();
+      super.close();
+      const cleanup = this.roomcastCampusCleanup;
+      this.roomcastCampusCleanup = null;
+      cleanup?.();
     }
   }
   target.RTCPeerConnection = PreferredPeerConnection;
+}
+
+function stripCampusCandidates(sdp) {
+  return sdp.split(/\r?\n/).filter(line => !line.startsWith('a=candidate:') || !isCampusCandidate(line.slice(2))).join('\r\n');
 }
 
 export function createRoomcastPeerConnection(config = {}, constraints) {

@@ -7,6 +7,7 @@ import useRoomVoice from './useRoomVoice.js';
 import PanelResizeHandle, { usePanelWidths } from './PanelResizeHandle.jsx';
 import useBackgroundStatus from './useBackgroundStatus.js';
 import useAppearance from './useAppearance.js';
+import { playSound } from './sounds.js';
 import { ack, attachNativeAudio, getLifecycleDiagnostics, initials, integratedSources, nativeAudioSources, startIntegratedCapture, startObsFixedFpsCapture, timeLabel } from './lib.js';
 import { readImageDimensions } from './image-policy.js';
 import { loadPreference, savePreference } from './preferences.js';
@@ -15,11 +16,8 @@ import { browserCapabilities, normalizeBrowserShareSettings } from './browser-ca
 import { startCameraCapture } from './browser-capture.js';
 import useDevices from './useDevices.js';
 import useRoom from './useRoom.js';
-import { MEDIA_RACE_BUILD_PROBE } from './media-race-manager.js';
 import { readPageInvite, roomInviteFromUrl } from './invite-entry.js';
 import { readP2pDiagnostics } from './p2p-video-policy.js';
-
-void MEDIA_RACE_BUILD_PROBE;
 
 const presets = [
   { id: '1080p30', label: '1080p', detail: '30 FPS · 推荐', width: 1920, height: 1080, fps: 30, bitrate: 4500 },
@@ -197,10 +195,21 @@ function Dropdown({ label, value, options, onChange, disabled = false, descripti
   </div>;
 }
 
-function EntryModal({ mode, onClose, onEnter, busy, defaultServer, inviteRoom, canHost = true }) {
+function EntryModal({ mode, onClose, onEnter, busy, defaultServer, peerServer, inviteRoom, canHost = true }) {
   const [kind, setKind] = useState(canHost ? mode : 'join');
   const [form, setForm] = useState({ nickname: loadPreference('nickname', ''), name: '朋友的放映室', roomId: inviteRoom || initialInvite, createKey: '', server: params.get('server') || loadPreference('server', '') || defaultServer || window.location.origin });
   const [error, setError] = useState('');
+  useEffect(() => {
+    if (kind !== 'create' || !window.roomcast?.desktop) return;
+    let origin;
+    try { origin = new URL(peerServer || 'https://0.peerjs.com').origin; } catch { return; }
+    const hint = document.createElement('link');
+    hint.rel = 'preconnect';
+    hint.href = origin;
+    hint.crossOrigin = 'anonymous';
+    document.head.append(hint);
+    return () => hint.remove();
+  }, [kind, peerServer]);
   const field = key => ({ value: form[key], onChange: event => setForm(value => ({ ...value, [key]: key === 'roomId' ? roomInviteFromUrl(event.target.value) || event.target.value : event.target.value })) });
   const submit = async event => {
     event.preventDefault();
@@ -568,7 +577,7 @@ function MemberPermissionsModal({ member, self, onClose, command }) {
   </Modal>;
 }
 
-function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInvite, inviteSecret, peerServer }) {
+function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInvite, inviteSecret, peerServer, campusSecret }) {
   const addresses = (localConfig?.addresses || []).map(value => typeof value === 'string' ? value : value.url).filter(Boolean);
   const loopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(server);
   const [address, setAddress] = useState(loopback ? addresses.find(value => /^https?:\/\/100\./.test(value)) || addresses.find(value => !/localhost|127\.0\.0\.1/.test(value)) || server : server);
@@ -590,14 +599,17 @@ function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInv
     return window.roomcast.onWebInviteState?.(state => { if (!state.url) setWebViewerUrl(''); });
   }, [isP2P, startWebViewer]);
   const link = `${address}/?room=${encodeURIComponent(room.id)}&server=${encodeURIComponent(address)}`;
-  const p2pLink = `roomcast://join/${room.id}?secret=${encodeURIComponent(inviteSecret || '')}${relayInvite ? `&relay=${relayInvite}` : ''}${peerServer ? `&signal=${encodeURIComponent(peerServer)}` : ''}`;
+  const p2pLink = `roomcast://join/${room.id}?secret=${encodeURIComponent(inviteSecret || '')}${relayInvite ? `&relay=${relayInvite}` : ''}${peerServer ? `&signal=${encodeURIComponent(peerServer)}` : ''}${campusSecret ? `&campus=${encodeURIComponent(campusSecret)}` : ''}`;
   const webLink = (() => {
     try {
       const url = new URL(webViewerUrl.trim());
       if (url.protocol !== 'https:' || url.username || url.password) return '';
       url.search = '';
       url.hash = '';
-      url.hash = new URLSearchParams({ room: p2pLink }).toString();
+      // Browsers join through ordinary WebRTC; the overlay key stays in desktop invites.
+      const webInvite = new URL(p2pLink);
+      webInvite.searchParams.delete('campus');
+      url.hash = new URLSearchParams({ room: webInvite.href }).toString();
       return url.href;
     } catch { return ''; }
   })();
@@ -605,9 +617,9 @@ function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInv
     <div className="invite-room"><div className="room-symbol"><AudioLines size={27} /></div><div><strong>{room.name}</strong><span>{room.members.length} / 10 位成员在线</span></div></div>
     <label className="standalone-label">邀请链接<input value={p2pLink} readOnly onFocus={event => event.target.select()} /></label>
     <button className="button primary full" onClick={() => copy(p2pLink)}><Copy size={17} />复制邀请链接</button>
-    <><label className="standalone-label">电脑／手机网页观看链接<input value={webLink} readOnly placeholder={webViewerBusy ? '正在生成网页观看链接…' : '网页入口尚未就绪'} onFocus={event => event.target.select()} /></label>
+    <label className="standalone-label">电脑／手机网页观看链接<input value={webLink} readOnly placeholder={webViewerBusy ? '正在生成网页观看链接…' : '网页入口尚未就绪'} onFocus={event => event.target.select()} /></label>
       <button className="button secondary full" onClick={() => copy(webLink)} disabled={!webLink}><Copy size={17} />复制网页观看链接</button>
-      {webViewerError && <div className="inline-error"><Info size={16} />{webViewerError}<button className="button secondary small" onClick={startWebViewer} disabled={webViewerBusy}>重试</button></div>}</>
+      {webViewerError && <div className="inline-error"><Info size={16} />{webViewerError}<button className="button secondary small" onClick={startWebViewer} disabled={webViewerBusy}>重试</button></div>}
   </Modal>;
   return <Modal title="分享房间" onClose={onClose}>
     <div className="invite-room"><div className="room-symbol"><AudioLines size={27} /></div><div><strong>{room.name}</strong><span>{room.members.length} / 10 位成员在线</span></div></div>
@@ -1202,6 +1214,7 @@ export default function App() {
     const action = ++roomAction.current;
     setModal(null);
     const socket = socketRef.current;
+    if (socket?.connected) playSound('leave');
     if (ownsCapture.current) {
       ownsCapture.current = false;
       void stopLocalShare(socket).catch(error => { if (action === roomAction.current) notify(`停止采集失败：${error.message}`); });
@@ -1637,10 +1650,10 @@ export default function App() {
       <footer className="voice-dock">{canShareScreen && <div className="dock-controls"><button className="button share-button" onClick={openShare} disabled={shareBusy || (!!room && !self?.canShare && !ownShare)}>{shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={19} />}<span>{ownShare ? '修改共享设置' : desktopChrome ? '共享屏幕' : '共享画面'}</span></button>{ownShare && <button className="control-button leave-button" onClick={stopShare} disabled={shareBusy} title="停止共享" aria-label="停止共享"><Square size={16} /></button>}</div>}</footer>
     </main>
     {updatePrompt.open && update.result?.available && <UpdatePromptModal current={update.result.current || localConfig?.version || APP_VERSION} result={update.result} install={updateInstall} dontRemind={updatePrompt.dontRemind} setDontRemind={value => setUpdatePrompt(current => ({ ...current, dontRemind: value }))} onClose={closeUpdatePrompt} onUpdate={startAutoUpdate} onOpenPage={() => { window.roomcast?.openReleasePage?.().catch(() => { }); }} />}
-    {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} canHost={canHostRoom} onClose={cancelEntry} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} />}
+    {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} canHost={canHostRoom} onClose={cancelEntry} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} peerServer={localConfig?.peerServer} />}
     {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} capabilities={capabilities} />}
     {modal === 'settings' && <SettingsModal avatar={avatar} avatarName={self?.name || loadPreference('nickname', '访客')} onAvatar={changeAvatar} voice={voice} onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
-    {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} />}
+    {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} campusSecret={config?.campusSecret} />}
     {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}
     {previewImage && <ImagePreviewOverlay key={previewImage.src} image={previewImage} onClose={() => setPreviewImage(null)} onImageContextMenu={handleImageContextMenu} onCopy={copyPreviewImage} onDownload={downloadPreviewImage} />}
     {imageContextMenu && <div className="image-context-menu" role="menu" style={{ left: imageContextMenu.x, top: imageContextMenu.y }} onPointerDown={event => event.stopPropagation()}>

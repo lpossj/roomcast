@@ -3692,8 +3692,14 @@ export function attachRooms(io, {
         && (typeof payload.sdp !== 'string' || payload.sdp.length > 64 * 1024
           || !/^v=0\r?\n/.test(payload.sdp) || /(?:^|\n)m=(?:video|application)\b/.test(payload.sdp))) throw new Error('语音描述格式错误。');
       if (payload.kind === 'candidate' && !['listener', 'publisher'].includes(payload.side)) throw new Error('语音候选方向错误。');
+      const description = ['offer', 'answer'].includes(payload.kind);
+      if (payload.route !== undefined && (!description || !['p2p', 'campus'].includes(payload.route))) throw new Error('语音路线无效。');
+      if (payload.campusCapable !== undefined && (!description || typeof payload.campusCapable !== 'boolean')) throw new Error('语音能力格式错误。');
+      if (payload.route === 'campus' && payload.campusCapable !== true) throw new Error('语音校园能力未声明。');
       target.socket?.emit('voice:signal', {
         from: member.id, kind: payload.kind, requestId: payload.requestId,
+        route: description ? payload.route || 'p2p' : undefined,
+        campusCapable: description ? payload.campusCapable === true : undefined,
         sdp: ['offer', 'answer'].includes(payload.kind) ? payload.sdp : undefined,
         candidate: payload.kind === 'candidate' ? iceCandidate(payload.candidate) : undefined,
         side: payload.kind === 'candidate' ? payload.side : undefined,
@@ -3740,6 +3746,7 @@ export function attachRooms(io, {
             'answer',
             'candidate',
             'close',
+            'cancel',
             'error',
             'vdo-request',
             'vdo-descriptor',
@@ -3763,6 +3770,7 @@ export function attachRooms(io, {
           [
             'offer',
             'close',
+            'cancel',
             'vdo-request',
           ].includes(
             payload.kind,
@@ -3834,6 +3842,7 @@ export function attachRooms(io, {
             ![
               'p2p',
               'turn',
+              'campus',
             ].includes(route)
           ) {
             throw new Error(

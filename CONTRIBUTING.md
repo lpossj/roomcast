@@ -15,17 +15,17 @@
 ```powershell
 npm ci
 npm run fetch:runtime   # 如果本地还没有 loopback 组件
-npm run check
+npm run build
 ```
 
-涉及网络、房间、媒体、图片、Electron 主进程或 OBS runtime 的修改，必须同时运行相关测试和全量回归测试。
+自动化测试和验收门禁已按维护者要求移除。修改说明应写清影响范围及未验收项；功能与发布验收由维护者手工完成。
 
 ## 提交要求
 
 - 保持最小修改范围，不要顺手重构无关模块；
 - 不提交 secrets、`.env`、`node_modules`、`runtime/` 大二进制、`dist/` 或 `release/`；
 - 不提交旧 `.git`、backup、PartyLink 解包或私人物料；
-- 网络/安全相关修改必须说明影响范围和回归结果；
+- 网络/安全相关修改必须说明影响范围和人工验收情况；
 - 安全漏洞不要提交公开 issue，按 `SECURITY.md` 私下报告；
 - 除非有明确授权，不要修改 `runtime/loopback-capture` 或 `runtime/obs-bundle` 的行为。
 

@@ -56,11 +56,7 @@ Install-Module TrustedSigning -MinimumVersion 0.5.0 -Force -Repository PSGallery
 Import-Module TrustedSigning
 ```
 
-检查环境：
-
-```powershell
-.\scripts\Check-AzureTrustedSigning.ps1
-```
+签名环境由维护者人工确认，原自动检查脚本已移除。
 
 ## 4. 配置 electron-builder
 
@@ -98,9 +94,8 @@ Import-Module TrustedSigning
 确保已 `az login`，然后：
 
 ```powershell
-npm.cmd run dist:obs-verified
+npm.cmd run dist
 npm.cmd run dist:zip
-npm.cmd run check:obs-package
 ```
 
 electron-builder 会自动调用 Trusted Signing 模块完成签名。
@@ -113,7 +108,7 @@ $env:AZURE_TENANT_ID = "<tenant-id>"
 $env:AZURE_CLIENT_ID = "<client-id>"
 $env:AZURE_CLIENT_SECRET = "<client-secret>"
 
-npm.cmd run dist:obs-verified
+npm.cmd run dist
 ```
 
 不要把 `AZURE_CLIENT_SECRET` 提交到仓库、日志或发布包。
@@ -125,11 +120,7 @@ Get-AuthenticodeSignature .\release\Roomcast-0.14.2-beta.1-Windows.exe |
   Format-List Status, StatusMessage, SignerCertificate
 ```
 
-也可以使用：
-
-```powershell
-.\scripts\Check-RoomcastSignature.ps1 -Version 0.14.2-beta.1
-```
+原签名验收脚本已移除，签名结果由维护者人工确认。
 
 正常正式签名应为：
 

@@ -16,6 +16,7 @@ const { resolveRuntimePaths } = require('./runtime-paths.cjs');
 const { migratePreferences } = require('./preferences-migration.cjs');
 const { installFloatingWindows } = require('./floating-window.cjs');
 const { createWebInvite } = require('./web-invite.cjs');
+const { createCampusNetwork } = require('./campus-network.cjs');
 const { liveWebContents, ownsWindowEvent } = require('./window-owner.cjs');
 const { ObsFixedFpsEngine, validateVideoSettings, waitForObsVirtualCameraAvailable } = require('./obs-fixed-fps.cjs');
 const { ensureObsVirtualCameraRegistration, registrationStatus } = require('./obs-virtualcam-registration.cjs');
@@ -23,6 +24,14 @@ const { cleanText: cleanAudioText, normalizeCaptureSources, windowsAudioSources 
 let service;
 let webInvite;
 let window;
+let campusActive = null;
+const campusNetwork = createCampusNetwork({ app, onActive: value => {
+  const previous = campusActive;
+  campusActive = value;
+  if (!value) {
+    if (previous && window && !window.isDestroyed()) window.webContents.send('roomcast:campus-ended', previous.lease);
+  }
+} });
 let captureSources = new Map();
 let captureSelection = null;
 let quitting = false;
@@ -373,7 +382,7 @@ else {
       // therefore the renderer's first enumerateDevices()) is created. Users
       // who explicitly saved native capture are not prompted for OBS setup.
       const preferredCaptureBackend = preferences?.shareSettings?.captureBackend === 'native' ? 'native' : 'obs';
-      if (process.platform === 'win32' && app.isPackaged && !process.env.ROOMCAST_TEST_MODE && preferredCaptureBackend === 'obs') {
+      if (process.platform === 'win32' && app.isPackaged && preferredCaptureBackend === 'obs') {
         let startupRegistration;
         const logBootstrapFailure = error => {
           startupMark('obs-vcam-prewindow-unavailable');
@@ -446,7 +455,7 @@ else {
       window.once('show', () => startupMark('window-show'));
       window.webContents.once('dom-ready', () => startupMark('dom-ready'));
       window.webContents.once('did-finish-load', () => startupMark('did-finish-load'));
-      if (!process.env.ROOMCAST_TEST_MODE) window.show();
+      window.show();
       startupMark('service-import-start');
       const { startServer } = await import(pathToFileURL(path.join(__dirname, '..', 'server', 'index.mjs')).href);
       const { normalizeWorkerOrigin, normalizeRelaySettings } = await import(pathToFileURL(path.join(__dirname, 'worker-origin.mjs')).href);
@@ -516,10 +525,12 @@ else {
       });
       installFloatingWindows(window, trusted);
       window.webContents.on('render-process-gone', () => {
+        void campusNetwork.stop();
         stopAllAudioCaptures();
         void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
       });
       window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+        if (isMainFrame && !isInPlace) void campusNetwork.stop();
         if (isMainFrame && !isInPlace && obsCaptureEngine) {
           void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
         }
@@ -592,6 +603,14 @@ else {
         if (!owns(event, window)) throw new Error('不允许此窗口开启网页入口。');
         return webInvite.start();
       });
+      ipcMain.handle('roomcast:campus-start', (event, value) => {
+        if (!owns(event, window)) throw new Error('不允许此窗口开启校园互联。');
+        return campusNetwork.start(value);
+      });
+      ipcMain.handle('roomcast:campus-stop', (event, lease) => {
+        if (!owns(event, window) || typeof lease !== 'string' || !lease) throw new Error('校园互联会话无效。');
+        return campusNetwork.stop(lease);
+      });
       ipcMain.handle('roomcast:web-invite-stop', event => {
         if (!owns(event, window)) throw new Error('不允许此窗口关闭网页入口。');
         return webInvite.stop();
@@ -662,7 +681,7 @@ else {
         // Automated update checks drive this window through remote debugging; in test mode it
         // stays hidden exactly like the main window, so a scripted run never steals focus.
         const showUpdaterWindow = () => {
-          if (updaterWindow && !updaterWindow.isDestroyed() && !process.env.ROOMCAST_TEST_MODE) updaterWindow.show();
+          if (updaterWindow && !updaterWindow.isDestroyed()) updaterWindow.show();
         };
         updaterWindow.once('ready-to-show', showUpdaterWindow);
         updaterWindow.on('closed', () => { updaterWindow = null; });
@@ -1221,7 +1240,7 @@ else {
       // render the private-session UI. Keep both off the first-window path.
       setImmediate(() => {
         if (quitting || !window || window.isDestroyed()) return;
-        if (app.isPackaged && !process.env.ROOMCAST_TEST_MODE) {
+        if (app.isPackaged) {
           app.setAsDefaultProtocolClient('roomcast', process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
         }
         void Promise.allSettled([session.defaultSession.clearCache(), session.defaultSession.clearStorageData()])
@@ -1245,7 +1264,7 @@ else {
     // Hard stop for the quitting path: a local service close that waits on a lingering
     // connection, or session clearing that never settles, must not prevent the exit.
     const hardExit = setTimeout(() => app.exit(0), EXIT_GRACE_MS);
-    void Promise.allSettled([service.close(), webInvite?.stop(), runObsCaptureOperation(() => closeObsCaptureEngine())]).finally(async () => {
+    void Promise.allSettled([campusNetwork.stop(), service.close(), webInvite?.stop(), runObsCaptureOperation(() => closeObsCaptureEngine())]).finally(async () => {
       await Promise.race([clearChatSession(), new Promise(resolve => setTimeout(resolve, 1000))]).catch(() => { });
       clearTimeout(hardExit);
       app.exit(0);

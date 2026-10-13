@@ -1,5 +1,7 @@
 import { ack } from './lib.js';
 import { createRoomcastPeerConnection, DEFAULT_STUN_ICE } from './ice-policy.js';
+import { prepareCampusConnection } from './campus-session.js';
+import { CAMPUS_TOTAL_TIMEOUT_MS, MEDIA_DISCONNECT_GRACE_MS, P2P_CONNECT_TIMEOUT_MS } from './fallback-policy.js';
 
 export const clampVolume = value => Number.isFinite(Number(value)) ? Math.max(0, Math.min(1, Number(value))) : 0.5;
 export function normalizeVoiceSettings(value = {}) {
@@ -108,6 +110,7 @@ export class RoomVoice {
   constructor({ socket, selfId, iceServers, onSpeaking, onError }) {
     Object.assign(this, { socket, selfId, iceServers: iceServers?.length ? iceServers : DEFAULT_STUN_ICE, onSpeaking, onError });
     this.connections = new Map(); this.localStream = null; this.room = null; this.closed = false;
+    this.campusPeers = new Set(); this.campusPending = new Set(); this.campusAttempted = new Set();
     this.output = { enabled: false, volume: 0.5, deviceId: '' };
     this.memberVolumes = {};
     this.signal = message => { void this.receive(message).catch(error => { if (!this.closed) this.onError(error.message); }); };
@@ -117,9 +120,30 @@ export class RoomVoice {
     if (this.closed || !this.socket.connected) return Promise.resolve();
     return ack(this.socket, 'voice:signal', { to: entry.memberId, requestId: entry.id, kind, ...extra }, 5000);
   }
-  create(memberId, id, side) {
-    const pc = createRoomcastPeerConnection({ iceServers: this.iceServers });
-    const entry = { memberId, id, side, pc, candidates: [], localCandidates: [], signaled: false, ready: false };
+  canUseCampus() { return this.socket.canUseCampus?.() === true; }
+  sendDescription(entry, kind) {
+    const sent = this.send(entry, kind, { sdp: entry.pc.localDescription.sdp,
+      route: entry.route, campusCapable: this.canUseCampus() });
+    // The room control channel is ordered; do not serialize ICE on ACK RTTs.
+    void this.flushLocalCandidates(entry);
+    return sent;
+  }
+  failed(entry, notify = true) {
+    if (this.connections.get(entry.id) !== entry) return;
+    // One fallback per failed ordinary path; do not repeatedly prompt for a
+    // campus network that never connected. A working path may recover once.
+    if (entry.side === 'listener' && this.canUseCampus() && this.campusPeers.has(entry.memberId)
+      && (!this.campusAttempted.has(entry.memberId) || (entry.route === 'campus' && entry.connected))) {
+      this.campusPending.add(entry.memberId);
+    }
+    this.remove(entry, notify);
+  }
+  create(memberId, id, side, route = 'p2p') {
+    const campus = route === 'campus';
+    const pc = createRoomcastPeerConnection({ iceServers: campus ? [] : this.iceServers,
+      ...(campus ? { iceTransportPolicy: 'relay' } : {}) });
+    const entry = { memberId, id, side, route, pc, candidates: [], localCandidates: [], signaled: false, ready: false,
+      connected: false, disconnectTimer: null };
     this.connections.set(id, entry);
     pc.onicecandidate = event => {
       if (!event.candidate) return;
@@ -136,15 +160,36 @@ export class RoomVoice {
       this.applyOutput(entry);
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') { this.remove(entry); }
+      if (this.closed || this.connections.get(id) !== entry) return;
+      const state = pc.connectionState;
+      if (state !== 'disconnected') {
+        clearTimeout(entry.disconnectTimer); entry.disconnectTimer = null;
+      }
+      if (state === 'connected') {
+        entry.connected = true;
+        clearTimeout(entry.timer);
+        if (side === 'listener' && !campus) this.campusAttempted.delete(memberId);
+      } else if (state === 'failed' || state === 'closed') {
+        this.failed(entry);
+      } else if (state === 'disconnected' && entry.connected && !entry.disconnectTimer) {
+        // Allow transient loss to heal; the existing room-voice retry loop owns
+        // reconnection after a persistently disconnected entry is removed.
+        entry.disconnectTimer = setTimeout(() => {
+          entry.disconnectTimer = null;
+          if (!this.closed && pc.connectionState === 'disconnected') this.failed(entry);
+        }, MEDIA_DISCONNECT_GRACE_MS);
+      }
     };
-    entry.timer = setTimeout(() => { if (pc.connectionState !== 'connected') this.remove(entry); }, 20_000);
+    entry.timer = setTimeout(() => { if (pc.connectionState !== 'connected') this.failed(entry); },
+      campus ? CAMPUS_TOTAL_TIMEOUT_MS : P2P_CONNECT_TIMEOUT_MS);
+    entry.preparation = campus ? prepareCampusConnection(this.socket, pc) : Promise.resolve();
     return entry;
   }
   remove(entry, notify = true) {
     if (this.connections.get(entry.id) !== entry) return;
-    this.connections.delete(entry.id); clearTimeout(entry.timer);
-    entry.pc.onconnectionstatechange = null; entry.pc.close(); entry.stopMeter?.();
+    this.connections.delete(entry.id); clearTimeout(entry.timer); clearTimeout(entry.disconnectTimer);
+    entry.pc.onconnectionstatechange = null; entry.pc.ontrack = null; entry.pc.onicecandidate = null;
+    entry.pc.close(); entry.stopMeter?.();
     if (entry.audio) { entry.audio.pause(); entry.audio.srcObject = null; }
     if (entry.side === 'listener') this.onSpeaking(entry.memberId, false);
     if (notify) void this.send(entry, 'close').catch(() => {});
@@ -152,18 +197,25 @@ export class RoomVoice {
   update(room, localStream) {
     this.room = room; this.localStream = localStream;
     const members = new Map((room?.members || []).map(member => [member.id, member]));
+    for (const memberId of this.campusPeers) if (!members.has(memberId)) this.campusPeers.delete(memberId);
+    for (const pending of [this.campusPending, this.campusAttempted]) {
+      for (const memberId of pending) if (!members.get(memberId)?.voiceEnabled) pending.delete(memberId);
+    }
     for (const entry of [...this.connections.values()]) {
       if (!members.has(entry.memberId) || (entry.side === 'listener' ? !members.get(entry.memberId).voiceEnabled : !localStream)) this.remove(entry);
     }
     for (const member of members.values()) {
       if (member.id === this.selfId || !member.voiceEnabled || [...this.connections.values()].some(entry => entry.memberId === member.id && entry.side === 'listener')) continue;
-      const entry = this.create(member.id, crypto.randomUUID(), 'listener');
+      const campus = this.campusPending.delete(member.id) && this.canUseCampus() && this.campusPeers.has(member.id);
+      if (campus) this.campusAttempted.add(member.id);
+      const entry = this.create(member.id, crypto.randomUUID(), 'listener', campus ? 'campus' : 'p2p');
       entry.pc.addTransceiver('audio', { direction: 'recvonly' });
       void (async () => {
+        await entry.preparation;
+        if (this.connections.get(entry.id) !== entry) return;
         await entry.pc.setLocalDescription(await entry.pc.createOffer());
         if (this.connections.get(entry.id) === entry) {
-          await this.send(entry, 'offer', { sdp: entry.pc.localDescription.sdp });
-          await this.flushLocalCandidates(entry);
+          await this.sendDescription(entry, 'offer');
         }
       })().catch(error => {
         const active = this.connections.get(entry.id) === entry;
@@ -176,18 +228,27 @@ export class RoomVoice {
     let entry = this.connections.get(message.requestId);
     if (message.kind === 'offer') {
       if (!this.localStream || entry) return;
+      const route = message.route || 'p2p';
+      if (!['p2p', 'campus'].includes(route)) return;
+      if (route === 'campus' && (!this.canUseCampus() || message.campusCapable !== true)) {
+        await this.send({ memberId: message.from, id: message.requestId }, 'close');
+        return;
+      }
+      if (message.campusCapable === true) this.campusPeers.add(message.from);
+      else this.campusPeers.delete(message.from);
       // Bound a peer to one publisher connection, even with repeated request IDs.
       for (const old of [...this.connections.values()]) if (old.memberId === message.from && old.side === 'publisher') this.remove(old);
-      entry = this.create(message.from, message.requestId, 'publisher');
+      entry = this.create(message.from, message.requestId, 'publisher', route);
       try {
+        await entry.preparation;
+        if (this.connections.get(entry.id) !== entry || !this.localStream) return;
         await entry.pc.setRemoteDescription({ type: 'offer', sdp: message.sdp });
         if (this.connections.get(entry.id) !== entry || !this.localStream) return;
         entry.ready = true;
         this.localStream.getAudioTracks().forEach(track => entry.pc.addTrack(track, this.localStream));
         await entry.pc.setLocalDescription(await entry.pc.createAnswer());
         if (this.connections.get(entry.id) !== entry) return;
-        await this.send(entry, 'answer', { sdp: entry.pc.localDescription.sdp });
-        await this.flushLocalCandidates(entry);
+        await this.sendDescription(entry, 'answer');
         await this.flushCandidates(entry);
       } catch (error) {
         const active = this.connections.get(entry.id) === entry;
@@ -196,9 +257,14 @@ export class RoomVoice {
       return;
     }
     if (!entry || entry.memberId !== message.from) return;
-    if (message.kind === 'close') { this.remove(entry, false); return; }
+    if (message.kind === 'close') { this.failed(entry, false); return; }
     if (message.kind === 'answer' && entry.side === 'listener' && !entry.ready) {
-      await entry.pc.setRemoteDescription({ type: 'answer', sdp: message.sdp }); entry.ready = true; await this.flushCandidates(entry);
+      if ((message.route || 'p2p') !== entry.route || (entry.route === 'campus' && message.campusCapable !== true)) { this.remove(entry); return; }
+      if (message.campusCapable === true) this.campusPeers.add(message.from);
+      else this.campusPeers.delete(message.from);
+      await entry.pc.setRemoteDescription({ type: 'answer', sdp: message.sdp });
+      if (this.connections.get(entry.id) !== entry) return;
+      entry.ready = true; await this.flushCandidates(entry);
     } else if (message.kind === 'candidate') {
       if (message.side === entry.side) return;
       if (entry.pc.remoteDescription) await entry.pc.addIceCandidate(message.candidate);
@@ -206,11 +272,11 @@ export class RoomVoice {
     }
   }
   async flushCandidates(entry) {
-    for (const candidate of entry.candidates.splice(0)) await entry.pc.addIceCandidate(candidate);
+    await Promise.allSettled(entry.candidates.splice(0).map(candidate => entry.pc.addIceCandidate(candidate)));
   }
   async flushLocalCandidates(entry) {
     entry.signaled = true;
-    for (const candidate of entry.localCandidates.splice(0)) await this.send(entry, 'candidate', { side: entry.side, candidate });
+    await Promise.allSettled(entry.localCandidates.splice(0).map(candidate => this.send(entry, 'candidate', { side: entry.side, candidate })));
   }
   applyOutput(entry) {
     const audio = entry.audio; if (!audio) return;

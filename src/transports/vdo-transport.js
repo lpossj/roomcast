@@ -1,6 +1,5 @@
 import VDONinjaSDK from '@vdoninja/sdk/browser';
-
-export const VDO_TRANSPORT_BUILD_PROBE = typeof VDONinjaSDK === 'function';
+import { DEFAULT_STUN_ICE } from '../../server/stun-servers.mjs';
 
 const DEFAULT_HOST = 'wss://wss.vdo.ninja';
 const DEFAULT_SALT = 'roomcast_vdo_v1';
@@ -142,6 +141,8 @@ export class VdoTransport extends EventTarget {
       password: this.#password,
       label: this.#label,
       debug: this.#debug,
+      // Supported by the pinned SDK; avoid its Google STUN default in this lane.
+      stunServers: [...DEFAULT_STUN_ICE],
 
       // Roomcast owns relay routing. The VDO race lane must stay direct-only.
       turnServers: false,

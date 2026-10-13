@@ -95,12 +95,17 @@
 :root[data-appearance="light"] .brand-icon { background: var(--accent); color: var(--accent-foreground); }
 :root[data-appearance="light"] .brand-mark span { border-color: var(--accent-foreground); }
 :root[data-appearance="light"] .brand-appearance { background: #fff0b8; color: #a96700; border-color: #eaf0f7; }
-.theme-confetti { position: fixed; inset: 0; width: 100vw; height: 100dvh; z-index: 9999; pointer-events: none; view-transition-name: theme-confetti; }
-@property --theme-reveal { syntax: '<length>'; inherits: false; initial-value: 0px; }
+.theme-confetti { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; z-index: 9999; pointer-events: none; }
+.theme-reveal-fallback { position: fixed; z-index: 9998; pointer-events: none; border-radius: 50%; background: var(--accent); opacity: .22; transform: scale(0); transition: transform 680ms cubic-bezier(.25,.1,.45,1), opacity 680ms ease-out; }
+.theme-reveal-fallback.is-active { transform: scale(1); opacity: 0; }
 ::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
 ::view-transition-image-pair(root) { isolation: isolate; }
 ::view-transition-old(root) { z-index: 1; }
-::view-transition-new(root) { z-index: 2; mask-image: radial-gradient(circle at var(--theme-x) var(--theme-y), #000 max(0px, calc(var(--theme-reveal) - 24px)), transparent var(--theme-reveal)); }
-::view-transition-group(theme-confetti) { z-index: 3; animation: none; }
-::view-transition-old(theme-confetti) { display: none; }
-::view-transition-new(theme-confetti) { animation: none; }
+::view-transition-new(root) { z-index: 2; }
+:root[data-theme-reveal]::view-transition { pointer-events: none; }
+:root[data-theme-reveal]::view-transition-group(root) { animation: none; }
+:root[data-theme-reveal]::view-transition-new(root) {
+  clip-path: circle(var(--theme-reveal-radius) at var(--theme-reveal-x) var(--theme-reveal-y));
+  animation: theme-reveal-hold 1s linear infinite;
+}
+@keyframes theme-reveal-hold { from, to { opacity: 1; } }

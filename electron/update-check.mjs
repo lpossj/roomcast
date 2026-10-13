@@ -132,7 +132,9 @@ function describeRelease(release, version) {
     prerelease: Boolean(release.prerelease),
     checksumUrl: checksum ? checksum.url : '',
     // The Windows desktop artifacts a user can actually run, newest-named first.
-    assets: assets.filter(asset => /^Roomcast-.*-Windows\.(?:exe|zip)$/i.test(asset.name)).sort((a, b) => a.name.localeCompare(b.name)),
+    assets: assets.filter(asset => ['exe', 'zip'].some(ext =>
+      [ `Roomcast-${version}.${ext}`, `Roomcast-${version}-Windows.${ext}` ].some(name => name.toLowerCase() === asset.name.toLowerCase()),
+    )).sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
 
@@ -234,7 +236,7 @@ export function createUpdateChecker({ currentVersion, fetchImpl, apiUrl = RELEAS
       prerelease: isPrereleaseVersion(version),
       checksumUrl: `${base}/SHA256.txt`,
       // Sizes are unknown here; the download reports progress from content-length instead.
-      assets: [`Roomcast-${version}-Windows.exe`, `Roomcast-${version}-Windows.zip`]
+      assets: ['exe', 'zip'].map(ext => `Roomcast-${version}${compareVersions(version, '0.14.4-beta.9') < 0 ? '-Windows' : ''}.${ext}`)
         .map(assetName => ({ name: assetName, size: 0, url: `${base}/${assetName}` })),
       ...(viaFeed ? { viaFeed: true } : { viaManifest: true }),
     };

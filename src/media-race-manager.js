@@ -2,7 +2,6 @@ export const MEDIA_RACE_TIE_WINDOW_MS = 250;
 export const MEDIA_RACE_VDO_DELAY_MS = 3_000;
 export const MEDIA_RACE_STABILITY_GUARD_MS = 1_000;
 export const MEDIA_RACE_TIMEOUT_MS = 20_000;
-export const MEDIA_RACE_BUILD_PROBE = true;
 
 export const MEDIA_RACE_ROUTES = Object.freeze(['p2p', 'vdo']);
 

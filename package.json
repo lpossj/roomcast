@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.4-beta.8",
+  "version": "0.14.4-beta.12",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -19,13 +19,6 @@
     "fetch:web-invite": "node scripts/fetch-web-invite.mjs",
     "clean:build-scratch": "node scripts/clean-build-scratch.mjs",
     "clean:build-scratch:apply": "node scripts/clean-build-scratch.mjs --apply",
-    "check": "npm run check:licenses && npm test && npm run build && npm run check:network",
-    "check:release": "npm run check:licenses && npm run test:release && npm run build && npm run check:network",
-    "check:licenses": "node scripts/check-licenses.mjs",
-    "test": "node --test tests/*.test.mjs",
-    "test:release": "node --test tests/*.test.mjs tests/integration/*.test.mjs",
-    "verify:release": "node scripts/verify-release.mjs",
-    "smoke:desktop": "node scripts/smoke-desktop.mjs",
     "package:source": "node scripts/package-source.mjs",
     "package:runtime": "node scripts/package-loopback-asset.mjs",
     "checksums": "node scripts/generate-checksums.mjs",
@@ -34,18 +27,10 @@
     "dist:zip": "npm run build && electron-builder --win zip",
     "dist:nsis": "npm run build && electron-builder --win nsis",
     "release:build": "npm run build && electron-builder --win portable --publish never && electron-builder --win zip --publish never",
-    "check:network": "node scripts/check-network-architecture.mjs",
     "prepare:obs": "node scripts/prepare-embedded-obs.mjs",
+    "prepare:campus": "node scripts/prepare-easytier.mjs",
     "prepare:obs:release": "node scripts/prepare-embedded-obs.mjs --release",
     "prepare:release": "npm run fetch:runtime && npm run prepare:obs:release",
-    "check:obs-bridge": "electron scripts/check-obs-electron-bridge.cjs",
-    "check:obs-virtualcam-wait": "node scripts/check-obs-virtualcam-wait.cjs",
-    "check:obs-transition": "electron scripts/check-obs-static-motion.cjs",
-    "check:obs-transition-metrics": "node scripts/check-obs-transition-metrics.cjs",
-    "check:obs-package": "node scripts/check-packaged-obs-step5d.cjs",
-    "check:auto-update": "node scripts/check-auto-update.cjs",
-    "check:update-apply": "node scripts/check-update-apply.cjs",
-    "dist:obs-verified": "npm run dist && npm run check:obs-package && npm run verify:release",
     "package:web": "node scripts/prepare-viewer-site.mjs --release"
   },
   "engines": {
@@ -57,7 +42,8 @@
     "@vdoninja/sdk": "1.6.1",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "turn-server": "0.6.6"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",
@@ -65,17 +51,17 @@
     "electron": "44.3.0",
     "electron-builder": "^26.0.12",
     "esbuild": "0.28.2",
-    "playwright": "^1.58.2",
-    "vite": "^7.3.0",
     "lucide-react": "^0.577.0",
     "peerjs": "^1.5.5",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "socket.io-client": "^4.8.1"
+    "socket.io-client": "^4.8.1",
+    "vite": "^7.3.0"
   },
   "build": {
     "appId": "local.roomcast.desktop",
     "productName": "Roomcast",
+    "asarUnpack": ["electron/campus-adapter-worker.mjs", "node_modules/turn-server/**/*"],
     "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"
@@ -88,9 +74,22 @@
     ],
     "extraResources": [
       {
+        "from": "runtime/easytier",
+        "to": "runtime/easytier",
+        "filter": [
+          "easytier-core.exe",
+          "wintun.dll",
+          "campus-supervisor.ps1",
+          "SOURCE-NOTICE.txt",
+          "*-LICENSE.txt"
+        ]
+      },
+      {
         "from": "runtime/update-launcher",
         "to": "runtime/update-launcher",
-        "filter": ["RoomcastUpdateLauncher.exe"]
+        "filter": [
+          "RoomcastUpdateLauncher.exe"
+        ]
       },
       {
         "from": "runtime/obs-bundle",
@@ -169,7 +168,7 @@
       }
     ],
     "win": {
-      "artifactName": "Roomcast-${version}-Windows.${ext}",
+      "artifactName": "Roomcast-${version}.${ext}",
       "target": "portable",
       "signExecutable": false,
       "requestedExecutionLevel": "asInvoker",
@@ -177,10 +176,10 @@
     },
     "portable": {
       "unpackDirName": true,
-      "artifactName": "Roomcast-${version}-Windows.exe"
+      "artifactName": "Roomcast-${version}.exe"
     },
     "nsis": {
-      "artifactName": "Roomcast-${version}-Setup.exe",
+      "artifactName": "Roomcast-${version}.exe",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

@@ -40,4 +40,4 @@ Write-Host "  package.json signExecutable = true"
 Write-Host "Backup: $backupPath"
 Write-Host ''
 Write-Host 'Run packaging:'
-Write-Host '  npm.cmd run dist:obs-verified'
+Write-Host '  npm.cmd run dist'

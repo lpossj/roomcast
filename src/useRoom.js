@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import { containsTurn, mediaIceServers } from './ice-policy.js';
 import { ack, normalizeServer, recordLifecycle } from './lib.js';
 import { P2PRoom } from './p2p.js';
+import { campusStatsRoute } from './campus-session.js';
 import { waitForRoomOperation } from './room-operation.js';
 import { imageDimensionsAllowed, imageMagicMatches, MAX_IMAGE_CACHE_BYTES, readImageDimensions } from './image-policy.js';
 import { savePreference } from './preferences.js';
@@ -55,6 +56,29 @@ export default function useRoom(onError) {
   const imageCacheBytesRef = useRef(0);
 
   errorRef.current = onError;
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (connection !== 'connected' || !socket?.p2p) return;
+    let stopped = false;
+    let reading = false;
+    const refresh = async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const pc = socket.remote?.peerConnection;
+        const report = !socket.isHost && pc ? await pc.getStats() : null;
+        if (stopped || socketRef.current !== socket || socket.closed) return;
+        const roomConnection = socket.isHost ? 'P2P' : report ? campusStatsRoute(report) : '路线检测中';
+        setConfig(current => current?.p2p && current.roomConnection !== roomConnection ? { ...current, roomConnection } : current);
+      } catch {
+        // A closed connection is handled by the existing room lifecycle.
+      } finally { reading = false; }
+    };
+    void refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [connection]);
 
   const revokeImageUrl = useCallback(messageId => {
     const url = imageUrlsRef.current.get(messageId);
@@ -204,14 +228,21 @@ export default function useRoom(onError) {
     setHistoryLoading(true);
 
     try {
-      const result = await ack(socket, 'chat:history', {
-        limit: 50,
-      });
-
-      if (socketRef.current !== socket) return;
-
-      mergeMessages(result.messages);
-      setHasOlderMessages(result.hasMore);
+      // History is optional for entering an authenticated room. A transient
+      // failure gets one retry without tearing down screen/voice connections.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (socketRef.current !== socket || !socket.connected) return;
+        try {
+          const result = await ack(socket, 'chat:history', { limit: 50 });
+          if (socketRef.current !== socket) return;
+          mergeMessages(result.messages);
+          setHasOlderMessages(result.hasMore);
+          return;
+        } catch {
+          if (socketRef.current !== socket || !socket.connected) return;
+          if (attempt === 1) errorRef.current('聊天历史加载失败，重新入房可重试；当前房间连接保持。');
+        }
+      }
     } finally {
       if (socketRef.current === socket) {
         setHistoryLoading(false);
@@ -669,16 +700,18 @@ export default function useRoom(onError) {
             || mediaIceServers(controlIceServers),
           relayInvite: result.relayInvite || '',
           inviteSecret: result.inviteSecret || '',
+          campusSecret: result.campusSecret || '',
           // Carried on the invite as &signal=; kept in config so every member re-shares it.
           peerServer: result.peerServer || remoteConfig.peerServer || '',
           relayEnabled: containsTurn(controlIceServers),
           p2p: true,
           mediaP2P: true,
-          roomConnection: 'P2P',
+          roomConnection: result.roomConnection || 'P2P',
         });
 
-        await wait(loadInitialMessages(socket));
-      operation.signal.throwIfAborted();
+        // New rooms have no history; joining loads it without gating room entry.
+        operation.signal.throwIfAborted();
+        if (mode !== 'create') void loadInitialMessages(socket);
 
         savePreference(
           'nickname',
@@ -821,8 +854,8 @@ export default function useRoom(onError) {
         roomConnection: 'Socket.IO',
       });
 
-      await wait(loadInitialMessages(socket));
-        operation.signal.throwIfAborted();
+      operation.signal.throwIfAborted();
+      if (mode !== 'create') void loadInitialMessages(socket);
 
       savePreference(
         'nickname',

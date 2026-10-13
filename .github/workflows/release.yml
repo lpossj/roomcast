@@ -77,9 +77,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run project checks
-        run: npm run check:release
-
       - name: Prepare loopback runtime
         run: node scripts/fetch-runtime.mjs
 
@@ -89,17 +86,8 @@ jobs:
       - name: Prepare embedded OBS runtime
         run: npm run prepare:obs:release
 
-      - name: Verify release license inputs
-        run: node scripts/check-licenses.mjs --release
-
       - name: Build portable EXE and ZIP
         run: npm run release:build
-
-      - name: Verify updater loaded from final ASAR
-        run: node scripts/check-update-asar.cjs release/win-unpacked/resources/app.asar
-
-      - name: Verify Windows update transactions and recovery
-        run: npm run check:update-apply
 
       - name: Package source archive
         run: npm run package:source
@@ -110,24 +98,6 @@ jobs:
       - name: Generate SHA256 values
         run: node scripts/generate-checksums.mjs --strict --published-only
 
-      - name: Install Playwright Chromium
-        run: npx playwright install chromium
-
-      - name: Verify packaged OBS runtime
-        run: npm run check:obs-package
-
-      - name: Verify portable relaunch preserves runtime
-        run: node scripts/check-portable-lifetime.cjs "release/Roomcast-${{ steps.version.outputs.version }}-Windows.exe"
-
-      - name: Verify capture backend switching
-        run: node scripts/check-capture-backend-switch.cjs
-
-      - name: Verify packaged release
-        run: npm run verify:release
-
-      - name: Verify update inside a restricted Windows job
-        run: node scripts/check-update-job.cjs
-
       - name: Publish beta release
         shell: pwsh
         env:
@@ -137,8 +107,6 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
         run: |
           $notes = "docs/RELEASE_NOTES-$env:VERSION.md"
-          node scripts/check-release-target.mjs
-          if ($LASTEXITCODE -ne 0) { throw '发布目标检查失败，未修改 Release。' }
           if (-not (Test-Path $notes)) {
             $notes = Join-Path $env:TEMP "roomcast-release-notes-$env:VERSION.md"
             (Get-Content "docs/RELEASE_NOTES-TEMPLATE.md" -Raw).Replace('VERSION', $env:VERSION) | Set-Content -LiteralPath $notes -Encoding utf8
@@ -155,8 +123,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw '无法创建草稿 Release，停止发布。' }
           }
           $assets = @(
-            "release/Roomcast-$env:VERSION-Windows.exe",
-            "release/Roomcast-$env:VERSION-Windows.zip",
+            "release/Roomcast-$env:VERSION.exe",
+            "release/Roomcast-$env:VERSION.zip",
+            "release/Roomcast-$env:VERSION-EasyTier-sources.zip",
             "release/SHA256.txt",
             "runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz"
           )

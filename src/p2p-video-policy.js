@@ -1,86 +1,10 @@
+import { buildP2pVideoTiers } from './video-quality-tiers.js';
 import { createVideoFrameBalance, applyVideoFrameBalance } from './video-frame-balance.js';
+import { hasSevereEncoderPressure } from './video-encoder-pressure.js';
 
+import { recordP2pNetworkStats } from './p2p-diagnostics.js';
+export { readP2pDiagnostics, recordP2pNetworkStats } from './p2p-diagnostics.js';
 const numeric = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
-const counters = ['bytesSent', 'bytesReceived', 'packetsSent', 'packetsReceived', 'packetsLost',
-  'nackCount', 'pliCount', 'firCount', 'retransmittedPacketsSent', 'retransmittedBytesSent',
-  'retransmittedPacketsReceived', 'retransmittedBytesReceived', 'packetsDiscarded',
-  'framesDropped', 'framesEncoded', 'framesDecoded', 'keyFramesEncoded', 'keyFramesDecoded',
-  'totalPacketSendDelay', 'qpSum', 'totalEncodeTime'];
-const histories = new Map();
-const states = new WeakMap();
-let nextId = 1;
-
-export function readP2pDiagnostics() {
-  return structuredClone({ version: 1, connections: [...histories.values()] });
-}
-
-// Local, bounded, allowlisted diagnostics. No peer identities, SDP or ICE addresses.
-if (typeof window !== 'undefined') window.roomcastP2pDiagnostics = readP2pDiagnostics;
-
-export function recordP2pNetworkStats(pc, report, direction, policy = null, route = 'p2p') {
-  let state = states.get(pc);
-  if (!state) {
-    state = { id: nextId++, previous: new Map() };
-    states.set(pc, state);
-  }
-  const sample = { at: Date.now(), state: pc.connectionState, policy, streams: [] };
-  const next = new Map();
-  for (const stat of report.values()) {
-    if (!['inbound-rtp', 'outbound-rtp'].includes(stat.type) || stat.isRemote) continue;
-    const previous = state.previous.get(stat.id);
-    const elapsed = previous ? stat.timestamp - previous.timestamp : 0;
-    const fresh = elapsed > 0;
-    const values = Object.fromEntries(counters.map(key => [key, numeric(stat[key])]));
-    const delta = Object.fromEntries(counters.map(key => [key,
-      fresh && values[key] !== null && previous[key] !== null && values[key] >= previous[key]
-        ? values[key] - previous[key] : null,
-    ]));
-    const remote = report.get(stat.remoteId);
-    const freshRemote = remote && numeric(remote.timestamp) !== null
-      && remote.timestamp > (previous?.remoteTimestamp ?? -Infinity);
-    const transport = report.get(stat.transportId);
-    const pair = report.get(transport?.selectedCandidatePairId);
-    let lossRate = null;
-    if (stat.type === 'inbound-rtp' && delta.packetsReceived !== null && fresh
-      && numeric(stat.packetsLost) !== null && previous.packetsLost !== null) {
-      // Late recovery can lower cumulative loss; it is not new packet loss.
-      const lost = Math.max(0, stat.packetsLost - previous.packetsLost);
-      if (delta.packetsReceived + lost > 0) lossRate = lost / (delta.packetsReceived + lost);
-    } else if (freshRemote && numeric(remote.fractionLost) !== null) {
-      lossRate = Math.max(0, Math.min(1, remote.fractionLost));
-    }
-    const bytes = stat.type === 'outbound-rtp' ? delta.bytesSent : delta.bytesReceived;
-    sample.streams.push({
-      type: stat.type, kind: stat.kind || stat.mediaType,
-      ...values, delta, lossRate, fresh,
-      bitrate: bytes !== null && fresh ? bytes * 8000 / elapsed : null,
-      averageQp: delta.framesEncoded > 0 && delta.qpSum !== null ? delta.qpSum / delta.framesEncoded : null,
-      encodeTimeMs: delta.framesEncoded > 0 && delta.totalEncodeTime !== null ? delta.totalEncodeTime * 1000 / delta.framesEncoded : null,
-      codec: report.get(stat.codecId)?.mimeType ?? null,
-      encoderImplementation: typeof stat.encoderImplementation === 'string' ? stat.encoderImplementation.slice(0, 128) : null,
-      ...Object.fromEntries(['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'jitter']
-        .map(key => [key, numeric(stat[key])])),
-      qualityLimitationReason: stat.qualityLimitationReason ?? null,
-      remotePacketsLost: numeric(remote?.packetsLost),
-      remoteJitter: numeric(remote?.jitter),
-      freshRemote: Boolean(freshRemote),
-      rtt: numeric(pair?.currentRoundTripTime) ?? numeric(remote?.roundTripTime),
-      availableOutgoingBitrate: numeric(pair?.availableOutgoingBitrate),
-      packetSendDelayMs: delta.packetsSent > 0 && delta.totalPacketSendDelay !== null
-        ? delta.totalPacketSendDelay * 1000 / delta.packetsSent : null,
-    });
-    next.set(stat.id, { ...values, timestamp: stat.timestamp, remoteTimestamp: remote?.timestamp });
-  }
-  state.previous = next;
-  let history = histories.get(state.id);
-  if (!history) history = { connection: state.id, direction, route, samples: [] };
-  history.samples.push(sample);
-  if (history.samples.length > 120) history.samples.shift();
-  histories.delete(state.id);
-  histories.set(state.id, history);
-  if (histories.size > 20) histories.delete(histories.keys().next().value);
-  return sample;
-}
 
 export function p2pResolutionScale(track, quality) {
   const source = track?.getSettings?.() || {};
@@ -90,36 +14,6 @@ export function p2pResolutionScale(track, quality) {
 }
 
 
-const STANDARD_VIDEO_RESOLUTIONS = Object.freeze([
-  { width: 1920, height: 1080 },
-  { width: 1280, height: 720 },
-  { width: 854, height: 480 },
-  { width: 640, height: 360 },
-]);
-
-function normalizedResolution(resolution, fallback) {
-  const width = Math.round(Number(resolution?.width) || 0);
-  const height = Math.round(Number(resolution?.height) || 0);
-  return width >= 2 && height >= 2 ? { width, height } : fallback;
-}
-
-function buildP2pVideoTiers(quality, targetFps) {
-  const base = normalizedResolution(quality, { width: 1920, height: 1080 });
-  const resolutions = [base];
-  for (const resolution of STANDARD_VIDEO_RESOLUTIONS) {
-    if (resolution.width >= base.width && resolution.height >= base.height) continue;
-    if (resolutions.some(item => item.width === resolution.width && item.height === resolution.height)) continue;
-    resolutions.push({ ...resolution });
-  }
-  const reducedFps = Math.min(30, targetFps);
-  const tiers = [];
-  for (const resolution of resolutions) {
-    tiers.push({ ...resolution, fps: targetFps });
-    if (reducedFps < targetFps) tiers.push({ ...resolution, fps: reducedFps });
-  }
-  return tiers;
-}
-
 export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', adapt = true, now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
   const targetFps = Math.max(1, Number(quality.fps) || 30);
   const frameBalance = createVideoFrameBalance(targetFps, now);
@@ -127,18 +21,23 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', adapt
   const baseRate = Math.max(1, tiers[0].width * tiers[0].height * tiers[0].fps);
   const rateFor = tier => Math.max(1, tier.width * tier.height * tier.fps);
   const budgetFor = (index, observedBaseBitrate) => {
-    const selected = Number(quality.bitrate) > 0 ? Number(quality.bitrate) * 1000 : observedBaseBitrate;
+    // A configured bitrate is a ceiling, not a minimum needed to recover.
+    const ceiling = Number(quality.bitrate) > 0 ? Number(quality.bitrate) * 1000 : Infinity;
+    const selected = observedBaseBitrate;
     if (!(selected > 0)) return 0;
-    return selected * rateFor(tiers[index]) / baseRate;
+    return Math.min(ceiling, selected * rateFor(tiers[index]) / baseRate);
   };
   let tierIndex = 0, bad = 0, queued = 0, good = 0, lastChange = -Infinity, fullRateBitrate = 0;
+  let encoderBad = 0, encoderRecovery = false;
+  const recentRtts = [];
+  let recoveryInterval = 10000, promotedAt = -Infinity;
   let started = false, stopped = false, timer = null, inFlight = null;
 
   const poll = () => {
     if (stopped) return Promise.resolve();
     if (inFlight) return inFlight;
     inFlight = (async () => {
-      if (pc.connectionState !== 'connected') { bad = queued = good = 0; frameBalance.reject(); return; }
+      if (pc.connectionState !== 'connected') { bad = queued = good = encoderBad = 0; frameBalance.reject(); return; }
       const report = await pc.getStats();
       if (stopped || pc.connectionState !== 'connected' || sender.track?.readyState === 'ended') return;
       const currentTier = tiers[tierIndex];
@@ -165,11 +64,19 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', adapt
       }
       const active = video?.fresh && video.delta.packetsSent > 0;
       if (active && video.qualityLimitationReason === 'none' && video.bitrate > 0) {
-        // Keep an estimated full-quality bitrate even after a temporary tier drop,
-        // so auto-bitrate sessions can recover instead of staying pinned low.
+        // Smooth recent demand in both directions; a keyframe/motion peak must
+        // not permanently raise the next tier's recovery budget.
         const baseEquivalent = video.bitrate / (rateFor(currentTier) / baseRate);
-        fullRateBitrate = Math.max(fullRateBitrate, baseEquivalent);
+        fullRateBitrate = fullRateBitrate > 0
+          ? fullRateBitrate * 0.8 + baseEquivalent * 0.2 : baseEquivalent;
       }
+      if (active && video.rtt != null) {
+        recentRtts.push(video.rtt);
+        if (recentRtts.length > 30) recentRtts.shift();
+      }
+      const baselineRtt = recentRtts.length ? Math.min(...recentRtts) : null;
+      const rttInflated = video?.rtt != null && baselineRtt !== null
+        && video.rtt > baselineRtt + Math.max(0.05, baselineRtt * 0.25);
       const budget = budgetFor(tierIndex, fullRateBitrate);
       const bandwidthLimited = video?.qualityLimitationReason === 'bandwidth';
       const budgetLimited = budget > 0 && video?.availableOutgoingBitrate !== null
@@ -183,22 +90,40 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', adapt
       // Give queue-only pressure five samples to drain; retain fast protection
       // for confirmed network pressure or a queue already over one second.
       const severeQueue = video?.packetSendDelayMs !== null && video?.packetSendDelayMs >= 1000;
+      const encoderPressure = active && hasSevereEncoderPressure(video, currentTier.fps);
       const congested = active && (networkPressure || queuePressure);
       const nextIndex = Math.max(0, tierIndex - 1);
       const nextBudget = budgetFor(nextIndex, fullRateBitrate);
       const bitrateHealthy = nextBudget <= 0
-        || (video.availableOutgoingBitrate !== null && video.availableOutgoingBitrate >= nextBudget);
-      const healthy = active && !congested && video.qualityLimitationReason === 'none'
-        && bitrateHealthy
+        || (video?.availableOutgoingBitrate != null && video.availableOutgoingBitrate >= nextBudget);
+      const healthy = active && !congested && !encoderPressure && video.qualityLimitationReason === 'none'
         && (video.lossRate === null || video.lossRate < 0.02)
-        && (video.rtt === null || video.rtt < 0.3)
-        && (video.packetSendDelayMs === null || video.packetSendDelayMs < 30);
+        && !rttInflated
+        && video.packetSendDelayMs !== null && video.packetSendDelayMs < 30
+        // Missing metrics alone are not evidence of recovery.
+        && ((video.freshRemote && video.lossRate !== null) || (video.rtt !== null && recentRtts.length >= 8));
       bad = active && (networkPressure || severeQueue) ? bad + 1 : 0;
       queued = active && queuePressure ? queued + 1 : 0;
       good = healthy ? good + 1 : 0;
+      encoderBad = encoderPressure ? encoderBad + 1 : 0;
+      // Low demand or missing BWE can prevent an estimate from reaching the
+      // next tier. After a longer healthy window allow one reversible step.
+      const probeRecovery = good >= 20 && now() - lastChange >= Math.max(30000, recoveryInterval);
+      const canRecover = good >= 8 && now() - lastChange >= recoveryInterval
+        && (bitrateHealthy || probeRecovery);
       let desiredIndex = tierIndex;
       if ((bad >= 2 || queued >= 5) && tierIndex < tiers.length - 1) desiredIndex = tierIndex + 1;
-      else if (good >= 8 && tierIndex > 0 && now() - lastChange >= 10000) desiredIndex = tierIndex - 1;
+      else if (canRecover && tierIndex > 0) desiredIndex = tierIndex - 1;
+      if (encoderBad >= 3 && now() - lastChange >= 3000) {
+        // Skip the same-resolution FPS tier: a 1 FPS CPU collapse needs less
+        // pixel work, even when packet loss and RTT are healthy.
+        const lowerResolution = tiers.findIndex((tier, index) => index > tierIndex
+          && (tier.width < currentTier.width || tier.height < currentTier.height));
+        if (lowerResolution >= 0) desiredIndex = Math.max(desiredIndex, lowerResolution);
+        encoderRecovery = true;
+      } else if (canRecover) {
+        encoderRecovery = false;
+      }
 
       const parameters = sender.getParameters();
       const encoding = parameters.encodings?.[0];
@@ -213,6 +138,8 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', adapt
           appliedFps: Math.min(applied.fps, frameBalance.fps),
           balancedFps: frameBalance.fps,
           encoderPressure: balance.overloaded,
+          severeEncoderPressure: encoderPressure,
+          encoderRecovery,
           tierIndex,
           tierCount: tiers.length,
           scaleResolutionDownBy: p2pResolutionScale(sender.track, applied),
@@ -221,6 +148,11 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', adapt
           badSamples: bad,
           queueSamples: queued,
           healthySamples: good,
+          baselineRtt,
+          rttInflated,
+          recoveryBudget: nextBudget,
+          recoveryInterval,
+          probeRecovery,
           bandwidthLimited,
           budgetLimited,
           networkPressure,
@@ -238,41 +170,48 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', adapt
       const desiredTier = tiers[desiredIndex];
       const desiredFps = Math.min(desiredTier.fps, balance.fps);
       const scale = p2pResolutionScale(sender.track, desiredTier);
+      const degradation = encoderRecovery || quality.performanceMode === 'smooth' ? 'maintain-framerate' : 'maintain-resolution';
       const changed = encoding.maxFramerate !== desiredFps
         || encoding.scaleResolutionDownBy !== scale
-        || parameters.degradationPreference !== 'maintain-resolution';
-      if (!changed) {
+        || parameters.degradationPreference !== degradation;
+      const commitDecision = () => {
+        if (tierIndex !== desiredIndex) {
+          const changedAt = now();
+          if (desiredIndex < tierIndex) promotedAt = changedAt;
+          else if (changedAt - promotedAt <= 20000) {
+            recoveryInterval = Math.min(60000, recoveryInterval * 2);
+            promotedAt = -Infinity;
+          } else recoveryInterval = 10000;
+          tierIndex = desiredIndex;
+          lastChange = changedAt;
+          bad = queued = good = encoderBad = 0;
+        }
         frameBalance.commit(balance);
+      };
+      if (!changed) {
+        // The CPU FPS cap can make adjacent network tiers encode identically.
+        // Still advance the logical tier, or resolution changes get stuck here.
+        commitDecision();
         finalize('unchanged');
         return;
       }
 
-      const previousTierIndex = tierIndex;
-      tierIndex = desiredIndex;
       encoding.maxFramerate = desiredFps;
       encoding.scaleResolutionDownBy = scale;
       delete encoding.scaleResolutionDownTo;
-      parameters.degradationPreference = 'maintain-resolution';
-      if (stopped) {
-        tierIndex = previousTierIndex;
-        return;
-      }
+      parameters.degradationPreference = degradation;
+      if (stopped) return;
       try {
         await sender.setParameters(parameters);
-        if (stopped) {
-          tierIndex = previousTierIndex;
-          return;
-        }
-        if (previousTierIndex !== tierIndex) { lastChange = now(); bad = queued = good = 0; }
-        frameBalance.commit(balance);
+        if (stopped) return;
+        commitDecision();
         finalize('applied');
       } catch {
-        tierIndex = previousTierIndex;
         frameBalance.reject();
-        bad = queued = good = 0;
+        bad = queued = good = encoderBad = 0;
         finalize('parameters-rejected');
       }
-    })().catch(() => { bad = queued = good = 0; frameBalance.reject(); }).finally(() => { inFlight = null; });
+    })().catch(() => { bad = queued = good = encoderBad = 0; frameBalance.reject(); }).finally(() => { inFlight = null; });
     return inFlight;
   };
   const tick = async () => {

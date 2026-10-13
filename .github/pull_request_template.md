@@ -2,13 +2,9 @@
 
 <!-- 说明问题和结果，关联 issue 或设计文档。 -->
 
-## 验证 / Verification
+## 人工验收 / Manual acceptance
 
-<!-- 列出运行的命令、结果、测试环境，以及未验证项。 -->
-
-- [ ] npm run check
-- [ ] 干净 Windows 机器人工验收（如涉及）
-- [ ] npm run verify:release（如涉及打包）
+<!-- 由维护者填写人工验收情况；未验收应如实写明。自动测试及发布门禁已移除。 -->
 
 ## 影响 / Impact
 

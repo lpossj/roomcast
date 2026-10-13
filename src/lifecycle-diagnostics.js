@@ -1,5 +1,6 @@
 // Local, bounded metadata only. Do not accept error text, invites or peer identifiers.
-const operations = new Set(['join', 'create', 'leave', 'control', 'capture', 'playback']);
+const operations = new Set(['join', 'create', 'create-prepare', 'create-local', 'create-signal', 'leave', 'control', 'capture', 'playback',
+  'playback-local', 'playback-answer', 'playback-ice', 'playback-frame', 'playback-recovery']);
 const phases = new Set(['started', 'completed', 'cancelled', 'failed', 'rejected']);
 const entries = [];
 let sequence = 0;

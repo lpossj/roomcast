@@ -1,6 +1,6 @@
 # Roomcast 0.14.4-beta.8
 
-当前版本为 0.14.4-beta.8：可调三栏、简化界面、后台不主动离房、麦克风低延迟处理及日间/夜间主题。客户端与网页使用同一版本源码。变更和验证范围见 [beta.8 说明](docs/RELEASE_NOTES-0.14.4-beta.8.md)，下载与更新说明见 [beta.8 Release](https://github.com/lpossj/roomcast/releases/tag/v0.14.4-beta.8)。
+当前本地 Windows 成品与线上电脑/手机网页为 0.14.4-beta.9：默认按需 EasyTier 备用、实际连接路线标签和创建等待优化。变更及未实测范围见 [beta.9 说明](docs/RELEASE_NOTES-0.14.4-beta.9.md)。Windows beta.9 尚未上传 GitHub；已有公开客户端见 [beta.8 Release](https://github.com/lpossj/roomcast/releases/tag/v0.14.4-beta.8)。
 
 Windows 10/11 x64 的 Electron 屏幕共享与文字聊天软件。每个房间最多 10 人，可多人同时共享。
 
@@ -85,8 +85,7 @@ Windows 系统声音按 Core Audio 会话枚举，可选择共享/排除具体�
 npm ci
 npm run fetch:runtime
 npm run setup
-npm run check
-npm run dist:obs-verified
+npm run dist
 ```
 
 常用目标：
@@ -100,16 +99,15 @@ npm run release:build  -> 一次构建 portable EXE 和 ZIP
 npm run package:source -> 源码 ZIP
 npm run package:runtime -> loopback 组件 ZIP
 npm run checksums      -> release/SHA256.txt
-npm run verify:release -> 打包后 EXE smoke 校验
 ```
 
-OBS 发布包必须通过 `scripts/check-packaged-obs-step5d.cjs` 验证。不要通过猜测 DLL 用途来裁剪 OBS runtime；Step 6B 的任何体积优化都必须配套 packaged OBS verifier。
+OBS runtime 的准备仍由打包流程完成。不要通过猜测 DLL 用途来裁剪 OBS runtime。
 
-## 回归要求
+## 人工验收
 
-日常 `npm test` 运行快速回归；发布前 `npm run check:release` 包含全部回归（含多人迁移、超时及恢复场景）、许可、构建和网络门禁。`npm run check` 使用日常回归，其余门禁相同。
+按维护者要求，自动化测试、开发验收脚本、CI 和发布验收门禁已移除，功能与发布质量由维护者人工验收。历史结果保留为记录，不代表当前代码已经通过验收。
 
-修改后按受影响范围执行测试，不要把“构建成功”等同于“功能已验证”。网络修改至少保持：
+人工验收按受影响范围进行，不要把“构建成功”等同于“功能已验证”。网络实现保持：
 
 ```text
 P2P + VDO direct race

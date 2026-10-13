@@ -10,8 +10,9 @@ const version = packageInfo.version;
 const releaseDir = path.resolve(process.argv.find(value => value.startsWith('--release-dir='))?.slice('--release-dir='.length) || path.join(rootDir, 'release'));
 
 const candidates = [
-  path.join(releaseDir, `Roomcast-${version}-Windows.exe`),
-  path.join(releaseDir, `Roomcast-${version}-Windows.zip`),
+  path.join(releaseDir, `Roomcast-${version}.exe`),
+  path.join(releaseDir, `Roomcast-${version}.zip`),
+  path.join(releaseDir, `Roomcast-${version}-EasyTier-sources.zip`),
   ...(!publishedOnly ? [
     path.join(releaseDir, `Roomcast-${version}-source.zip`),
     path.join(releaseDir, `Roomcast-${version}-loopback-capture.zip`),
