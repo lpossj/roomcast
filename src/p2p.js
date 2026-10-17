@@ -18,6 +18,7 @@ const forwarded = [
   'room:credential-revoke',
   'chat:message',
   'chat:recalled',
+  'laser:stroke',
   'image:start',
   'image:chunk',
   'image:complete',
@@ -38,6 +39,9 @@ const allowed = new Set([
   'member:voice',
   'member:mute',
   'member:share-permission',
+  'laser:room-permission',
+  'laser:member-permission',
+  'laser:stroke',
   'member:kick',
   'chat:send',
   'chat:recall',
@@ -2281,7 +2285,7 @@ export class P2PRoom {
           requests += 1;
 
           if (
-            requests > 160
+            requests > 220
           ) {
             connection.close();
             return;
