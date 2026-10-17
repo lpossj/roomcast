@@ -15,6 +15,7 @@ coverage/
 # Local runtime / large binaries: keep locally, do not publish
 runtime/
 /electron/campus-runtime-manifest.json
+/electron/desktop-laser-renderer.js
 
 # Test output
 test-results/

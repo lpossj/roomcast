@@ -11,3 +11,6 @@ const unsubscribe = window.desktopLaserSurface.receive(value => {
   engine.receive(value.packet);
 });
 window.addEventListener('unload', () => { unsubscribe(); engine.destroy(); }, { once: true });
+// Signal only after the canvas and packet listener exist. did-finish-load alone
+// also fires when a subresource script was blocked or failed to execute.
+window.desktopLaserSurface.ready();

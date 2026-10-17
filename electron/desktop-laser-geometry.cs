@@ -129,7 +129,7 @@ internal static class DesktopLaserGeometry
         }
         visible = visible && rect.Right > rect.Left && rect.Bottom > rect.Top;
         string message = visible
-            ? String.Format(System.Globalization.CultureInfo.InvariantCulture, "{{\"visible\":true,\"x\":{0},\"y\":{1},\"width\":{2},\"height\":{3},\"hwnd\":\"{4}\",\"pid\":{5}}", rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, target.ToInt64(), targetPid)
+            ? "{" + String.Format(System.Globalization.CultureInfo.InvariantCulture, "\"visible\":true,\"x\":{0},\"y\":{1},\"width\":{2},\"height\":{3},\"hwnd\":\"{4}\",\"pid\":{5}", rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, target.ToInt64(), targetPid) + "}"
             : "{\"visible\":false}";
         if (message == previous) return;
         previous = message; Console.WriteLine(message); Console.Out.Flush();
@@ -172,6 +172,6 @@ internal static class DesktopLaserGeometry
             foreach (IntPtr hook in hooks) if (hook != IntPtr.Zero) UnhookWinEvent(hook);
             GC.KeepAlive(parent);
             return 0;
-        } catch { return 3; }
+        } catch (Exception error) { Console.Error.WriteLine(error.GetType().Name); return 3; }
     }
 }

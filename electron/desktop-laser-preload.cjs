@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('desktopLaserSurface', {
     return () => ipcRenderer.removeListener('roomcast:desktop-laser-data', listener);
   },
   idle: () => ipcRenderer.send('roomcast:desktop-laser-idle'),
+  ready: () => ipcRenderer.send('roomcast:desktop-laser-ready'),
 });
