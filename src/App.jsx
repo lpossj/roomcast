@@ -572,7 +572,7 @@ function MemberPermissionsModal({ member, self, onClose, command }) {
     <div className="permission-member"><Avatar member={member} /><div><strong>{member.name}</strong><span>{member.role === 'admin' ? '管理员' : '用户'} · {member.canShare ? '允许共享' : '已禁止共享'}</span></div></div>
     {owner && <section className="settings-section"><h3><ShieldCheck size={17} />成员角色</h3><div className="settings-buttons"><button className={`button small ${member.role === 'admin' ? 'primary' : 'secondary'}`} onClick={() => run('member:role', { memberId: member.id, role: 'admin' })} disabled={!!busy || member.role === 'admin'}>设为管理员</button><button className={`button small ${member.role === 'user' ? 'primary' : 'secondary'}`} onClick={() => run('member:role', { memberId: member.id, role: 'user' })} disabled={!!busy || member.role === 'user'}>设为用户</button></div></section>}
     {(owner || (self?.role === 'admin' && member.role === 'user')) && <section className="settings-section"><h3><Mic size={17} />麦克风管理</h3><button className="button danger-share small" disabled={!!busy || !member.voiceEnabled} onClick={() => run('member:mute', { memberId: member.id })}>关闭该成员麦克风</button></section>}
-    <section className="settings-section"><h3><Palette size={17} />激光笔权限</h3><div className="settings-buttons"><button className="button secondary small" disabled={!!busy || member.canLaser !== false} onClick={() => run('laser:member-permission', { memberId: member.id, enabled: true })}>允许使用</button><button className="button danger-share small" disabled={!!busy || member.canLaser === false} onClick={() => run('laser:member-permission', { memberId: member.id, enabled: false })}>禁止使用</button></div></section>
+    {(owner || (self?.role === 'admin' && member.role === 'user')) && <section className="settings-section"><h3><Palette size={17} />激光笔权限</h3><div className="settings-buttons"><button className="button secondary small" disabled={!!busy || member.canLaser !== false} onClick={() => run('laser:member-permission', { memberId: member.id, enabled: true })}>允许使用</button><button className="button danger-share small" disabled={!!busy || member.canLaser === false} onClick={() => run('laser:member-permission', { memberId: member.id, enabled: false })}>禁止使用</button></div></section>}
     <section className="settings-section"><h3><ScreenShare size={17} />屏幕共享权限</h3><p className="setting-description">禁止后，该成员正在进行的共享会立即停止。</p><div className="settings-buttons"><button className="button secondary small" onClick={() => run('member:share-permission', { memberId: member.id, canShare: true })} disabled={!!busy || member.canShare}>允许共享</button><button className="button danger-share small" onClick={() => run('member:share-permission', { memberId: member.id, canShare: false })} disabled={!!busy || !member.canShare}>禁止共享</button></div></section>
     <section className="settings-section"><h3><LogOut size={17} />成员管理</h3><p className="setting-description">踢出后，该成员的共享会立即结束并离开房间。</p><button className="button danger-share small" onClick={() => run('member:kick', { memberId: member.id })} disabled={!!busy}>{busy === 'member:kick' ? <LoaderCircle size={15} className="spin" /> : <LogOut size={15} />}踢出房间</button></section>
     {error && <div className="inline-error"><Info size={16} />{error}</div>}
@@ -1158,6 +1158,7 @@ export default function App() {
   }, [room?.members]);
 
   const stopLocalShare = useCallback(async (socket = socketRef.current) => {
+    window.roomcast?.desktopLaser?.({ captureStopped: true });
     socket?.stopScreenStream?.();
   }, [socketRef]);
 
@@ -1343,6 +1344,7 @@ export default function App() {
         captureEndedReason = String(endedTrack?.roomcastBackendEndedReason || captureEndedReason || '');
         if (!ownsCapture.current || socketRef.current !== screenSocket) return;
         ownsCapture.current = false;
+        window.roomcast?.desktopLaser?.({ captureStopped: true });
         screenSocket?.stopScreenStream?.();
         command('share:stop').catch(() => { });
         if (captureEndedReason) notify(captureEndedReason);
@@ -1353,8 +1355,10 @@ export default function App() {
       ownsCapture.current = true;
       await command('share:started', { settings: options, microphone: options.microphone === true });
       if (captureEnded || capturedVideoTrack?.readyState === 'ended') throw new Error(captureEndedReason || '屏幕采集在共享建立时已经结束。');
+      if (options.sourceType !== 'camera') window.roomcast?.desktopLaser?.({ captureStarted: true });
       setModal(null); await refresh();
     } catch (error) {
+      window.roomcast?.desktopLaser?.({ captureStopped: true });
       if (!captured) captured = (await capturePromise).stream || null;
       if (screenSocket?.screenStream === captured) screenSocket.stopScreenStream();
       else { for (const track of captured?.getTracks() || []) track.stop(); captured?.roomcastCleanup?.(); }

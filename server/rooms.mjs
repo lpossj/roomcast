@@ -16,6 +16,7 @@ const IMAGE_BATCH_TIMEOUT_MS = 90_000;
 const IMAGE_BATCH_MAX = 4;
 const MIGRATION_TIMEOUT_MS = 45_000;
 const MIGRATION_TRANSFER_MAX_BYTES = 48 * 1024;
+const LASER_PACKETS_PER_SECOND = 24;
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const token = () => randomBytes(32).toString('hex');
 const tokenHash = value => createHash('sha256').update(String(value)).digest('hex');
@@ -1027,6 +1028,10 @@ export function attachRooms(io, {
 
     const limits =
       new Map();
+
+    // Legacy PR clients have no stroke identifier. Keep only one transient
+    // stroke per shared screen, without adding anything to room history.
+    const legacyLaserStrokes = new Map();
 
     const ip =
       socket.handshake.address
@@ -2808,21 +2813,48 @@ export function attachRooms(io, {
       }
       const points = payload.points;
       if (!Array.isArray(points) || points.length > 8
-          || !points.every(p => Array.isArray(p) && p.length === 2
-            && p.every(n => Number.isInteger(n) && n >= 0 && n <= 10000))
+          || !Array.from(points).every(p => Array.isArray(p) && p.length === 2
+            && [p[0], p[1]].every(n => Number.isInteger(n) && n >= 0 && n <= 10000))
           || (!points.length && payload.done !== true)) {
         throw new Error('激光笔坐标格式无效。');
       }
+      if (payload.done !== undefined && typeof payload.done !== 'boolean') {
+        throw new Error('激光笔结束标识无效。');
+      }
+      let strokeId = payload.strokeId;
+      let seq = payload.seq;
+      if (strokeId === undefined && seq === undefined) {
+        let legacy = legacyLaserStrokes.get(ownerId);
+        if (!legacy || legacy.roomId !== room.id || legacy.memberId !== member.id || legacy.startedAt !== stream.startedAt) {
+          legacy = { roomId: room.id, memberId: member.id, startedAt: stream.startedAt, strokeId: randomUUID(), seq: 0 };
+          // A socket can leave and join rooms; retain only current screens.
+          for (const [id, previous] of legacyLaserStrokes) {
+            if (previous.roomId !== room.id || !room.streams.has(id)) legacyLaserStrokes.delete(id);
+          }
+          legacyLaserStrokes.set(ownerId, legacy);
+        }
+        strokeId = legacy.strokeId;
+        seq = legacy.seq++;
+        if (payload.done === true) legacyLaserStrokes.delete(ownerId);
+      } else if (typeof strokeId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(strokeId)
+          || !Number.isSafeInteger(seq) || seq < 0) {
+        throw new Error('激光笔轨迹标识无效。');
+      }
       const packet = {
         ownerId, startedAt: stream.startedAt, from: member.id,
-        points, done: payload.done === true,
+        strokeId, seq, points, done: payload.done === true,
       };
       const recipients = new Set([ownerId, ...(room.viewers.get(ownerId)?.keys() || [])]);
       for (const id of recipients) {
-        if (id !== member.id) room.members.get(id)?.socket?.emit('laser:stroke', packet);
+        const recipient = room.members.get(id)?.socket;
+        if (id !== member.id && recipient) {
+          // A late laser trail has no value. Socket.IO may drop it while its
+          // transport is busy; reliable control and media signals stay intact.
+          (recipient.volatile || recipient).emit('laser:stroke', packet);
+        }
       }
       return { ok: true };
-    }, { max: 110, windowMs: 10_000 });
+    }, { max: LASER_PACKETS_PER_SECOND, windowMs: 1_000 });
 
     event(
       'member:share-permission',

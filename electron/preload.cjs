@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('roomcast', {
   desktop: true,
+  desktopLaser: value => ipcRenderer.send('roomcast:desktop-laser', value),
   startCampusNetwork: value => ipcRenderer.invoke('roomcast:campus-start', value),
   stopCampusNetwork: lease => ipcRenderer.invoke('roomcast:campus-stop', lease),
   onCampusEnded: callback => {
