@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.4-beta.12",
+  "version": "0.14.4-beta.14",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -9,7 +9,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
+    "build": "node scripts/prepare-desktop-laser.mjs && vite build",
     "server": "node server/index.mjs",
     "start": "electron .",
     "start:viewer": "node scripts/start-viewer.cjs",
@@ -61,7 +61,10 @@
   "build": {
     "appId": "local.roomcast.desktop",
     "productName": "Roomcast",
-    "asarUnpack": ["electron/campus-adapter-worker.mjs", "node_modules/turn-server/**/*"],
+    "asarUnpack": [
+      "electron/campus-adapter-worker.mjs",
+      "node_modules/turn-server/**/*"
+    ],
     "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"

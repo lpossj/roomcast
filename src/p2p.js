@@ -18,6 +18,7 @@ const forwarded = [
   'room:credential-revoke',
   'chat:message',
   'chat:recalled',
+  'laser:stroke',
   'image:start',
   'image:chunk',
   'image:complete',
@@ -38,6 +39,9 @@ const allowed = new Set([
   'member:voice',
   'member:mute',
   'member:share-permission',
+  'laser:room-permission',
+  'laser:member-permission',
+  'laser:stroke',
   'member:kick',
   'chat:send',
   'chat:recall',
@@ -57,6 +61,14 @@ const allowed = new Set([
 
 const beforeJoin = new Set(['room:join']);
 const INVITE_SECRET = /^[A-Za-z0-9_-]{43}$/;
+const LASER_QUEUE_MAX_BYTES = 16 * 1024;
+const LASER_MESSAGE_MAX_BYTES = 2048;
+const LASER_PACKETS_PER_SECOND = 24;
+
+function laserQueueBusy(connection) {
+  return Number(connection?.dataChannel?.bufferedAmount || 0) > LASER_QUEUE_MAX_BYTES
+    || Number(connection?.bufferSize || 0) > 0;
+}
 
 // The host does not start the authentication clock until the data channel is
 // actually open (see accept()). The viewer must therefore wait for
@@ -414,6 +426,24 @@ export class P2PRoom {
       .catch(() => { });
 
     return this;
+  }
+
+  sendLaser(payload) {
+    // Never replay transient coordinates after migration or reconnection, and
+    // never allocate RPC replies/timeouts for every movement packet.
+    if (this.closed || !this.connected || this.migrating) return false;
+    try {
+      if (this.isHost) {
+        if (!this.local?.connected) return false;
+        (this.local.volatile || this.local).emit('laser:stroke', payload);
+      } else {
+        if (!this.remote?.open || laserQueueBusy(this.remote)) return false;
+        this.remote.send({ event: 'laser:stroke', payload });
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   assertOpen() {
@@ -1952,6 +1982,8 @@ export class P2PRoom {
       performance.now();
 
     let requests = 0;
+    let laserWindowStarted = windowStarted;
+    let laserRequests = 0;
 
     let timeout;
     let authReceive;
@@ -2183,6 +2215,8 @@ export class P2PRoom {
               return;
             }
 
+            if (event === 'laser:stroke' && laserQueueBusy(connection)) return;
+
             if (
               event
               === 'image:chunk'
@@ -2251,6 +2285,34 @@ export class P2PRoom {
               )
               : serializedLength
               > 65536;
+
+          const laser = message?.event === 'laser:stroke';
+          if (laser) {
+            // The existing room service remains authoritative for membership,
+            // screen membership, permissions and coordinate validation. Laser
+            // traffic has its own allowance and cannot consume control quota.
+            if (!socket.data.admitted || closed || !socket.connected || oversized
+                || serializedLength > LASER_MESSAGE_MAX_BYTES
+                || (message.id !== undefined && (typeof message.id !== 'string' || message.id.length > 64))) return;
+            const now = performance.now();
+            if (now - laserWindowStarted >= 1_000) {
+              laserWindowStarted = now;
+              laserRequests = 0;
+            }
+            laserRequests += 1;
+            if (laserRequests > LASER_PACKETS_PER_SECOND) return;
+            if (message.id === undefined) {
+              if (!laserQueueBusy(connection)) (socket.volatile || socket).emit('laser:stroke', message.payload);
+              return;
+            }
+            // Old PR clients send ordinary RPC envelopes. Acknowledge these
+            // without retaining pending requests in the host.
+            try {
+              const result = await ack(socket, 'laser:stroke', message.payload, 15_000);
+              if (connection.open && !laserQueueBusy(connection)) connection.send({ reply: message.id, result });
+            } catch { }
+            return;
+          }
 
           if (
             closed

@@ -15,6 +15,7 @@ const { createChromiumSessionFetch, workerRequest } = require('./worker-client.c
 const { resolveRuntimePaths } = require('./runtime-paths.cjs');
 const { migratePreferences } = require('./preferences-migration.cjs');
 const { installFloatingWindows } = require('./floating-window.cjs');
+const { createDesktopLaser } = require('./desktop-laser.cjs');
 const { createWebInvite } = require('./web-invite.cjs');
 const { createCampusNetwork } = require('./campus-network.cjs');
 const { liveWebContents, ownsWindowEvent } = require('./window-owner.cjs');
@@ -49,6 +50,7 @@ let LoopbackCapture;
 let obsCaptureEngine = null;
 let obsCaptureIdleTimer = null;
 let obsCaptureActive = false;
+let desktopLaser = null;
 let obsVideoPermissionUntil = 0;
 let obsCaptureSessionId = '';
 let obsCaptureOperationTail = Promise.resolve();
@@ -104,6 +106,7 @@ async function closeObsCaptureEngine({ expectedEngine = null, captureId = '', ca
   obsCaptureIdleTimer = null;
   const engine = obsCaptureEngine;
   const closedCaptureId = obsCaptureSessionId;
+  desktopLaser?.stopObs();
   obsCaptureActive = false;
   obsVideoPermissionUntil = 0;
   obsCaptureSessionId = '';
@@ -118,6 +121,7 @@ function handleObsCaptureUnexpectedExit(engine, details = {}) {
   cancelObsCaptureOperations();
   const wasActive = obsCaptureActive;
   const endedCaptureId = obsCaptureSessionId;
+  desktopLaser?.stopObs();
   clearTimeout(obsCaptureIdleTimer);
   obsCaptureIdleTimer = null;
   obsCaptureActive = false;
@@ -483,6 +487,7 @@ else {
       startupMark('service-ready');
       // No persist: prefix: chat DOM, browser storage and network cache stay in memory.
       const trusted = url => { try { return new URL(url).origin === service.url; } catch { return false; } };
+      desktopLaser = createDesktopLaser({ app, BrowserWindow, ipcMain, screen, isOwner: event => ownsWindowEvent(event, window, trusted) });
       webInvite = createWebInvite({
         viewerUrl: process.env.ROOMCAST_WEB_VIEWER_URL || undefined,
         onState: state => { if (window && !window.isDestroyed()) window.webContents.send('roomcast:web-invite-state', state); },
@@ -521,15 +526,18 @@ else {
         const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } }).catch(() => []);
         const source = sources.find(item => item.id === selection.id);
         if (!source) return callback(null);
+        desktopLaser.selectNative(source);
         callback({ video: source, ...(selection.audio && request.audioRequested ? { audio: 'loopback' } : {}) });
       });
       installFloatingWindows(window, trusted);
       window.webContents.on('render-process-gone', () => {
+        desktopLaser?.stop();
         void campusNetwork.stop();
         stopAllAudioCaptures();
         void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
       });
       window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+        if (isMainFrame && !isInPlace) desktopLaser?.stop();
         if (isMainFrame && !isInPlace) void campusNetwork.stop();
         if (isMainFrame && !isInPlace && obsCaptureEngine) {
           void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
@@ -1133,7 +1141,7 @@ else {
             await engine.configureVideo(settings);
             assertCurrent();
             startPhase = 'select-source';
-            await engine.selectSource({ type, id, cursor: payload.cursor !== false, clientArea: payload.clientArea !== false });
+            const selectedCapture = await engine.selectSource({ type, id, cursor: payload.cursor !== false, clientArea: payload.clientArea !== false });
             assertCurrent();
             startPhase = 'start-virtual-camera';
             await engine.startVirtualCamera();
@@ -1149,6 +1157,7 @@ else {
             if (!status.running || !status.connected || !status.virtualCamActive) {
               throw new Error('OBS 采集进程未保持运行状态。');
             }
+            desktopLaser?.selectObs(selectedCapture);
             return { ok: true, captureId: requestedCaptureId, status };
           } catch (error) {
             if (error?.code === 'OBS_CAPTURE_CANCELLED' || engine.retired) {
@@ -1260,6 +1269,7 @@ else {
   app.on('before-quit', event => {
     if (quitting || !service) return;
     event.preventDefault(); quitting = true;
+    desktopLaser?.stop();
     stopAllAudioCaptures();
     // Hard stop for the quitting path: a local service close that waits on a lingering
     // connection, or session clearing that never settles, must not prevent the exit.

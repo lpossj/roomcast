@@ -1,3 +1,5 @@
+import { attachLaserSurface } from './laser-surface.js';
+
 const AVATAR_PALETTE = [
   ['#394631', '#c5d4a7'],
   ['#383551', '#c6bbea'],
@@ -25,6 +27,7 @@ export function openFloatingPlayer(source, {
   soundEnabled,
   volume: initialVolume,
   info,
+  laser: laserOptions,
 } = {}) {
   const bridge = window.roomcast;
   const id = bridge?.prepareFloatingWindow?.();
@@ -42,6 +45,9 @@ export function openFloatingPlayer(source, {
   let alwaysOnTop = false;
   let uiTimer = null;
   let controlPointer = false;
+  let laserSurface = null;
+  let laserActive = laserOptions?.active === true;
+  let laserAvailable = laserOptions?.available !== false;
 
   const doc = popup.document;
   doc.title = `${title || '共享画面'} — Roomcast`;
@@ -149,6 +155,10 @@ export function openFloatingPlayer(source, {
     html[data-appearance="light"] .floating-controls { background: linear-gradient(transparent, #f8fafcf2); color: #28445c; }
     .audio-hidden { display: none !important; }
     html.cursor-hidden, html.cursor-hidden * { cursor: none !important; }
+    .laser-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    .laser-layer canvas { display: block; width: 100%; height: 100%; pointer-events: none; }
+    .laser-layer.laser-drawing { pointer-events: auto; touch-action: none; }
+    html .laser-layer.laser-drawing, html.cursor-hidden .laser-layer.laser-drawing { cursor: crosshair !important; }
   `;
   doc.head.append(style);
 
@@ -253,6 +263,27 @@ export function openFloatingPlayer(source, {
     volume: Number.isFinite(Number(initialVolume)) ? Number(initialVolume) : Number(source.volume || 0),
   };
 
+  const laserButton = laserOptions && makeButton({
+    label: '激光笔（按住拖动，Esc 退出）',
+    html: icon('<path d="m16 3 5 5-12 12H4v-5z"></path><path d="m14 5 5 5"></path>'),
+    action: () => {
+      if (!laserOptions.controller.allowed()) return;
+      updateLaser({ active: !laserActive });
+      laserOptions.onActiveChange?.(laserActive);
+    },
+  });
+  const updateLaser = next => {
+    if (!laserButton || disposed) return;
+    if (typeof next.available === 'boolean') laserAvailable = next.available;
+    laserActive = next.active === true && laserAvailable && laserOptions.controller.allowed();
+    laserButton.style.display = !laserAvailable || !laserOptions.controller.allowed() ? 'none' : '';
+    laserButton.setAttribute('aria-pressed', String(laserActive));
+    laserButton.title = laserActive ? '退出激光笔模式（Esc）' : '激光笔（按住拖动）';
+    laserButton.setAttribute('aria-label', laserButton.title);
+    laserButton.style.color = laserActive ? 'var(--green)' : '';
+    laserSurface?.setActive(laserActive);
+  };
+
   const soundButton = makeButton({
     label: '播放共享声音',
     html: icons.muted,
@@ -299,6 +330,16 @@ export function openFloatingPlayer(source, {
   });
 
   doc.body.append(infoCard, viewers, video, controls);
+  if (laserOptions) {
+    const surface = doc.createElement('div'), canvas = doc.createElement('canvas');
+    surface.className = 'laser-layer'; surface.append(canvas); doc.body.append(surface);
+    laserSurface = attachLaserSurface({
+      surface, canvas, video, laser: laserOptions.controller,
+      stream: laserOptions.stream, selfId: laserOptions.selfId, active: laserActive,
+      onExit: () => { updateLaser({ active: false }); laserOptions.onActiveChange?.(false); },
+    });
+    updateLaser({ active: laserActive, available: laserOptions.available });
+  }
 
   function renderAudio() {
     soundButton.classList.toggle('audio-hidden', !audioState.available);
@@ -465,6 +506,7 @@ export function openFloatingPlayer(source, {
 
     clearUiTimer();
     appearanceObserver.disconnect();
+    laserSurface?.destroy(); laserSurface = null;
     doc.documentElement.removeEventListener('pointerenter', pointerMoved);
     doc.documentElement.removeEventListener('pointermove', pointerMoved);
     doc.documentElement.removeEventListener('pointerleave', pointerLeft);
@@ -505,5 +547,5 @@ export function openFloatingPlayer(source, {
     throw error;
   }
 
-  return { close: dispose, id, updateAudio, updateInfo };
+  return { close: dispose, id, updateAudio, updateInfo, updateLaser };
 }

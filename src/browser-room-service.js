@@ -36,6 +36,7 @@ export function createBrowserRoomService() {
     const client = {
       connected: true,
       on(name, listener) { add(clientHandlers, name, listener); return this; },
+      emit(name, payload) { if (this.connected) notify(serverHandlers, name, payload); return this; },
       removeAllListeners() { clientHandlers.clear(); return this; },
       disconnect,
       timeout(milliseconds) {
