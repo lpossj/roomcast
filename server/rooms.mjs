@@ -425,7 +425,8 @@ export function attachRooms(io, {
 
   function snapshot(room) {
     return {
-      features: { profiles: 1, voice: 1 },
+      features: { profiles: 1, voice: 1, laser: 1 },
+      laserEnabled: room.laserEnabled !== false,
       id: room.id,
       name: room.name,
       maxMembers: MAX_MEMBERS,
@@ -440,6 +441,7 @@ export function attachRooms(io, {
           joinedAt,
           role,
           canShare,
+          canLaser,
           avatarColor,
           avatar,
           voiceEnabled,
@@ -451,6 +453,7 @@ export function attachRooms(io, {
           joinedAt,
           role,
           canShare,
+          canLaser: canLaser !== false,
           avatarColor,
           avatar: avatar || '',
           voiceEnabled: voiceEnabled === true,
@@ -825,6 +828,7 @@ export function attachRooms(io, {
 
         successor.canShare =
           true;
+        successor.canLaser = true;
 
         successor.ownerToken =
           token();
@@ -945,6 +949,7 @@ export function attachRooms(io, {
       joinedAt: Date.now(),
       role,
       canShare: true,
+      canLaser: true,
       readToken: token(),
 
       ownerToken:
@@ -1324,6 +1329,8 @@ export function attachRooms(io, {
           viewers:
             new Map(),
 
+          laserEnabled: true,
+
           iceServers:
             cleanIceServers(
               payload.iceServers,
@@ -1604,6 +1611,8 @@ export function attachRooms(io, {
                     ? true
                     : candidate.canShare,
 
+                canLaser: candidate.id === successorId ? true : candidate.canLaser !== false,
+
                 ticketHash:
                   tokenHash(
                     resumeToken,
@@ -1703,6 +1712,7 @@ export function attachRooms(io, {
             members,
             streams,
             viewers,
+            laserEnabled: room.laserEnabled !== false,
 
             messages:
               room.messages
@@ -1948,6 +1958,8 @@ export function attachRooms(io, {
                   candidate.canShare
                   !== false,
 
+                canLaser: candidate.canLaser !== false,
+
                 ticketHash:
                   candidate.ticketHash,
               };
@@ -2074,6 +2086,8 @@ export function attachRooms(io, {
 
           viewers:
             new Map(),
+
+          laserEnabled: transfer.laserEnabled !== false,
 
           iceServers:
             cleanIceServers(
@@ -2757,6 +2771,58 @@ export function attachRooms(io, {
         };
       },
     );
+
+    // Transient coordinates use the existing authenticated room control plane.
+    // No laser payloads are stored in room history or mixed into video frames.
+    event('laser:room-permission', payload => {
+      const { room, member } = current(socket);
+      if (member.role !== 'owner') throw new Error('只有房主可以管理全房激光笔权限。');
+      if (typeof payload?.enabled !== 'boolean') throw new Error('激光笔权限无效。');
+      room.laserEnabled = payload.enabled;
+      broadcast(room);
+      return { ok: true };
+    }, { max: 12, windowMs: 60_000 });
+
+    event('laser:member-permission', payload => {
+      const { room, member } = current(socket);
+      const target = room.members.get(payload?.memberId);
+      if (!target || member.role === 'user'
+          || target.role === 'owner' || target.id === member.id
+          || (member.role === 'admin' && target.role !== 'user')) {
+        throw new Error('没有权限修改该成员的激光笔使用权。');
+      }
+      if (typeof payload?.enabled !== 'boolean') throw new Error('激光笔权限无效。');
+      target.canLaser = payload.enabled;
+      broadcast(room);
+      return { ok: true };
+    }, { max: 30, windowMs: 60_000 });
+
+    event('laser:stroke', payload => {
+      const { room, member } = current(socket);
+      if (room.laserEnabled === false || member.canLaser === false) throw new Error('激光笔已被禁用。');
+      const ownerId = typeof payload?.ownerId === 'string' ? payload.ownerId : '';
+      const stream = room.streams.get(ownerId);
+      if (!stream || payload.startedAt !== stream.startedAt) throw new Error('激光笔共享目标已变化。');
+      if (member.id !== ownerId && !room.viewers.get(ownerId)?.has(member.id)) {
+        throw new Error('必须先进入该共享画面。');
+      }
+      const points = payload.points;
+      if (!Array.isArray(points) || points.length > 8
+          || !points.every(p => Array.isArray(p) && p.length === 2
+            && p.every(n => Number.isInteger(n) && n >= 0 && n <= 10000))
+          || (!points.length && payload.done !== true)) {
+        throw new Error('激光笔坐标格式无效。');
+      }
+      const packet = {
+        ownerId, startedAt: stream.startedAt, from: member.id,
+        points, done: payload.done === true,
+      };
+      const recipients = new Set([ownerId, ...(room.viewers.get(ownerId)?.keys() || [])]);
+      for (const id of recipients) {
+        if (id !== member.id) room.members.get(id)?.socket?.emit('laser:stroke', packet);
+      }
+      return { ok: true };
+    }, { max: 110, windowMs: 10_000 });
 
     event(
       'member:share-permission',
