@@ -17,6 +17,8 @@ import { recordP2pNetworkStats } from './p2p-video-policy.js';
 import { playerInfo } from './player-info.js';
 import { preferH264High } from './video-codec-policy.js';
 import Avatar from './Avatar.jsx';
+import LaserOverlay from './LaserOverlay.jsx';
+import { PenLine } from 'lucide-react';
 
 export const FULLSCREEN_UI_HIDE_DELAY = 2000;
 const readPlaybackVolume = () => {
@@ -30,7 +32,7 @@ const emptyMetrics = {
   lost: 0, decoder: '', encoder: ''
 };
 
-export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewerMemberId, deafened, masterVolume = 1, initialSound = false, transport, reportViewing, initiallyEntered = false, onViewingChange }) {
+export default function ScreenPlayer({ laser, room, stream, iceServers, outputDeviceId, viewerMemberId, deafened, masterVolume = 1, initialSound = false, transport, reportViewing, initiallyEntered = false, onViewingChange }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const streamViewRef = useRef(null);
@@ -48,6 +50,8 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
   const interaction = useRef({ inside: false, hover: false, pointer: false, focus: false });
   const wasFullscreen = useRef(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const [laserEnabled, setLaserEnabled] = useState(false);
+  useEffect(() => { if (room?.laserEnabled === false || room?.members?.find(m => m.id === viewerMemberId)?.canLaser === false) setLaserEnabled(false); }, [room?.laserEnabled, room?.members, viewerMemberId]);
   const playback = selectScreenPlayback({
     viewerMemberId,
     publisherMemberId: stream.memberId,
@@ -1854,6 +1858,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
       </div>}
 
       <div className="player-stage">
+        {entered && state === 'live' && !floating && <LaserOverlay laser={laser} room={room} stream={stream} selfId={viewerMemberId} videoRef={videoRef} active={laserEnabled} onActiveChange={setLaserEnabled} floating={floating} />}
         <video ref={videoRef} autoPlay={state === 'live'} playsInline muted={!sound || deafened || own || state !== 'live'} />
 
         {floating ? (entered && state === 'live' && <div className="floating-detached-placeholder" aria-hidden="true"><AppWindow size={28} /><strong>画面已移至小窗</strong><span>关闭小窗后自动返回这里</span></div>) : <>
@@ -1878,7 +1883,7 @@ export default function ScreenPlayer({ stream, iceServers, outputDeviceId, viewe
             onViewingChange?.(stream.memberId, false);
             if (document.fullscreenElement === containerRef.current) document.exitFullscreen().catch(() => { });
           }}>退出观看</button>}
-          <div className="player-controls" onPointerEnter={() => { interaction.current.hover = true; showUi(); }} onPointerLeave={() => { interaction.current.hover = false; armUiHide(); }} onPointerDown={controlPointerDown}><div>{!own && <><button aria-label={sound ? '关闭共享声音' : '播放共享声音'} title={sound ? '关闭共享声音' : '播放共享声音'} onClick={() => { setSound(value => !value); videoRef.current?.play().catch(() => { }); }}>{sound && !deafened && volume > 0 ? <Volume2 size={18} /> : <VolumeX size={18} />}</button><label className="player-volume" title={`音量 ${Math.round(volume * 100)}%`}><input aria-label="共享音量" type="range" min="0" max="1" step="0.01" value={volume} onChange={event => { const next = Number(event.target.value); setVolume(next); if (next > 0) setSound(true); }} /><span>{Math.round(volume * 100)}%</span></label></>}{window.roomcast?.desktop && <button title="窗口模式" aria-label="窗口模式" onClick={toggleWindowMode}><AppWindow size={18} /></button>}<button title={fullscreen ? '退出全屏' : '全屏'} aria-label={fullscreen ? '退出全屏' : '全屏'} onClick={toggleFullscreen}>{fullscreen ? <Minimize size={18} /> : <Expand size={18} />}</button></div></div>
+          <div className="player-controls" onPointerEnter={() => { interaction.current.hover = true; showUi(); }} onPointerLeave={() => { interaction.current.hover = false; armUiHide(); }} onPointerDown={controlPointerDown}><div>{room?.features?.laser === 1 && room.laserEnabled !== false && room.members?.find(m => m.id === viewerMemberId)?.canLaser !== false && !floating && <button type="button" className={laserEnabled ? 'laser-active' : ''} title={laserEnabled ? '退出激光笔模式' : '激光笔'} aria-label={laserEnabled ? '退出激光笔模式' : '激光笔'} onClick={() => setLaserEnabled(x => !x)}><PenLine size={18}/></button>}{!own && <><button aria-label={sound ? '关闭共享声音' : '播放共享声音'} title={sound ? '关闭共享声音' : '播放共享声音'} onClick={() => { setSound(value => !value); videoRef.current?.play().catch(() => { }); }}>{sound && !deafened && volume > 0 ? <Volume2 size={18} /> : <VolumeX size={18} />}</button><label className="player-volume" title={`音量 ${Math.round(volume * 100)}%`}><input aria-label="共享音量" type="range" min="0" max="1" step="0.01" value={volume} onChange={event => { const next = Number(event.target.value); setVolume(next); if (next > 0) setSound(true); }} /><span>{Math.round(volume * 100)}%</span></label></>}{window.roomcast?.desktop && <button title="窗口模式" aria-label="窗口模式" onClick={toggleWindowMode}><AppWindow size={18} /></button>}<button title={fullscreen ? '退出全屏' : '全屏'} aria-label={fullscreen ? '退出全屏' : '全屏'} onClick={toggleFullscreen}>{fullscreen ? <Minimize size={18} /> : <Expand size={18} />}</button></div></div>
         </>}
       </div>
     </div>
