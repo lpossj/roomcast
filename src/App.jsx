@@ -1,6 +1,7 @@
-import { AppWindow, ArrowRight, AudioLines, Camera, Check, ChevronDown, ChevronRight, Copy, Download, Headphones, ImagePlus, Info, Link, LoaderCircle, LockKeyhole, LogOut, Maximize2, MessageSquare, Mic, Monitor, MonitorUp, Palette, Plus, RefreshCw, RotateCcw, RotateCw, ScreenShare, Send, Server, Settings, ShieldCheck, Square, Sun, Moon, Users, Volume2, Wifi, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { AppWindow, ArrowRight, AudioLines, Camera, Check, ChevronDown, ChevronRight, Copy, Download, Headphones, ImagePlus, Info, Link, LoaderCircle, LockKeyhole, LogOut, Maximize2, MessageSquare, Mic, Monitor, MonitorUp, Palette, PenLine, Plus, RefreshCw, RotateCcw, RotateCw, ScreenShare, Send, Server, Settings, ShieldCheck, Square, Sun, Moon, Users, Volume2, Wifi, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ScreenPlayer from './ScreenPlayer.jsx';
+import { useLaser } from './useLaser.js';
 import Avatar, { safeAvatar } from './Avatar.jsx';
 import { ProfileSettings, VoiceSettings, VoiceControls, MemberVolumeControl } from './ProfileAudioSettings.jsx';
 import useRoomVoice from './useRoomVoice.js';
@@ -567,10 +568,13 @@ function MemberPermissionsModal({ member, self, onClose, command }) {
   const [error, setError] = useState('');
   const run = async (event, payload) => { setBusy(event); setError(''); try { await command(event, payload); onClose(); } catch (failure) { setError(failure.message); } finally { setBusy(''); } };
   const owner = self?.role === 'owner';
+  const canManageLaser = member.id !== self?.id && member.role !== 'owner'
+    && (owner || (self?.role === 'admin' && member.role === 'user'));
   return <Modal title={`管理 ${member.name}`} subtitle="" onClose={onClose} busy={!!busy}>
     <div className="permission-member"><Avatar member={member} /><div><strong>{member.name}</strong><span>{member.role === 'admin' ? '管理员' : '用户'} · {member.canShare ? '允许共享' : '已禁止共享'}</span></div></div>
     {owner && <section className="settings-section"><h3><ShieldCheck size={17} />成员角色</h3><div className="settings-buttons"><button className={`button small ${member.role === 'admin' ? 'primary' : 'secondary'}`} onClick={() => run('member:role', { memberId: member.id, role: 'admin' })} disabled={!!busy || member.role === 'admin'}>设为管理员</button><button className={`button small ${member.role === 'user' ? 'primary' : 'secondary'}`} onClick={() => run('member:role', { memberId: member.id, role: 'user' })} disabled={!!busy || member.role === 'user'}>设为用户</button></div></section>}
     {(owner || (self?.role === 'admin' && member.role === 'user')) && <section className="settings-section"><h3><Mic size={17} />麦克风管理</h3><button className="button danger-share small" disabled={!!busy || !member.voiceEnabled} onClick={() => run('member:mute', { memberId: member.id })}>关闭该成员麦克风</button></section>}
+    {canManageLaser && <section className="settings-section"><h3><Palette size={17} />激光笔权限</h3><div className="settings-buttons"><button className="button secondary small" disabled={!!busy || member.canLaser !== false} onClick={() => run('laser:member-permission', { memberId: member.id, enabled: true })}>允许使用</button><button className="button danger-share small" disabled={!!busy || member.canLaser === false} onClick={() => run('laser:member-permission', { memberId: member.id, enabled: false })}>禁止使用</button></div></section>}
     <section className="settings-section"><h3><ScreenShare size={17} />屏幕共享权限</h3><p className="setting-description">禁止后，该成员正在进行的共享会立即停止。</p><div className="settings-buttons"><button className="button secondary small" onClick={() => run('member:share-permission', { memberId: member.id, canShare: true })} disabled={!!busy || member.canShare}>允许共享</button><button className="button danger-share small" onClick={() => run('member:share-permission', { memberId: member.id, canShare: false })} disabled={!!busy || !member.canShare}>禁止共享</button></div></section>
     <section className="settings-section"><h3><LogOut size={17} />成员管理</h3><p className="setting-description">踢出后，该成员的共享会立即结束并离开房间。</p><button className="button danger-share small" onClick={() => run('member:kick', { memberId: member.id })} disabled={!!busy}>{busy === 'member:kick' ? <LoaderCircle size={15} className="spin" /> : <LogOut size={15} />}踢出房间</button></section>
     {error && <div className="inline-error"><Info size={16} />{error}</div>}
@@ -907,6 +911,8 @@ export default function App() {
   const roomAction = useRef(0);
   const session = useRoom(notify);
   const { room, selfId, server, config, connection, socketRef, messages, hasOlderMessages, historyLoading, loadOlderMessages, sendMessage, sendImages, recallMessage, enter, leave, command } = session;
+  const laser = useLaser({ room, selfId, socketRef });
+  const [globalLaserPending, setGlobalLaserPending] = useState(false);
   const audioDevices = useDevices();
   const [avatar, setAvatar] = useState(() => safeAvatar(loadPreference('avatar', '')));
   const profilePending = useRef(false);
@@ -1057,6 +1063,14 @@ export default function App() {
   const activeRoomId = useRef(null);
   activeRoomId.current = room?.id || null;
   const self = room?.members.find(member => member.id === selfId);
+  const canManageGlobalLaser = room?.features?.laser === 1 && ['owner', 'admin'].includes(self?.role);
+  const toggleGlobalLaser = async () => {
+    if (!canManageGlobalLaser || globalLaserPending) return;
+    setGlobalLaserPending(true);
+    try { await command('laser:global-permission', { enabled: room.laserEnabled === false }); }
+    catch (error) { notify(error.message); }
+    finally { setGlobalLaserPending(false); }
+  };
   const streams = room?.streams || [];
   const ownShare = streams.some(stream => stream.memberId === selfId);
   const panels = usePanelWidths(showChat);
@@ -1155,6 +1169,7 @@ export default function App() {
   }, [room?.members]);
 
   const stopLocalShare = useCallback(async (socket = socketRef.current) => {
+    window.roomcast?.desktopLaser?.({ captureStopped: true });
     socket?.stopScreenStream?.();
   }, [socketRef]);
 
@@ -1340,6 +1355,7 @@ export default function App() {
         captureEndedReason = String(endedTrack?.roomcastBackendEndedReason || captureEndedReason || '');
         if (!ownsCapture.current || socketRef.current !== screenSocket) return;
         ownsCapture.current = false;
+        window.roomcast?.desktopLaser?.({ captureStopped: true });
         screenSocket?.stopScreenStream?.();
         command('share:stop').catch(() => { });
         if (captureEndedReason) notify(captureEndedReason);
@@ -1350,8 +1366,10 @@ export default function App() {
       ownsCapture.current = true;
       await command('share:started', { settings: options, microphone: options.microphone === true });
       if (captureEnded || capturedVideoTrack?.readyState === 'ended') throw new Error(captureEndedReason || '屏幕采集在共享建立时已经结束。');
+      if (options.sourceType !== 'camera') window.roomcast?.desktopLaser?.({ captureStarted: true });
       setModal(null); await refresh();
     } catch (error) {
+      window.roomcast?.desktopLaser?.({ captureStopped: true });
       if (!captured) captured = (await capturePromise).stream || null;
       if (screenSocket?.screenStream === captured) screenSocket.stopScreenStream();
       else { for (const track of captured?.getTracks() || []) track.stop(); captured?.roomcastCleanup?.(); }
@@ -1625,9 +1643,9 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`network-latency ${latencyTone}`} aria-label={`网络延迟：${latencyMs == null ? '-- ms' : `${latencyMs} ms`}`}><Wifi className="network-latency-icon" size={17} strokeWidth={2.2} aria-hidden="true" /><span>{latencyMs == null ? '-- ms' : `${latencyMs} ms`}</span></span><VoiceControls voice={voice} inRoom={room?.features?.voice === 1} /></div>
     </aside>
 
-    <main className="main-content"><header className="room-header">{room && <div className="room-header-title"><Volume2 size={22} /><h2>{room.name}</h2></div>}<div className="room-header-actions"><span className={`connection-pill ${room ? 'connected' : ''}`}><span className="status-dot" />房间连接：{room ? config?.roomConnection || 'P2P' : '未连接'}</span>{!desktopChrome && <button className={`icon-button mobile-members-toggle ${showMembers ? 'toggled' : ''}`} title={showMembers ? '收起成员' : '查看成员'} aria-label={showMembers ? '收起成员' : '查看成员'} onClick={() => { setShowChat(false); setShowMembers(value => !value); }}><Users size={19} /></button>}<button className={`icon-button ${showChat ? 'toggled' : ''}`} title={showChat ? '收起聊天' : '展开聊天'} aria-label={showChat ? '收起聊天' : '展开聊天'} onClick={() => { setShowMembers(false); setShowChat(value => !value); }}><MessageSquare size={19} /></button></div></header>
+    <main className="main-content"><header className="room-header">{room && <div className="room-header-title"><Volume2 size={22} /><h2>{room.name}</h2></div>}<div className="room-header-actions">{canManageGlobalLaser && <button type="button" className="icon-button global-laser-toggle" title="全局激光笔" aria-label="全局激光笔" aria-pressed={room.laserEnabled !== false} disabled={globalLaserPending} onClick={toggleGlobalLaser}><PenLine size={21} /></button>}<span className={`connection-pill ${room ? 'connected' : ''}`}><span className="status-dot" />房间连接：{room ? config?.roomConnection || 'P2P' : '未连接'}</span>{!desktopChrome && <button className={`icon-button mobile-members-toggle ${showMembers ? 'toggled' : ''}`} title={showMembers ? '收起成员' : '查看成员'} aria-label={showMembers ? '收起成员' : '查看成员'} onClick={() => { setShowChat(false); setShowMembers(value => !value); }}><Users size={19} /></button>}<button className={`icon-button ${showChat ? 'toggled' : ''}`} title={showChat ? '收起聊天' : '展开聊天'} aria-label={showChat ? '收起聊天' : '展开聊天'} onClick={() => { setShowMembers(false); setShowChat(value => !value); }}><MessageSquare size={19} /></button></div></header>
       <div className="content-columns"><section className="stage-column"><div className="stage-heading"><div><span className="small-icon-box"><Monitor size={17} /></span><h3>共享屏幕</h3><span className="stage-state">{streams.length ? `${streams.length} 路共享` : '等待分享'}</span></div></div>
-        <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>{streams.length ? <div ref={screenGridRef} className={`screen-grid count-${streams.length}`} data-preview-scale={previewScale.toFixed(1)} style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}>{streams.map(stream => <ScreenPlayer key={[stream.memberId, stream.startedAt].join("-")} stream={stream} iceServers={config?.mediaIceServers} outputDeviceId={audioDevices.preferences.outputId} viewerMemberId={selfId} initialSound={true} transport={socketRef.current?.mediaP2P ? socketRef.current : undefined} reportViewing={reportViewing} initiallyEntered={watchingStreams.current.has(stream.memberId)} onViewingChange={rememberViewing} />)}</div> : <EmptyScreen desktop={desktopChrome} room={room} onShare={canShareScreen ? openShare : null} onCreate={canHostRoom ? () => setModal('create') : null} onJoin={() => setModal('join')} />}</div>
+        <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>{streams.length ? <div ref={screenGridRef} className={`screen-grid count-${streams.length}`} data-preview-scale={previewScale.toFixed(1)} style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}>{streams.map(stream => <ScreenPlayer key={[stream.memberId, stream.startedAt].join("-")} laser={laser} room={room} stream={stream} iceServers={config?.mediaIceServers} outputDeviceId={audioDevices.preferences.outputId} viewerMemberId={selfId} initialSound={true} transport={socketRef.current?.mediaP2P ? socketRef.current : undefined} reportViewing={reportViewing} initiallyEntered={watchingStreams.current.has(stream.memberId)} onViewingChange={rememberViewing} />)}</div> : <EmptyScreen desktop={desktopChrome} room={room} onShare={canShareScreen ? openShare : null} onCreate={canHostRoom ? () => setModal('create') : null} onJoin={() => setModal('join')} />}</div>
       </section>
         {showChat && <aside className={`chat-panel ${chatDragActive ? 'chat-drag-active' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}><PanelResizeHandle side="chat" handlers={panels.handle('chat')} /><header><h3><MessageSquare size={17} />房间聊天</h3></header><div className="chat-messages" ref={chatList} onScroll={scrollChat} role="log" aria-label="房间聊天记录" aria-live="polite">{room && (historyLoading || hasOlderMessages) && <div className="chat-history-status">{historyLoading ? <><LoaderCircle size={13} className="spin" />正在加载消息…</> : '向上滚动加载更早消息'}</div>}{messages.length > 0 && <div className="chat-date"><span />今天<span /></div>}{messages.map(message => <ChatItem key={message.seq} message={message} selfId={selfId} onRecall={recall} onPreview={setPreviewImage} onImageContextMenu={handleImageContextMenu} />)}<div ref={chatEnd} /></div><form className="chat-compose" onSubmit={sendChat}>
           <input ref={imageInput} className="visually-hidden" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" onChange={chooseImage} />

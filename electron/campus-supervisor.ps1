@@ -14,6 +14,19 @@ $job = $null
 $locks = @()
 $rules = @()
 $stopPath = Join-Path $SessionDirectory 'stop'
+$stage = 'identity'
+function Write-StartupStatus([string]$FileName, [string]$Step, $Failure) {
+  # Only a fixed stage and numeric OS code cross the elevated boundary.
+  $code = 0
+  $exception = $Failure.Exception
+  while ($exception.InnerException) { $exception = $exception.InnerException }
+  if ($exception -is [ComponentModel.Win32Exception]) { $code = $exception.NativeErrorCode }
+  elseif ($exception) { $code = $exception.HResult }
+  try {
+    $value = @{ stage = $Step; code = $code } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText((Join-Path $SessionDirectory $FileName), $value)
+  } catch { }
+}
 try {
   if ($DeviceName -notmatch '^Roomcast-[a-f0-9]{8}$') { throw 'Invalid device' }
   if (Test-Path -LiteralPath $stopPath) { return }
@@ -25,6 +38,7 @@ try {
   if ([IO.Path]::GetFullPath($parent.MainModule.FileName) -ne [IO.Path]::GetFullPath($ProgramPath)) { throw 'Parent path changed' }
   $corePath = Join-Path $RuntimeDirectory 'easytier-core.exe'
   $configPath = Join-Path $SessionDirectory 'network.toml'
+  $stage = 'integrity'
   foreach ($item in @(@($corePath,$CoreHash),@((Join-Path $RuntimeDirectory 'wintun.dll'),$DriverHash),@($configPath,$ConfigHash))) {
     $cursor = [IO.Path]::GetFullPath($item[0])
     while ($cursor) {
@@ -39,6 +53,7 @@ try {
     try { $actual = ([BitConverter]::ToString($sha.ComputeHash($handle))).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
     if ($actual -ne $item[1]) { throw 'Component changed' }
   }
+  $stage = 'compile'
   Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -83,25 +98,35 @@ public sealed class CampusJob : IDisposable {
   foreach ($protocol in @('UDP','TCP')) {
     $ruleName = "$group-Core-$protocol"
     $rules += $ruleName
-    New-NetFirewallRule -Name $ruleName -DisplayName 'Roomcast 校园互联核心（临时）' -Group $group -Program $corePath -Direction Inbound -Action Allow -Protocol $protocol -Profile Any | Out-Null
+    try {
+      New-NetFirewallRule -Name $ruleName -DisplayName 'Roomcast 校园互联核心（临时）' -Group $group -Program $corePath -Direction Inbound -Action Allow -Protocol $protocol -Profile Any | Out-Null
+    } catch { Write-StartupStatus 'firewall-warning' 'firewall-core' $_ }
   }
+  $stage = 'core-start'
   $job = New-Object CampusJob($corePath, $configPath, $RuntimeDirectory)
+  $stage = 'adapter-wait'
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  while (-not (Get-NetAdapter -Name $DeviceName -ErrorAction SilentlyContinue)) {
+  # Use the IP Helper-backed API instead of making NetAdapter/CIM availability
+  # a prerequisite for an otherwise usable Wintun interface.
+  while (-not ([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.Name -eq $DeviceName })) {
     if (-not $job.Running -or $parent.HasExited -or (Test-Path -LiteralPath $stopPath) -or [DateTime]::UtcNow -gt $deadline) { throw 'Adapter unavailable' }
     Start-Sleep -Milliseconds 250
   }
   $mediaRule = "$group-Media"
   $rules += $mediaRule
-  New-NetFirewallRule -Name $mediaRule -DisplayName 'Roomcast 校园媒体（临时）' -Group $group -Program $ProgramPath -InterfaceAlias $DeviceName -Direction Inbound -Action Allow -Protocol UDP -LocalPort '50000-50255' -Profile Any | Out-Null
+  try {
+    New-NetFirewallRule -Name $mediaRule -DisplayName 'Roomcast 校园媒体（临时）' -Group $group -Program $ProgramPath -InterfaceAlias $DeviceName -Direction Inbound -Action Allow -Protocol UDP -LocalPort '50000-50255' -Profile Any | Out-Null
+  } catch { Write-StartupStatus 'firewall-warning' 'firewall-media' $_ }
+  $stage = 'ready'
   [IO.File]::WriteAllText((Join-Path $SessionDirectory 'ready'), 'ready')
+  $stage = 'running'
   while ($job.Running -and -not $parent.HasExited -and -not (Test-Path -LiteralPath $stopPath)) { Start-Sleep -Milliseconds 300; $parent.Refresh() }
 } catch {
   # No raw command line, secret, address or exception text crosses into the UI.
-  if (Test-Path -LiteralPath $SessionDirectory -PathType Container) { [IO.File]::WriteAllText((Join-Path $SessionDirectory 'failed'), 'failed') }
+  Write-StartupStatus 'failed' $stage $_
 } finally {
-  if ($job) { $job.Dispose() }
-  foreach ($name in $rules) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
-  foreach ($handle in $locks) { $handle.Dispose() }
-  Remove-Item -LiteralPath (Join-Path $SessionDirectory 'network.toml') -Force -ErrorAction SilentlyContinue
+  if ($job) { try { $job.Dispose() } catch { } }
+  foreach ($name in $rules) { try { Remove-NetFirewallRule -Name $name -ErrorAction Stop } catch { } }
+  foreach ($handle in $locks) { try { $handle.Dispose() } catch { } }
+  try { Remove-Item -LiteralPath (Join-Path $SessionDirectory 'network.toml') -Force -ErrorAction Stop } catch { }
 }

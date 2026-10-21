@@ -51,6 +51,7 @@ async function startCampusSession(room) {
     }
   });
   const starting = window.roomcast.startCampusNetwork({ lease, roomId: room.roomId, secret: room.campusSecret }).then(async result => {
+    if (result?.failure) throw Object.assign(new Error('备用连接本机准备失败。'), { campusFailure: result.failure });
     if (room.closed || room.campusLease !== lease || !room.campusConnections?.size) {
       await window.roomcast.stopCampusNetwork(lease);
       throw new Error('EasyTier 已取消。');

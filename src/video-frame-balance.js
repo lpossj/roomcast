@@ -1,64 +1,79 @@
-// Encoder-load protection, independent of network congestion and codec QP ranges.
-// A high QP or a low measured FPS alone is not evidence of CPU overload.
-export function createVideoFrameBalance(fps, now = Date.now) {
-  const target = Math.max(1, Math.min(120, Number(fps) || 30));
-  const steps = [...new Set([target, ...[60, 45, 30].filter(value => value < target)])];
+import { hasSevereEncoderPressure, hasSustainedEncoderCost } from './video-encoder-pressure.js';
+import { buildVideoResolutionTiers, p2pResolutionScale } from './video-quality-tiers.js';
+
+// Chromium owns ordinary CPU, quality and network adaptation. This guard only
+// rescues a clarity stream that has collapsed despite its FPS adaptation. It
+// never interprets pacer bursts, QP, packet loss or low demand as CPU pressure.
+export function createVideoEncoderGuard(quality, now = Date.now) {
+  const targetFps = Math.max(1, Number(quality.fps) || 30);
+  const tiers = buildVideoResolutionTiers(quality);
   let index = 0, bad = 0, good = 0, lastChange = -Infinity;
   return {
-    get targetFps() { return target; },
-    get fps() { return steps[index]; },
-    inspect(video, ceiling = target) {
-      const appliedFps = Math.min(steps[index], ceiling);
-      const active = video?.delta?.framesEncoded > 0;
-      const cost = video?.encodeTimeMs;
-      const knownCost = typeof cost === 'number' && Number.isFinite(cost) && cost > 0;
-      const overloaded = active && appliedFps > 30 && (
-        video.qualityLimitationReason === 'cpu' || (knownCost && cost >= 800 / appliedFps)
-      );
-      const nextFps = steps[Math.max(0, index - 1)];
-      const healthy = active && video.qualityLimitationReason === 'none'
-        && knownCost && cost <= 450 / nextFps;
+    resetSamples() { bad = good = 0; },
+    async apply(sender, video, isStopped = () => false) {
+      if (isStopped() || sender.track?.readyState === 'ended') return { status: 'stopped' };
+      const parameters = sender.getParameters();
+      const encoding = parameters.encodings?.[0];
+      if (!encoding) return { status: 'parameters-unavailable' };
+      const degradation = quality.performanceMode === 'smooth' ? 'maintain-framerate' : 'maintain-resolution';
+      // VDO's existing delta sampler exposes elapsed time instead of `fresh`.
+      const sample = { ...video, fresh: video?.fresh ?? (video?.sampleIntervalMs > 0) };
+      // In maintain-framerate mode the browser already owns resolution changes.
+      // A CPU reason alone may persist while a static source supplies few frames.
+      const overloaded = degradation === 'maintain-resolution'
+        && hasSevereEncoderPressure(sample, targetFps)
+        && hasSustainedEncoderCost(sample, targetFps);
+      const healthy = sample.fresh && video.delta?.framesEncoded > 0
+        && video.qualityLimitationReason === 'none'
+        && typeof video.encodeTimeMs === 'number' && Number.isFinite(video.encodeTimeMs)
+        && video.encodeTimeMs >= 0 && video.encodeTimeMs <= 450 / targetFps;
       bad = overloaded ? bad + 1 : 0;
       good = healthy ? good + 1 : 0;
       let desiredIndex = index;
-      if (bad >= 3 && now() - lastChange >= 3000 && index < steps.length - 1) desiredIndex++;
-      else if (good >= 8 && now() - lastChange >= 10000 && index > 0) desiredIndex--;
-      return { index: desiredIndex, fps: steps[desiredIndex], overloaded, badSamples: bad, healthySamples: good };
-    },
-    commit(decision) {
-      if (index !== decision.index) { index = decision.index; lastChange = now(); bad = good = 0; }
-    },
-    reject() { bad = good = 0; },
-  };
-}
+      if (bad >= 3 && now() - lastChange >= 3000 && index < tiers.length - 1) desiredIndex++;
+      else if (index > 0 && good >= 8 && now() - lastChange >= 10000) desiredIndex--;
 
-// For publishers whose network adaptation is owned by Chromium/the VDO SDK.
-// Preserve a lower cap applied by another controller and every bitrate/scale field.
-export async function applyVideoFrameBalance(sender, video, balance, isStopped = () => false) {
-  if (isStopped() || sender.track?.readyState === 'ended') return { status: 'stopped' };
-  const parameters = sender.getParameters();
-  const encoding = parameters.encodings?.[0];
-  if (!encoding) return { status: 'parameters-unavailable' };
-  const externalCap = encoding.maxFramerate > 0 && encoding.maxFramerate < balance.fps
-    ? encoding.maxFramerate : Infinity;
-  const decision = balance.inspect(video, externalCap);
-  const desired = Math.min(decision.fps, externalCap);
-  // No pressure means no initial parameter write on these routes.
-  const needsCap = encoding.maxFramerate > decision.fps
-    || (!(encoding.maxFramerate > 0) && decision.fps < balance.targetFps);
-  if (decision.fps === balance.fps && !needsCap) {
-    balance.commit(decision);
-    return { ...decision, status: 'unchanged' };
-  }
-  encoding.maxFramerate = desired;
-  try {
-    if (isStopped()) return { status: 'stopped' };
-    await sender.setParameters(parameters);
-    if (isStopped()) return { status: 'stopped' };
-    balance.commit(decision);
-    return { ...decision, status: 'applied' };
-  } catch {
-    balance.reject();
-    return { ...decision, fps: balance.fps, status: 'parameters-rejected' };
-  }
+      const decision = { owner: 'chromium', emergencyEncoderPressure: overloaded,
+        tierIndex: index, tierCount: tiers.length, targetFps,
+        appliedFps: encoding.maxFramerate > 0 ? Math.min(targetFps, encoding.maxFramerate) : targetFps,
+        width: tiers[index].width, height: tiers[index].height,
+        badSamples: bad, healthySamples: good };
+      const preferenceChanged = parameters.degradationPreference !== degradation;
+      const tierChanged = desiredIndex !== index;
+      if (!tierChanged && !preferenceChanged) return { ...decision, status: 'observe-only' };
+
+      // Only this guard's emergency transition changes the user resolution cap.
+      // Leave SDK/user FPS and bitrate caps intact; no second FPS controller.
+      if (tierChanged) {
+        const source = sender.track?.getSettings?.() || {};
+        if (!(source.width > 0 && source.height > 0)) return { ...decision, status: 'source-size-unavailable' };
+        // Respect a separate SDK/user cap. Only recover a cap that still matches
+        // our previous tier, never raise one another owner has changed.
+        const currentScale = encoding.scaleResolutionDownBy || 1;
+        if (encoding.scaleResolutionDownTo != null
+          || Math.abs(currentScale - p2pResolutionScale(sender.track, tiers[index])) > 0.001) {
+          bad = good = 0;
+          return { ...decision, status: 'external-resolution-cap' };
+        }
+        encoding.scaleResolutionDownBy = p2pResolutionScale(sender.track, tiers[desiredIndex]);
+        delete encoding.scaleResolutionDownTo;
+      }
+      parameters.degradationPreference = degradation;
+      try {
+        if (isStopped()) return { ...decision, status: 'stopped' };
+        await sender.setParameters(parameters);
+        if (isStopped()) return { ...decision, status: 'stopped' };
+        if (tierChanged) {
+          index = desiredIndex;
+          lastChange = now();
+          bad = good = 0;
+        }
+        return { ...decision, tierIndex: index, width: tiers[index].width,
+          height: tiers[index].height, status: tierChanged ? 'encoder-rescue' : 'preference-applied' };
+      } catch {
+        bad = good = 0;
+        return { ...decision, status: 'parameters-rejected' };
+      }
+    },
+  };
 }

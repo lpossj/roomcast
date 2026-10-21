@@ -50,6 +50,8 @@ export class VdoTransport extends EventTarget {
 
   #state = 'idle';
   #connectPromise = null;
+  #closePromise = null;
+  #viewGeneration = 0;
   #closed = false;
 
   #publishedStreamId = null;
@@ -221,13 +223,15 @@ export class VdoTransport extends EventTarget {
       this.#setState('connecting');
       try {
         await sdk.connect();
+        this.#ensureOpen();
         await sdk.joinRoom({
           room: this.#room,
           password: this.#password,
         });
+        this.#ensureOpen();
         this.#setState('ready');
       } catch (error) {
-        this.#setState('failed', { error });
+        if (!this.#closed) this.#setState('failed', { error });
         throw error;
       } finally {
         this.#connectPromise = null;
@@ -251,6 +255,7 @@ export class VdoTransport extends EventTarget {
     const id = requireText(streamId, 'streamId');
 
     await this.connect();
+    this.#ensureOpen();
 
     const publishedId = await this.#sdk.publish(stream, {
       streamID: id,
@@ -259,6 +264,7 @@ export class VdoTransport extends EventTarget {
       password: this.#password,
       ...(media ? { media } : {}),
     });
+    this.#ensureOpen();
 
     this.#publishedStreamId = publishedId || id;
     this.#emit('publishing', { streamId: this.#publishedStreamId });
@@ -280,22 +286,34 @@ export class VdoTransport extends EventTarget {
 
     this.#viewingStreamId = id;
     this.#remoteStream = new MediaStream();
+    const generation = ++this.#viewGeneration;
 
     await this.connect();
+    this.#ensureOpen();
+    if (generation !== this.#viewGeneration) throw new Error('VDO view was cancelled');
 
     try {
-      this.#viewPeerConnection = await this.#sdk.view(id, {
+      const pc = await this.#sdk.view(id, {
         audio: Boolean(audio),
         video: Boolean(video),
         label,
         downloads: false,
         allowresources: false,
       });
+      if (this.#closed || generation !== this.#viewGeneration) {
+        // A new request for the same stream can receive the same SDK PC.
+        // Never stop that stream or close its new owner's connection here.
+        if (this.#closed || this.#viewingStreamId !== id) pc?.close();
+        throw new Error('VDO view was cancelled');
+      }
+      this.#viewPeerConnection = pc;
     } catch (error) {
-      this.#viewingStreamId = null;
-      this.#viewPeerConnection = null;
-      this.#remoteStream = null;
-      this.#emit('connectionfailed', { streamID: id, reason: error?.message, error });
+      if (!this.#closed && generation === this.#viewGeneration) {
+        this.#viewingStreamId = null;
+        this.#viewPeerConnection = null;
+        this.#remoteStream = null;
+        this.#emit('connectionfailed', { streamID: id, reason: error?.message, error });
+      }
       throw error;
     }
 
@@ -303,6 +321,7 @@ export class VdoTransport extends EventTarget {
   }
 
   stopViewing() {
+    this.#viewGeneration += 1;
     if (!this.#sdk || !this.#viewingStreamId) return;
 
     const id = this.#viewingStreamId;
@@ -341,7 +360,7 @@ export class VdoTransport extends EventTarget {
 
   getPublisherConnections() {
     if (this.#closed || !this.#publishedStreamId) return [];
-    // SDK 1.6.1 stores separate publisher/viewer connections under each peer.
+    // The SDK stores separate publisher/viewer connections under each peer.
     return [...(this.#sdk?.connections?.values() || [])]
       .map(connections => connections.publisher?.pc)
       .filter(pc => pc && pc.connectionState !== 'closed');
@@ -352,8 +371,9 @@ export class VdoTransport extends EventTarget {
     return this.#sdk.getPeerQuality(uuid);
   }
 
-  async close() {
-    if (this.#closed) return;
+  close() {
+    if (this.#closePromise) return this.#closePromise;
+    if (this.#closed) return Promise.resolve();
 
     this.#closed = true;
     this.#setState('closing');
@@ -362,18 +382,20 @@ export class VdoTransport extends EventTarget {
     this.stopPublishing();
 
     const sdk = this.#sdk;
-    if (sdk) {
+    this.#closePromise = (async () => {
       try {
-        await sdk.disconnect();
+        // SDK 1.6.2 cancels pending connect/join/view waits and invalidates
+        // hash/media continuations. Do not wait indefinitely on older tasks.
+        if (sdk) await sdk.disconnect();
       } finally {
         this.#unbindSdk();
         this.#sdk = null;
+        this.#remoteStream = null;
+        this.#viewPeerConnection = null;
+        this.#setState('closed');
       }
-    }
-
-    this.#remoteStream = null;
-    this.#viewPeerConnection = null;
-    this.#setState('closed');
+    })();
+    return this.#closePromise;
   }
 }
 

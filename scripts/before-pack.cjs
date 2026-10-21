@@ -5,6 +5,32 @@ const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const { VIRTUALCAM_HASHES } = require('../electron/obs-virtualcam-trust.cjs');
 
+function verifyNativeMedia(root, version) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'electron/native-media/manifest.json'), 'utf8'));
+  if (manifest.schema !== 1 || manifest.version !== version) throw new Error('Native media manifest/version mismatch');
+  for (const required of [
+    'runtime/native-media/RoomcastNativeMedia.exe',
+    'runtime/native-media/roomcast-native.dll',
+    'runtime/obs-bundle/bin/64bit/datachannel.dll',
+    'electron/native-media/roomcast-native-rtc.c',
+    'electron/native-media/roomcast-native.c',
+    'electron/native-media/build-obs-plugin.ps1',
+    'electron/native-media/GPL-2.0.txt',
+    'electron/native-media/MPL-2.0.txt',
+  ]) {
+    if (!manifest.files?.[required]) throw new Error(`Native media manifest entry missing: ${required}`);
+  }
+  for (const [relative, expected] of Object.entries(manifest.files)) {
+    const absolute = path.resolve(root, relative);
+    if (!absolute.startsWith(root + path.sep) || !/^[a-f0-9]{64}$/.test(expected)) {
+      throw new Error(`Invalid native media manifest entry: ${relative}`);
+    }
+    const actual = createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
+    if (actual !== expected) throw new Error(`Native media source/runtime digest mismatch: ${relative}`);
+  }
+  console.log(`[native-media] Verified ${Object.keys(manifest.files).length} pinned source/runtime files.`);
+}
+
 // Packaging leaves an `ns<random>.tmp` working directory (~0.5-1.2 GB) in %TEMP% whenever a
 // build is interrupted. Clear the abandoned ones before starting another build so repeated
 // packaging cannot quietly fill the disk. Cleanup must never fail the build.
@@ -44,6 +70,7 @@ exports.default = async function beforePack(context) {
   // every installed client. The runtime cache and its trust manifest stay intact.
   const root = path.resolve(__dirname, '..');
   const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  verifyNativeMedia(root, version);
   const sourceName = `Roomcast-${version}-EasyTier-sources.zip`;
   const source = path.join(root, 'runtime/easytier/sources.zip');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'electron/campus-runtime-manifest.json'), 'utf8'));

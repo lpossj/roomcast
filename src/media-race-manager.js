@@ -218,6 +218,13 @@ export class MediaRaceCoordinator {
       // guard finish rather than incorrectly opening the TURN gate.
       if (this.#closed || this.#selected || this.#state === 'stable') return;
 
+      // A decoded VDO frame can still be waiting for the native P2P tie window.
+      // End that preference window at the deadline, not the working direct route.
+      if (this.#provisional && this.#routes[this.#provisional].status === 'playable') {
+        this.#select(this.#provisional, 'deadline-playable');
+        return;
+      }
+
       this.#exhaust('timeout');
     }, this.#timeoutMs);
 

@@ -9,7 +9,8 @@ const prefix = address.slice(0, address.lastIndexOf('.') + 1);
 const allowed = peer => {
   if (typeof peer?.ip !== 'string' || !peer.ip.startsWith(prefix)) return false;
   const host = Number(peer.ip.slice(prefix.length));
-  return Number.isInteger(host) && host >= 2 && host <= 253 && peer.ip !== address;
+  // DHCP can use any host in the /24 after the configured address collides.
+  return Number.isInteger(host) && host >= 1 && host <= 254 && peer.ip !== address;
 };
 const endpoint = peer => allowed(peer) && Number.isInteger(peer.port) && peer.port >= 50000 && peer.port <= 50255;
 const udp = dgram.createSocket('udp4');

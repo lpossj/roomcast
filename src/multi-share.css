@@ -18,6 +18,38 @@
   background: #0b1116;
 }
 
+.laser-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.laser-layer canvas { display: block; width: 100%; height: 100%; pointer-events: none; }
+.laser-layer.laser-drawing { pointer-events: auto; cursor: crosshair !important; touch-action: none; }
+.laser-layer.laser-drawing canvas { pointer-events: none; }
+.screen-player.controls-hidden .laser-layer.laser-drawing { cursor: crosshair !important; }
+:root .screen-player .player-controls button.laser-active {
+  color: #fff;
+  background: #0078d4;
+  border-color: #0067b5;
+}
+:root .room-header-actions .global-laser-toggle {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--control-border);
+}
+/* Outrank the light theme's generic :is(.button.secondary, .icon-button, ...) palette. */
+:root .room-header-actions .icon-button.global-laser-toggle[aria-pressed="false"] {
+  color: #b8c4d0;
+  background: #28333f;
+  border-color: #586b7e;
+}
+:root[data-appearance="light"] .room-header-actions .icon-button.global-laser-toggle[aria-pressed="false"] {
+  color: #52657b;
+  background: #e5ecf3;
+  border-color: #91a7be;
+}
+:root .room-header-actions .icon-button.global-laser-toggle[aria-pressed="true"] {
+  color: #fff;
+  background: #0078d4;
+  border-color: #0067b5;
+}
 .stream-view {
   display: flex;
   flex: 0 0 var(--preview-card-width);

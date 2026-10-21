@@ -71,6 +71,7 @@ export function createVdoPublisherDiagnostics({
         const pair = report.get(transport?.selectedCandidatePairId);
         return {
           ...values, delta,
+          sampleIntervalMs: elapsed > 0 ? elapsed : null,
           ...pickNumbers(stat, ['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'qualityLimitationResolutionChanges']),
           bitrate: delta.bytesSent !== null ? number(delta.bytesSent * 8000 / elapsed) : null,
           averageQp: delta.framesEncoded > 0 && delta.qpSum !== null ? delta.qpSum / delta.framesEncoded : null,

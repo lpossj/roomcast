@@ -1,6 +1,6 @@
 import { createVdoTransport } from './vdo-transport.js';
 import { createVdoPublisherDiagnostics } from './vdo-publisher-diagnostics.js';
-import { createVideoFrameBalance, applyVideoFrameBalance } from '../video-frame-balance.js';
+import { createVideoEncoderGuard } from '../video-frame-balance.js';
 
 const VDO_DESCRIPTOR_VERSION = 1;
 
@@ -47,9 +47,11 @@ function cloneMediaStream(source) {
         continue;
       }
 
-      tracks.push(
-        track.clone(),
-      );
+      const clone = track.clone();
+      tracks.push(clone);
+      // Preserve the source's application hint explicitly on the isolated
+      // track, including before the first RTP parameters/stats callback.
+      if (track.kind === 'video' && 'contentHint' in clone) clone.contentHint = track.contentHint || '';
     }
   } catch (error) {
     for (
@@ -140,7 +142,7 @@ export function createVdoScreenPublisher(
 
   let closed = false;
   let closePromise = null;
-  const frameBalances = new WeakMap();
+  const encoderGuards = new WeakMap();
   const diagnostics = createVdoPublisherDiagnostics({
     getConnections: () => transport.getPublisherConnections(),
     sourceStream,
@@ -150,9 +152,9 @@ export function createVdoScreenPublisher(
       const senders = pc.getSenders().filter(sender => sender.track?.kind === 'video');
       if (senders.length !== 1 || outbound.length !== 1) return { status: 'ambiguous' };
       const sender = senders[0];
-      let balance = frameBalances.get(sender);
-      if (!balance) { balance = createVideoFrameBalance(quality.fps); frameBalances.set(sender, balance); }
-      return applyVideoFrameBalance(sender, outbound[0], balance, () => closed);
+      let guard = encoderGuards.get(sender);
+      if (!guard) { guard = createVideoEncoderGuard(quality); encoderGuards.set(sender, guard); }
+      return guard.apply(sender, outbound[0], () => closed);
     },
   });
   // A copied history of allowlisted measurements remains available after sharing stops.
@@ -167,9 +169,9 @@ export function createVdoScreenPublisher(
           streamId:
             descriptor.streamId,
           label,
-          // SDK 1.6.1 applies frameRate as a soft constraint on the clone,
-          // and maxBitrate as an RTP ceiling in bits/s. It does not expose
-          // maxFramerate or degradationPreference through publish options.
+          // SDK 1.6.2 applies frameRate as a soft constraint on the clone,
+          // and maxBitrate as an RTP ceiling in bits/s. Degradation preference
+          // is applied to each sender by the bounded stats callback above.
           media: {
             video: {
               codec: 'H264',

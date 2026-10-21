@@ -3,8 +3,10 @@ const numeric = value => typeof value === 'number' && Number.isFinite(value) ? v
 const counters = ['bytesSent', 'bytesReceived', 'packetsSent', 'packetsReceived', 'packetsLost',
   'nackCount', 'pliCount', 'firCount', 'retransmittedPacketsSent', 'retransmittedBytesSent',
   'retransmittedPacketsReceived', 'retransmittedBytesReceived', 'packetsDiscarded',
-  'framesDropped', 'framesEncoded', 'framesDecoded', 'keyFramesEncoded', 'keyFramesDecoded',
-  'totalPacketSendDelay', 'qpSum', 'totalEncodeTime'];
+  'framesDropped', 'framesEncoded', 'framesSent', 'framesReceived', 'framesDecoded', 'framesRendered',
+  'keyFramesEncoded', 'keyFramesDecoded', 'totalPacketSendDelay', 'qpSum', 'totalEncodeTime',
+  'totalDecodeTime', 'totalInterFrameDelay', 'freezeCount', 'totalFreezesDuration',
+  'jitterBufferDelay', 'jitterBufferTargetDelay', 'jitterBufferMinimumDelay', 'jitterBufferEmittedCount'];
 const histories = new Map();
 const states = new WeakMap();
 let nextId = 1;
@@ -40,6 +42,13 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null, rout
       && remote.timestamp > (previous?.remoteTimestamp ?? -Infinity);
     const transport = report.get(stat.transportId);
     const pair = report.get(transport?.selectedCandidatePairId);
+    const source = report.get(stat.mediaSourceId);
+    const localCandidate = report.get(pair?.localCandidateId);
+    const remoteCandidate = report.get(pair?.remoteCandidateId);
+    const sourceFrames = numeric(source?.frames);
+    const sourceDelta = fresh && source?.id === previous?.sourceId && sourceFrames !== null
+      && previous.sourceFrames !== null && sourceFrames >= previous.sourceFrames
+      ? sourceFrames - previous.sourceFrames : null;
     let lossRate = null;
     if (stat.type === 'inbound-rtp' && delta.packetsReceived !== null && fresh
       && numeric(stat.packetsLost) !== null && previous.packetsLost !== null) {
@@ -53,14 +62,32 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null, rout
     sample.streams.push({
       type: stat.type, kind: stat.kind || stat.mediaType,
       ...values, delta, lossRate, fresh,
+      sampleIntervalMs: fresh ? elapsed : null,
       bitrate: bytes !== null && fresh ? bytes * 8000 / elapsed : null,
       averageQp: delta.framesEncoded > 0 && delta.qpSum !== null ? delta.qpSum / delta.framesEncoded : null,
       encodeTimeMs: delta.framesEncoded > 0 && delta.totalEncodeTime !== null ? delta.totalEncodeTime * 1000 / delta.framesEncoded : null,
+      decodeTimeMs: delta.framesDecoded > 0 && delta.totalDecodeTime !== null ? delta.totalDecodeTime * 1000 / delta.framesDecoded : null,
+      ...Object.fromEntries(['jitterBufferDelay', 'jitterBufferTargetDelay', 'jitterBufferMinimumDelay'].map(key => [
+        `${key}Ms`, delta.jitterBufferEmittedCount > 0 && delta[key] !== null
+          ? delta[key] * 1000 / delta.jitterBufferEmittedCount : null,
+      ])),
+      // Source counters distinguish a capture pause from encoding/pacing and
+      // receiver stalls. Missing/reset counters remain unknown, never zero.
+      source: source ? { ...Object.fromEntries(['width', 'height', 'frames', 'framesPerSecond']
+        .map(key => [key, numeric(source[key])])), deltaFrames: sourceDelta } : null,
       codec: report.get(stat.codecId)?.mimeType ?? null,
       encoderImplementation: typeof stat.encoderImplementation === 'string' ? stat.encoderImplementation.slice(0, 128) : null,
+      decoderImplementation: typeof stat.decoderImplementation === 'string' ? stat.decoderImplementation.slice(0, 128) : null,
       ...Object.fromEntries(['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'jitter']
         .map(key => [key, numeric(stat[key])])),
       qualityLimitationReason: stat.qualityLimitationReason ?? null,
+      qualityLimitationDurations: Object.fromEntries(['none', 'cpu', 'bandwidth', 'other']
+        .map(key => [key, numeric(stat.qualityLimitationDurations?.[key])])),
+      candidateTypes: pair ? {
+        local: localCandidate?.candidateType ?? null,
+        remote: remoteCandidate?.candidateType ?? null,
+        protocol: localCandidate?.protocol ?? null,
+      } : null,
       remotePacketsLost: numeric(remote?.packetsLost),
       remoteJitter: numeric(remote?.jitter),
       freshRemote: Boolean(freshRemote),
@@ -69,7 +96,8 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null, rout
       packetSendDelayMs: delta.packetsSent > 0 && delta.totalPacketSendDelay !== null
         ? delta.totalPacketSendDelay * 1000 / delta.packetsSent : null,
     });
-    next.set(stat.id, { ...values, timestamp: stat.timestamp, remoteTimestamp: remote?.timestamp });
+    next.set(stat.id, { ...values, timestamp: stat.timestamp, remoteTimestamp: remote?.timestamp,
+      sourceId: source?.id, sourceFrames });
   }
   state.previous = next;
   let history = histories.get(state.id);

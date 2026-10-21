@@ -3,6 +3,18 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('roomcast', {
   desktop: true,
+  nativeMediaStart: payload => ipcRenderer.invoke('roomcast:native-media-start', payload),
+  nativeMediaAnswer: payload => ipcRenderer.invoke('roomcast:native-media-answer', payload),
+  nativeMediaStop: captureId => ipcRenderer.invoke('roomcast:native-media-stop', captureId),
+  nativeMediaCandidate: payload => ipcRenderer.send('roomcast:native-media-candidate', payload),
+  nativeMediaClosePeer: payload => ipcRenderer.send('roomcast:native-media-close-peer', payload),
+  nativeMediaAudio: payload => ipcRenderer.send('roomcast:native-media-audio', payload),
+  onNativeMediaPeer: callback => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('roomcast:native-media-peer', listener);
+    return () => ipcRenderer.removeListener('roomcast:native-media-peer', listener);
+  },
+  desktopLaser: value => ipcRenderer.send('roomcast:desktop-laser', value),
   startCampusNetwork: value => ipcRenderer.invoke('roomcast:campus-start', value),
   stopCampusNetwork: lease => ipcRenderer.invoke('roomcast:campus-stop', lease),
   onCampusEnded: callback => {

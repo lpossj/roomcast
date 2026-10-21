@@ -12,10 +12,12 @@ Notable bundled components:
 
 - Electron / Chromium: separate license files are shipped beside Roomcast.exe.
 - OBS Studio 32.1.2: GPL-2.0-or-later. License text and corresponding source archive are shipped under runtime/obs-bundle and runtime/obs-source.
+- Roomcast OBS encoded-output plugin: GPL-2.0-or-later, a separate OBS module. Source, build script and GPL text are in electron/native-media/ (inside resources/app.asar and the Roomcast source archive); binary is runtime/native-media/roomcast-native.dll. This file-specific license does not change the license of other Roomcast source files.
+- libdatachannel: MPL-2.0, unmodified datachannel.dll already supplied by OBS. Corresponding source is https://github.com/paullouisageneau/libdatachannel/tree/9d5c46b8f506943727104d766e5dad0693c5a223 (OBS dependency release 2025-08-23, v0.21.0). License and dependency notices are retained in electron/native-media/MPL-2.0.txt and LIBDATACHANNEL-LICENSES.txt. Roomcast's separate native transport helper source and build script are in the same directory.
 - Roomcast loopback capture addon: MIT License, Copyright (c) 2025 Matin Tat. License text is shipped under runtime/loopback-capture/LICENSE.
 - Server packages and bundled renderer dependencies (including React, PeerJS, Lucide and Socket.IO client): see THIRD-PARTY-NOTICES.txt.
 - cloudflared 2026.9.2 (Cloudflare, Inc.), Apache-2.0: legacy component shipped through beta.7; no longer included starting with beta.8. The Apache-2.0 license text is retained in LICENSE.
-- VDO.Ninja SDK 1.6.1: MPL-2.0. Unminified source and license are shipped in resources/app.asar under node_modules/@vdoninja/sdk/ (vdoninja-sdk.js and LICENSE). The matching source package is also available at https://registry.npmjs.org/@vdoninja/sdk/-/sdk-1.6.1.tgz. The SDK remains under MPL-2.0.
+- VDO.Ninja SDK 1.6.2: MPL-2.0. Unminified source and license are shipped in resources/app.asar under node_modules/@vdoninja/sdk/ (vdoninja-sdk.js and LICENSE). The matching source package is also available at https://registry.npmjs.org/@vdoninja/sdk/-/sdk-1.6.2.tgz. The SDK remains under MPL-2.0.
 
 The Roomcast name and marks are addressed in TRADEMARKS.md. Privacy and security boundaries are addressed in PRIVACY.md and SECURITY.md.
 

@@ -8,6 +8,7 @@ export default function useRoomVoice({ room, selfId, socket, config, devicePrefe
   const [stream, setStream] = useState(null), [level, setLevel] = useState(0), [speaking, setSpeaking] = useState({}), [error, setError] = useState('');
   const [testSpeaking, setTestSpeaking] = useState(false);
   const [memberVolumes, setMemberVolumes] = useState({});
+  const [resumeRevision, setResumeRevision] = useState(0);
   const capture = useRef(null), mesh = useRef(null), settingsRef = useRef(settings), micRef = useRef(microphone);
   settingsRef.current = settings; micRef.current = microphone;
   const roomId = room?.id;
@@ -60,6 +61,7 @@ export default function useRoomVoice({ room, selfId, socket, config, devicePrefe
   useEffect(() => { mesh.current?.setMemberVolumes(memberVolumes); }, [memberVolumes, roomId, socket, supported]);
   useEffect(() => {
     if (!socket || !roomId) return undefined;
+    const resumed = () => setResumeRevision(value => value + 1);
     const muted = message => {
       if (message.memberId !== selfId) return;
       micRef.current = false; setMicrophone(false);
@@ -67,7 +69,8 @@ export default function useRoomVoice({ room, selfId, socket, config, devicePrefe
       setError(`${message.by || '管理者'} 已关闭你的麦克风。`);
     };
     socket.on('voice:muted', muted);
-    return () => socket.off('voice:muted', muted);
+    socket.on('room:resumed', resumed);
+    return () => { socket.off('voice:muted', muted); socket.off('room:resumed', resumed); };
   }, [socket, roomId, selfId, room]);
   useEffect(() => {
     if (!supported || !roomId || !socket?.connected || !selfId) return undefined;
@@ -79,7 +82,7 @@ export default function useRoomVoice({ room, selfId, socket, config, devicePrefe
       if (!cancelled && (failure || !result?.ok)) { setError(result?.error || '麦克风状态同步失败。'); if (enabled) setMicrophone(false); }
     });
     return () => { cancelled = true; };
-  }, [roomId, selfId, socket, microphone, stream, announcedMicrophone, voiceRevision, supported]);
+  }, [roomId, selfId, socket, microphone, stream, announcedMicrophone, voiceRevision, supported, resumeRevision]);
   useEffect(() => {
     mesh.current?.setOutput({ enabled: output, volume: settings.outputVolume, deviceId: devicePreferences.outputId });
   }, [output, settings.outputVolume, devicePreferences.outputId, roomId, socket]);

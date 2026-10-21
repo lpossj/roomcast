@@ -1,0 +1,15 @@
+{
+  "version": "2.6.4-roomcast.1",
+  "commit": "8428a89d2dabc94c97d370ec607c6ca142473626",
+  "recipe": "97451175165278cc300cf52170a717acdb06dc3206ac7b6571f8d3893e8592fd",
+  "files": {
+    "easytier-core.exe": "21c8e038720c20f3b8bc0c512e2199aac19ec94f50e37117e0d0cdff227c3b9d",
+    "wintun.dll": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce",
+    "campus-supervisor.ps1": "aa256593d35e8a35cccedd4fee3846655984263ff720dc03f72d782cab5ed21f",
+    "sources.zip": "4228f747d58cd0396de15b9230a0a1922518b619c128e89260884d14a4c05135",
+    "WINTUN-LICENSE.txt": "183adac21e7d96c508c8fd34d394b7b6708bc81564ad1bad61ab66143a008cd2",
+    "EASYTIER-LICENSE.txt": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+    "YY-THUNKS-LICENSE.txt": "09a1c20e9b40e3bbfff81e0ddc1209265f55eba07cd072c5a1bc755a134579b3",
+    "VC-LTL-LICENSE.txt": "84c677edb6b15ac6485a5352128787771ebbf740cf4b232987c99b9048931ff9"
+  }
+}

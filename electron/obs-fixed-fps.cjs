@@ -4,6 +4,7 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { createHash, randomBytes, randomUUID } = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
+const { EventEmitter } = require('node:events');
 
 const SCENE = 'Roomcast Fixed FPS';
 const EMBEDDED_OBS_VERSION = '32.1.2';
@@ -377,8 +378,9 @@ function obsAuthentication(password, salt, challenge) {
     .digest('base64');
 }
 
-class ObsWebSocketClient {
+class ObsWebSocketClient extends EventEmitter {
   constructor({ WebSocketImpl } = {}) {
+    super();
     this.WebSocketImpl = WebSocketImpl || globalThis.WebSocket;
     this.socket = null;
     this.pending = new Map();
@@ -432,7 +434,7 @@ class ObsWebSocketClient {
           const packet = JSON.parse(String(event.data));
           if (packet.op === 0) {
             const auth = packet.d?.authentication;
-            const identify = { rpcVersion: 1, eventSubscriptions: 0 };
+            const identify = { rpcVersion: 1, eventSubscriptions: 512 }; // Vendor events only.
             if (auth) {
               if (!password) throw new Error('OBS WebSocket 要求密码，但 Roomcast 没有控制密码。');
               identify.authentication = obsAuthentication(password, auth.salt, auth.challenge);
@@ -443,6 +445,10 @@ class ObsWebSocketClient {
           if (packet.op === 2) {
             this.ready = true;
             settle(resolve, packet.d || {});
+            return;
+          }
+          if (packet.op === 5 && packet.d?.eventType === 'VendorEvent') {
+            this.emit('vendor', packet.d.eventData);
             return;
           }
           if (packet.op === 7) {
@@ -517,6 +523,7 @@ function bindObsProcessLifecycle(engine, child) {
     if (engine.process !== child) return;
     engine.process = null;
     engine.capture = null;
+    engine.nativeSession = '';
     void engine.client.close().catch(() => {});
     if (!engine.closing && engine.onUnexpectedExit) {
       try {
@@ -551,6 +558,16 @@ class ObsFixedFpsEngine {
     this.embeddedVersion = '';
     this.process = null;
     this.client = new ObsWebSocketClient();
+    this.nativeSession = '';
+    this.nativeFrameListeners = new Set();
+    this.client.on('vendor', event => {
+      if (event?.vendorName !== 'roomcast-native' || event.eventType !== 'Frame') return;
+      const frame = event.eventData;
+      if (!this.nativeSession || frame?.session !== this.nativeSession) return;
+      for (const listener of this.nativeFrameListeners) {
+        try { listener(frame); } catch { }
+      }
+    });
     this.password = '';
     this.version = '';
     this.probes = new Set();
@@ -582,6 +599,7 @@ class ObsFixedFpsEngine {
     const ready = workMarker?.embeddedVersion === EMBEDDED_OBS_VERSION
       && (await Promise.all(REQUIRED_EMBEDDED_OBS_PATHS.map(relative => exists(path.join(this.obsDir, relative))))).every(Boolean);
     if (ready) {
+      await this.#syncNativePlugin();
       return {
         prepared: true,
         obsDir: this.obsDir,
@@ -620,6 +638,7 @@ class ObsFixedFpsEngine {
     } finally {
       await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     }
+    await this.#syncNativePlugin();
     return {
       prepared: true,
       obsDir: this.obsDir,
@@ -628,6 +647,70 @@ class ObsFixedFpsEngine {
       source: 'embedded',
       version: EMBEDDED_OBS_VERSION,
     };
+  }
+
+  async #syncNativePlugin() {
+    const source = path.join(this.runtimeRoot, 'runtime', 'native-media', 'roomcast-native.dll');
+    if (!(await exists(source))) return;
+    const target = path.join(this.obsDir, 'obs-plugins', '64bit', 'roomcast-native.dll');
+    const bytes = await fs.readFile(source);
+    const current = await fs.readFile(target).catch(() => null);
+    if (!current || !bytes.equals(current)) await fs.writeFile(target, bytes);
+    await fs.mkdir(path.join(this.obsDir, 'data', 'obs-plugins', 'roomcast-native'), { recursive: true });
+  }
+
+  onNativeMediaFrame(listener) {
+    if (typeof listener === 'function') this.nativeFrameListeners.add(listener);
+  }
+
+  offNativeMediaFrame(listener) { this.nativeFrameListeners.delete(listener); }
+
+  async #nativeRequest(requestType, requestData) {
+    if (!this.client.ready) throw new Error('OBS 尚未连接。');
+    const response = await this.client.request('CallVendorRequest', {
+      vendorName: 'roomcast-native', requestType, requestData,
+    });
+    const result = response.responseData || {};
+    if (result.ok !== true) throw new Error(String(result.error || result.message || 'OBS 原生编码请求失败。'));
+    return result;
+  }
+
+  async startNativeMedia({ session, bitrateKbps = 6500 } = {}) {
+    if (this.closing || this.retired) throw new Error('OBS 采集操作已取消。');
+    if (typeof session !== 'string' || !session || session.length > 128) throw new Error('原生媒体会话无效。');
+    if (this.nativeSession && this.nativeSession !== session) throw new Error('OBS 原生编码已被其他会话占用。');
+    const bitrate = Math.round(Number(bitrateKbps));
+    if (!Number.isFinite(bitrate) || bitrate < 300 || bitrate > 6500) throw new Error('原生媒体码率无效。');
+    this.nativeSession = session;
+    try {
+      const result = await this.#nativeRequest('start', { session, bitrateKbps: bitrate });
+      if (this.nativeSession !== session || this.closing || this.retired) throw new Error('OBS 原生编码操作已取消。');
+      return result;
+    } catch (error) {
+      // A timed-out reply does not prove that the encoder failed to start.
+      // Stop the matching session before releasing ownership.
+      await this.stopNativeMedia({ session }).catch(() => {});
+      throw error;
+    }
+  }
+
+  async stopNativeMedia({ session = this.nativeSession } = {}) {
+    if (!session || session !== this.nativeSession) return { ok: true };
+    this.nativeSession = '';
+    if (!this.client.ready) return { ok: true };
+    return this.#nativeRequest('stop', { session });
+  }
+
+  async nativeMediaBitrate({ session, bitrateKbps } = {}) {
+    if (!session || session !== this.nativeSession) throw new Error('原生媒体会话已结束。');
+    const bitrate = Math.round(Number(bitrateKbps));
+    if (!Number.isFinite(bitrate) || bitrate < 300 || bitrate > 6500) throw new Error('原生媒体码率无效。');
+    return this.#nativeRequest('bitrate', { session, bitrateKbps: bitrate });
+  }
+
+  async nativeMediaKeyframe({ session } = {}) {
+    if (!session || session !== this.nativeSession) throw new Error('原生媒体会话已结束。');
+    return this.#nativeRequest('keyframe', { session });
   }
 
   virtualCameraModules() {
@@ -774,12 +857,20 @@ class ObsFixedFpsEngine {
     const args = [
       '--portable', '--multi', '--profile', SCENE, '--collection', SCENE,
       '--scene', SCENE, '--minimize-to-tray', '--disable-updater',
-      '--only-bundled-plugins', '--disable-missing-files-check', '--websocket_ipv4_only',
+      '--disable-missing-files-check', '--websocket_ipv4_only',
     ];
+    // OBS's compile-time bundled-name list cannot include our encoded output.
+    // Portable mode skips system/user plugin paths; clear the only remaining
+    // external overrides so only this managed copy's modules can be loaded.
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) {
+      if (/^OBS_PLUGINS_(DATA_)?PATH$/i.test(key)) delete env[key];
+    }
     const child = spawn(this.exe, args, {
       cwd: path.dirname(this.exe),
       windowsHide: true,
       stdio: 'ignore',
+      env,
     });
     this.process = child;
     this.closing = false;
@@ -808,6 +899,7 @@ class ObsFixedFpsEngine {
           'GetInputSettings',
           'GetInputList',
           'GetStats',
+          'CallVendorRequest',
         ];
         if (!required.every(name => version.availableRequests?.includes(name))) {
           throw new Error('Roomcast 内置 OBS/obs-websocket 缺少固定帧率采集所需接口，请重新准备官方内置组件。');
@@ -834,6 +926,7 @@ class ObsFixedFpsEngine {
   async configureVideo(options = {}) {
     const settings = validateVideoSettings(options);
     if (!this.client.ready) throw new Error('OBS 尚未连接。');
+    if (this.nativeSession) throw new Error('OBS 原生编码正在输出，必须先停止输出才能修改帧率。');
     const virtualCam = await this.client.request('GetVirtualCamStatus').catch(() => ({ outputActive: false }));
     if (virtualCam.outputActive) throw new Error('OBS 虚拟摄像头正在输出，必须先停止输出才能修改帧率。');
     const stream = await this.client.request('GetStreamStatus').catch(() => ({ outputActive: false }));
@@ -1141,6 +1234,7 @@ class ObsFixedFpsEngine {
   }
 
   async clearSource() {
+    await this.stopNativeMedia().catch(() => {});
     if (!this.client.ready) {
       this.capture = null;
       return { ok: true };
@@ -1219,6 +1313,7 @@ class ObsFixedFpsEngine {
       forcing = true;
       this.retired = true;
       this.capture = null;
+      this.nativeSession = '';
       this.probes.clear();
       void this.client.close().catch(() => {});
       forcedCleanup = (async () => {
@@ -1229,6 +1324,8 @@ class ObsFixedFpsEngine {
     };
     const cleanup = async () => {
       if (this.client.ready) {
+        await this.stopNativeMedia().catch(() => {});
+        if (forcing) return forcedCleanup;
         // OBS is an internal capture worker, not a user-facing OBS session.
         // First stop the virtual camera and release every Roomcast-owned WGC
         // source through the supported websocket API. This gives capture worker

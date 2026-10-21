@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "version": "0.14.5-beta.2",
+  "recordedAt": "2026-10-21 20:49:31 +08:00",
+  "obsVersion": "32.1.2",
+  "libdatachannel": {
+    "source": "https://github.com/paullouisageneau/libdatachannel/tree/9d5c46b8f506943727104d766e5dad0693c5a223",
+    "commit": "9d5c46b8f506943727104d766e5dad0693c5a223",
+    "obsDeps": "2025-08-23",
+    "version": "0.21.0"
+  },
+  "files": {
+    "electron/native-media/build-helper.ps1": "64abb2a685115796ff6715d9b232986691e3b6dc6a0fbbb75f55e81eead65d25",
+    "electron/native-media/build-obs-plugin.ps1": "ba1293253dac5b4dc94091a6be99cf4f82e41389cc7b1eb20b22c9a41597d319",
+    "electron/native-media/GPL-2.0.txt": "78ce5d7501f02474332840dc892748c304033a94d23356ba7a95a939dc38f7b2",
+    "electron/native-media/LIBDATACHANNEL-LICENSES.txt": "1a7cde8899b51b92a001a9bd2317651d583561d8e4e8c518f4caa003771cbf06",
+    "electron/native-media/MPL-2.0.txt": "32ee9dbf6196874fc9d406c54a888a6c4cbb9aa4a7f35b46befeaff43a78fe85",
+    "electron/native-media/OBS-PLUGIN.md": "8ac94b5ccbe5418d252d1e64dfcfc9a59f490a4385ab64d8c30592860ba7468a",
+    "electron/native-media/obs.def": "2f61128414be801ca7de61a3a6730cfbe7f11012e25c714d12f8bb5cafb6d6d3",
+    "electron/native-media/obsconfig.h": "b54704f92da4229aff445a5ebfea60209feb1e511be46487ff9b96e1278a6e00",
+    "electron/native-media/PROTOCOL.md": "d3b3746cc11f4c9b12f9f7342215752769ff1a1bb66cb65be4990e288f43ebbb",
+    "electron/native-media/roomcast-native-rtc.c": "91cd0ad5d421f63bd0a89534252beea5d995407e77361530d47233e21f826c51",
+    "electron/native-media/roomcast-native.c": "f626233a481934200ec2b22d8f477036d73cefc30273e9ace260196bb36c4d77",
+    "runtime/native-media/RoomcastNativeMedia.exe": "cc21a3b60e5a440aea26b9b8aba374f9146f9827744d01b11558919fa29783c0",
+    "runtime/native-media/roomcast-native.dll": "61a07f4015f196aead42b4c60d8b15f8959ce795431b5441131f3005c648a591",
+    "runtime/obs-bundle/bin/64bit/datachannel.dll": "fab6be28221b31b65650deb3e2b994711916b85a5c89d3582f10b742665b7652"
+  }
+}

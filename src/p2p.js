@@ -1,4 +1,5 @@
 import { configureScreenVideoSender } from './video-sender-settings.js';
+import { createNativeScreenPublisher } from './transports/native-screen-publisher.js';
 import { configureCampusSession, prepareCampusConnection, stopCampusSession, campusRequestProof, verifyCampusRequest, campusStatsRoute } from './campus-session.js';
 import { Peer } from 'peerjs';
 import { io } from 'socket.io-client';
@@ -8,6 +9,7 @@ import { createPeerAuthProof, MAX_UNAUTHENTICATED_PEERS, PEER_AUTH_PROTOCOL, PEE
 import { encodeRelayInvite, optionalRelayIce } from './relay.js';
 import { createP2pVideoPolicy, p2pResolutionScale } from './p2p-video-policy.js';
 import { CAMPUS_ANSWER_TIMEOUT_MS } from './fallback-policy.js';
+import { recordFailure } from './lifecycle-diagnostics.js';
 
 export const P2P_ICE = DEFAULT_STUN_ICE;
 
@@ -18,6 +20,7 @@ const forwarded = [
   'room:credential-revoke',
   'chat:message',
   'chat:recalled',
+  'laser:stroke',
   'image:start',
   'image:chunk',
   'image:complete',
@@ -33,11 +36,15 @@ const allowed = new Set([
   'room:join',
   'room:leave',
   'room:ping',
+  'room:migration-confirm',
   'member:role',
   'member:profile',
   'member:voice',
   'member:mute',
   'member:share-permission',
+  'laser:member-permission',
+  'laser:global-permission',
+  'laser:stroke',
   'member:kick',
   'chat:send',
   'chat:recall',
@@ -57,6 +64,17 @@ const allowed = new Set([
 
 const beforeJoin = new Set(['room:join']);
 const INVITE_SECRET = /^[A-Za-z0-9_-]{43}$/;
+const LASER_QUEUE_MAX_BYTES = 16 * 1024;
+const LASER_MESSAGE_MAX_BYTES = 2048;
+const LASER_PACKETS_PER_SECOND = 24;
+const recoveryMemberKey = room => JSON.stringify([room?.laserEnabled !== false, room?.members?.map(member => [
+  member.id, member.role, member.canShare, member.canLaser,
+]) || []]);
+
+function laserQueueBusy(connection) {
+  return Number(connection?.dataChannel?.bufferedAmount || 0) > LASER_QUEUE_MAX_BYTES
+    || Number(connection?.bufferSize || 0) > 0;
+}
 
 // The host does not start the authentication clock until the data channel is
 // actually open (see accept()). The viewer must therefore wait for
@@ -268,6 +286,13 @@ export class P2PRoom {
     this.migrating = false;
     this.peerReconnectTimer = null;
     this.delayedTimers = new Set();
+    this.recoveryBackup = null;
+    this.recoveryPromise = null;
+    this.recoveryCandidate = null;
+    this.backupTimer = null;
+    this.backupBusy = false;
+    this.backupDirty = false;
+    this.lastBackupAt = 0;
   }
 
   on(event, fn) {
@@ -314,6 +339,15 @@ export class P2PRoom {
   }
 
   dispatch(event, value) {
+    const criticalRecoveryChange = event === 'room:credential'
+      || (event === 'room:state' && recoveryMemberKey(this.room) !== recoveryMemberKey(value));
+    if (event === 'room:kicked') this.recoveryBackup = null;
+    if (event === 'room:resumed'
+      && value?.room?.streams?.some(stream => stream.memberId === this.id)
+      && !this.screenStream?.active) {
+      // Local capture may have stopped while writes to the old host were paused.
+      void Promise.resolve().then(() => this.request('share:stop')).catch(() => {});
+    }
     if (event === 'room:credential-revoke') {
       if (this.isHost) this.rotateInviteCredential(value?.memberId);
       return;
@@ -321,6 +355,7 @@ export class P2PRoom {
     if (event === 'room:credential') {
       if (!INVITE_SECRET.test(value?.inviteSecret || '')) return;
       const changed = this.inviteSecret !== value.inviteSecret;
+      if (changed) this.recoveryBackup = null;
       this.inviteSecret = value.inviteSecret;
       if (this.pendingMigrationCommit) this.pendingMigrationCommit.inviteSecret = value.inviteSecret;
       if (changed && this.screenStream?.active) {
@@ -329,8 +364,12 @@ export class P2PRoom {
       }
     }
     if (event === 'room:state') {
+      this.refreshCachedRecovery(value);
       this.room = value;
       if (value?.members?.find(member => member.id === this.id)?.canShare === false) this.stopScreenStream();
+    }
+    if (this.isHost && ['room:state', 'chat:message', 'chat:recalled', 'room:credential', 'room:resumed'].includes(event)) {
+      this.scheduleRecoveryBackup(criticalRecoveryChange);
     }
 
     if (
@@ -416,6 +455,24 @@ export class P2PRoom {
     return this;
   }
 
+  sendLaser(payload) {
+    // Never replay transient coordinates after migration or reconnection, and
+    // never allocate RPC replies/timeouts for every movement packet.
+    if (this.closed || !this.connected || this.migrating) return false;
+    try {
+      if (this.isHost) {
+        if (!this.local?.connected) return false;
+        (this.local.volatile || this.local).emit('laser:stroke', payload);
+      } else {
+        if (!this.remote?.open || laserQueueBusy(this.remote)) return false;
+        this.remote.send({ event: 'laser:stroke', payload });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   assertOpen() {
     if (this.closed) throw new DOMException('操作已取消', 'AbortError');
   }
@@ -467,7 +524,7 @@ export class P2PRoom {
     return socket;
   }
 
-  async openPeer(id, override) {
+  async openPeer(id, override, { adopt = true, timeout = 20000 } = {}) {
     this.assertOpen();
     const options = {
       config: {
@@ -501,37 +558,45 @@ export class P2PRoom {
       );
     }
 
-    this.peer = id
+    const peer = id
       ? new Peer(id, options)
       : new Peer(options);
 
-    await withTimeout(
+    try { await withTimeout(
       new Promise(
         (resolve, reject) => {
-          this.peer.once(
+          peer.once(
             'open',
             resolve,
           );
 
-          this.peer.on(
+          peer.on(
             'error',
-            error => reject(
-              new Error(
+            error => {
+              const failure = new Error(
                 `公共信令连接失败：${error.type || 'unknown'}。检查网络或稍后重试。`,
-              ),
-            ),
+              );
+              failure.type = error.type;
+              reject(failure);
+              // A broker ID is a registration fence, not a consensus protocol.
+              // A former host must retire if a new coordinator holds that ID.
+              if (this.peer === peer && this.isHost && error.type === 'unavailable-id') {
+                this.disconnect('房间已由其他成员接管，请重新加入。');
+              }
+            },
           );
         },
       ),
-      20000,
+      timeout,
       '公共信令服务连接超时；当前网络可能无法访问该服务。',
-    );
+    ); } catch (error) { peer.destroy(); throw error; }
 
-    this.assertOpen();
-    this.peer.on(
+    if (this.closed) { peer.destroy(); this.assertOpen(); }
+    if (adopt) this.peer = peer;
+    peer.on(
       'disconnected',
       () => {
-        if (!this.closed) {
+        if (!this.closed && this.peer === peer) {
           clearTimeout(
             this.peerReconnectTimer,
           );
@@ -541,10 +606,11 @@ export class P2PRoom {
               () => {
                 if (
                   !this.closed
-                  && this.peer?.disconnected
-                  && !this.peer.destroyed
+                  && this.peer === peer
+                  && peer.disconnected
+                  && !peer.destroyed
                 ) {
-                  this.peer.reconnect();
+                  peer.reconnect();
                 }
               },
               2500,
@@ -552,6 +618,7 @@ export class P2PRoom {
         }
       },
     );
+    return peer;
   }
 
   async enter(
@@ -899,17 +966,17 @@ export class P2PRoom {
     };
   }
 
-  async connectRemote() {
+  async connectRemote(timeout) {
     try {
-      return await this.connectRemoteAttempt(false);
+      return await this.connectRemoteAttempt(false, timeout);
     } catch (error) {
       this.assertOpen();
       if (!this.campusSecret || !window.roomcast?.startCampusNetwork || !error.campusRetryable) throw error;
-      return this.connectRemoteAttempt(true);
+      return this.connectRemoteAttempt(true, timeout);
     }
   }
 
-  async connectRemoteAttempt(campus) {
+  async connectRemoteAttempt(campus, timeout) {
     const authMode = 'invite';
     const campusRequest = campus ? await campusRequestProof(this) : undefined;
     this.assertOpen();
@@ -951,18 +1018,40 @@ export class P2PRoom {
     let authResponseSeen = false;
     const clientNonce = randomPeerAuthNonce();
 
-    const failed =
-      error => rejectReady(
-        new Error(
-          error?.type
-          || error?.message
-          || '房间连接已关闭',
-        ),
+    const failed = error => {
+      recordFailure('join-connection', error, { pc: remote.peerConnection, campus });
+      const stage = {
+        createOffer: '发起连接',
+        createAnswer: '回应连接',
+        setLocalDescription: '准备连接',
+        setRemoteDescription: '确认远端连接',
+        addIceCandidate: '交换连接信息',
+        prepareCampus: '准备备用连接',
+      }[error?.roomcastOperation];
+      const failure = new Error(
+        error?.type === 'webrtc'
+          ? `房间连接协商失败${stage ? `（${stage}）` : ''}，请重新加入。`
+          : error?.message || error?.type || '房间连接已关闭',
+        { cause: error },
       );
+      if (error?.type) failure.type = error.type;
+      rejectReady(failure);
+    };
+
+    const peerFailed = error => {
+      if (error?.type === 'webrtc' && error.roomcastPeerConnection) {
+        const pc = error.roomcastPeerConnection;
+        if (pc !== remote.peerConnection || (pc.signalingState === 'closed' && error.roomcastOperation !== 'prepareCampus')) return;
+        // A rejected candidate does not establish that every ICE path failed.
+        // Keep waiting for this connection's final state or existing deadline.
+        if (error.roomcastOperation === 'addIceCandidate') return;
+      }
+      failed(error);
+    };
 
     peer.on(
       'error',
-      failed,
+      peerFailed,
     );
 
     remote.on(
@@ -1033,6 +1122,7 @@ export class P2PRoom {
         }
 
         if (!authVerified) return;
+        if (this.remote !== remote) return;
         if (data.event === 'room:credential') { this.dispatch(data.event, data.data); return; }
 
         if (data.control) {
@@ -1096,39 +1186,34 @@ export class P2PRoom {
           && this.remote
           === remote
         ) {
-          this.disconnect(
-            '房主连接已结束',
-          );
+          if (this.recoveryBackup) this.beginRecovery();
+          else this.disconnect('房主连接已结束，尚未收到可恢复的房间状态。');
         }
       },
     );
 
-    // Keep established ordinary ICE/authentication on its original deadline.
-    // Only a still-unconnected desktop attempt with a shared fallback may switch.
-    const fallbackTimer = !campus && this.canUseCampus() ? setTimeout(() => {
-      const state = remote.peerConnection?.iceConnectionState;
-      if (!authChallenge && !authVerified && !remote.open && !['connected', 'completed'].includes(state)) {
-        failed(new Error('普通连接尚未建立，尝试备用路线。'));
-      }
-    }, 8000) : null;
-
+    // Give ordinary ICE and authentication their full existing deadline.
+    // PeerJS still rejects a definitive ICE failure immediately; merely having
+    // a campus fallback must not cut a still-checking ordinary attempt short.
     try {
       await withTimeout(
         hostReady,
-        campus ? 220000 : PEER_AUTH_TOTAL_TIMEOUT_MS,
+        timeout || (campus ? 220000 : PEER_AUTH_TOTAL_TIMEOUT_MS),
         '无法与房主建立 P2P 连接。',
       );
     } catch (error) {
-      error.campusRetryable = !authChallenge && !authVerified && !this.closed
-        && !['peer-unavailable', 'network', 'server-error', 'socket-error', 'socket-closed'].includes(error.message);
+      // A shorter recovery connection deadline is not an ordinary ICE failure.
+      // Keep the existing fallback ordering; only a definitive failure may
+      // accelerate the campus route during this recovery attempt.
+      error.campusRetryable = (!timeout || error?.type === 'webrtc') && !authChallenge && !authVerified && !this.closed
+        && !['peer-unavailable', 'network', 'server-error', 'socket-error', 'socket-closed'].includes(error.type || error.message);
       if (!this.connected && this.remote === remote) this.remote = null;
       remote.close();
       throw error;
     } finally {
-      clearTimeout(fallbackTimer);
       peer.off(
         'error',
-        failed,
+        peerFailed,
       );
 
       remote.off(
@@ -1143,6 +1228,182 @@ export class P2PRoom {
     }
 
     return remote;
+  }
+
+  refreshCachedRecovery(room) {
+    const transfer = this.recoveryBackup?.transfer;
+    if (!transfer || room?.id !== transfer.roomId) return;
+    transfer.laserEnabled = room.laserEnabled !== false;
+    const current = new Map(room.members.map(member => [member.id, member]));
+    transfer.members = transfer.members.filter(member => current.has(member.id)).map(member => {
+      const latest = current.get(member.id);
+      return { ...member, role: latest.role === 'owner' ? member.role : latest.role,
+        canShare: latest.canShare !== false, canLaser: latest.canLaser !== false };
+    });
+    transfer.successorIds = [...transfer.members].sort((left, right) =>
+      Number(right.role === 'admin') - Number(left.role === 'admin') || left.joinedAt - right.joinedAt)
+      .map(member => member.id);
+  }
+
+  scheduleRecoveryBackup(urgent = false) {
+    if (this.closed || !this.isHost || !this.local?.connected) return;
+    this.backupDirty = true;
+    this.backupUrgent ||= urgent;
+    if (urgent && this.backupTimer) { clearTimeout(this.backupTimer); this.backupTimer = null; }
+    if (this.backupTimer || this.backupBusy) return;
+    this.backupTimer = setTimeout(() => {
+      this.backupTimer = null;
+      void this.sendRecoveryBackup();
+    }, this.backupUrgent ? 0 : Math.max(80, 500 - (performance.now() - this.lastBackupAt)));
+  }
+
+  async sendRecoveryBackup() {
+    if (this.closed || !this.isHost || !this.local?.connected || !this.guestMembers.size) return;
+    this.backupBusy = true;
+    this.backupDirty = false;
+    this.backupUrgent = false;
+    this.lastBackupAt = performance.now();
+    const exportSecret = this.inviteSecret;
+    const exportMembers = recoveryMemberKey(this.room);
+    try {
+      const result = await ack(this.local, 'room:recovery-export', {}, 3000);
+      if (!result.ok || this.closed || !this.isHost) return;
+      if (exportSecret !== this.inviteSecret || exportMembers !== recoveryMemberKey(this.room)) {
+        this.backupDirty = true;
+        this.backupUrgent = true;
+        return;
+      }
+      for (const [memberId, connection] of this.guestMembers) {
+        if (!connection.open || !result.tickets[memberId]) continue;
+        if (Number(connection.dataChannel?.bufferedAmount || 0) > 64 * 1024 || connection.bufferSize > 0) {
+          this.backupDirty = true;
+          continue;
+        }
+        connection.send({ control: 'recovery:backup', payload: {
+          transfer: result.transfer, ticket: result.tickets[memberId], inviteSecret: exportSecret,
+        } });
+      }
+    } catch {
+      // Backup failure never freezes the live room or delays local exit.
+    } finally {
+      this.backupBusy = false;
+      if (this.backupDirty) this.scheduleRecoveryBackup();
+    }
+  }
+
+  beginRecovery() {
+    if (this.closed || this.recoveryPromise || !this.recoveryBackup) return;
+    const backup = this.recoveryBackup;
+    this.migrating = true;
+    this.migrationCompletion = new Promise(resolve => { this.resolveMigration = resolve; });
+    this.failPending();
+    const pending = this.recoverRoom(backup);
+    this.recoveryPromise = pending;
+    void pending.catch(error => {
+      if (!this.closed) this.disconnect(`房间接任失败：${error.message}`);
+    }).finally(() => {
+      if (this.recoveryPromise === pending) this.recoveryPromise = null;
+    });
+  }
+
+  async recoverRoom(backup) {
+    const rank = backup.transfer.successorIds.indexOf(this.id);
+    const deadline = performance.now() + 45_000;
+    // All surviving members have the same ordered candidate list. A slow or
+    // unavailable administrator must not prevent the following member taking over.
+    await pause(250 + Math.max(0, rank) * 900);
+    let lastError;
+    let mayClaim = rank >= 0;
+    while (!this.closed && performance.now() < deadline) {
+      let candidate = null;
+      let local = null;
+      const arrivals = new Set();
+      const queueArrival = connection => {
+        if (this.closed || arrivals.size >= MAX_UNAUTHENTICATED_PEERS) connection.close();
+        else arrivals.add(connection);
+      };
+      try {
+        if (mayClaim) {
+          candidate = await this.openPeer(`roomcast-v1-${this.roomId}`, this.peerServer, { adopt: false, timeout: 5000 });
+          this.recoveryCandidate = candidate;
+          candidate.on('connection', queueArrival);
+          this.assertOpen();
+          local = await this.localSocket();
+          if (this.closed) { local.disconnect(); this.assertOpen(); }
+          const result = await ack(local, 'room:migration-create', {
+            transfer: backup.transfer, ticket: backup.ticket, memberId: this.id,
+          });
+          if (!result.ok) throw new Error(result.error || '无法恢复房间状态。');
+          // Once consumed by a local import, this ticket may only follow another
+          // winner if startup fails; do not replay the same authority token.
+          mayClaim = false;
+          this.assertOpen();
+          if (candidate.destroyed || candidate.disconnected) throw new Error('接任信令已断开。');
+          const committed = await ack(local, 'room:migration-commit');
+          if (!committed.ok) throw new Error(committed.error || '无法启用恢复房间。');
+          this.assertOpen();
+          this.local = local;
+          local = null;
+          const previousPeer = this.peer;
+          this.peer = candidate;
+          this.recoveryCandidate = null;
+          candidate = null;
+          previousPeer?.destroy();
+          this.isHost = true;
+          this.connected = true;
+          this.migrating = false;
+          this.recoveryBackup = null;
+          this.ownerToken = result.ownerToken || '';
+          this.room = result.room;
+          for (const event of forwarded) this.local.on(event, data => this.dispatch(event, data));
+          this.local.on('disconnect', () => { if (!this.closed) this.disconnect('本机房间服务已断开'); });
+          this.peer.off('connection', queueArrival);
+          this.peer.on('connection', connection => { void this.accept(connection); });
+          for (const connection of arrivals) void this.accept(connection);
+          arrivals.clear();
+          this.resolveMigration?.();
+          this.dispatch('room:resumed', result);
+          return;
+        }
+      } catch (error) {
+        lastError = error;
+      } finally {
+        for (const connection of arrivals) connection.close();
+        candidate?.destroy();
+        this.recoveryCandidate = null;
+        if (local) {
+          // Closing this temporary trusted socket drops any incomplete import.
+          local.removeAllListeners?.();
+          local.disconnect();
+        }
+      }
+      if (this.closed) return;
+      try {
+        if (!this.peer || this.peer.destroyed || this.peer.disconnected) {
+          this.peer?.destroy();
+          await this.openPeer(undefined, this.peerServer, { timeout: 5000 });
+        }
+        await this.connectRemote(Math.min(PEER_AUTH_TOTAL_TIMEOUT_MS, Math.max(1000, deadline - performance.now())));
+        if (this.closed) return;
+        const result = await this.request('room:join', { roomId: this.roomId, ticket: backup.ticket });
+        if (!result.ok) throw new Error(result.error || '新房主尚未完成接任。');
+        this.assertOpen();
+        this.id = result.selfId;
+        this.room = result.room;
+        this.connected = true;
+        this.migrating = false;
+        this.recoveryBackup = null;
+        this.resolveMigration?.();
+        this.dispatch('room:resumed', result);
+        void this.request('room:migration-confirm').catch(() => {});
+        return;
+      } catch (error) {
+        lastError = error;
+        this.remote?.close();
+      }
+      await pause(500 + Math.floor(Math.random() * 200));
+    }
+    if (!this.closed) throw lastError || new Error('没有可连接的接任成员。');
   }
 
   async sendControl(
@@ -1263,6 +1524,25 @@ export class P2PRoom {
     message,
     connection,
   ) {
+    if (message.control === 'recovery:backup') {
+      const payload = message.payload || {};
+      const transfer = payload.transfer;
+      if (connection !== this.remote || this.isHost || this.closed
+        || transfer?.version !== 3 || transfer.roomId !== this.roomId
+        || !/^[a-f0-9]{64}$/.test(transfer.epoch || '')
+        || !Number.isSafeInteger(transfer.revision) || transfer.revision < 0
+        || !Array.isArray(transfer.members) || transfer.members.length > 9
+        || !Array.isArray(transfer.successorIds) || !transfer.successorIds.includes(this.id)
+        || !transfer.members.some(member => member.id === this.id)
+        || !INVITE_SECRET.test(payload.ticket || '')
+        || payload.inviteSecret !== this.inviteSecret) return;
+      try { if (new TextEncoder().encode(JSON.stringify(transfer)).length > 48 * 1024) return; } catch { return; }
+      const previous = this.recoveryBackup?.transfer;
+      if (previous?.epoch === transfer.epoch && previous.revision > transfer.revision) return;
+      this.recoveryBackup = payload;
+      this.refreshCachedRecovery(this.room);
+      return;
+    }
     const reply =
       result => {
         if (
@@ -1343,9 +1623,9 @@ export class P2PRoom {
             event,
             data => {
               if (
-                !this.migrating
-                || event
-                !== 'room:state'
+                this.isHost
+                && (!this.migrating
+                  || event !== 'room:state')
               ) {
                 this.dispatch(
                   event,
@@ -1712,187 +1992,10 @@ export class P2PRoom {
   }
 
   async leave() {
-    if (this.closed) {
-      return {
-        ok: true,
-      };
-    }
-
-    if (
-      !this.isHost
-      || !this.room?.members
-        ?.some(
-          member => (
-            member.id
-            !== this.id
-          ),
-        )
-    ) {
-      if (this.connected) {
-        await this.request(
-          'room:leave',
-        ).catch(() => { });
-      }
-
-      this.disconnect();
-
-      return {
-        ok: true,
-      };
-    }
-
-    const candidateIds = [
-      ...this.guestMembers,
-    ]
-      .filter(
-        ([, connection]) => (
-          connection?.open
-        ),
-      )
-      .map(
-        ([memberId]) => (
-          memberId
-        ),
-      );
-
-    const healthy = [];
-    await Promise.all(candidateIds.map(async memberId => {
-      const started = performance.now();
-      try {
-        const result = await this.sendControl(this.guestMembers.get(memberId), 'migration:probe', {}, 3000);
-        if (result?.ok) healthy.push({ memberId, elapsed: performance.now() - started });
-      } catch { /* A non-responsive member must not block a healthy successor. */ }
-    }));
-    if (this.closed) return { cancelled: true };
-    healthy.sort((a, b) => a.elapsed - b.elapsed);
-
-    let exported, successor;
-    let prepareError = new Error('当前没有响应正常的接管成员，请稍后重试。');
-    // At most two exports, matching the server's existing rate limit.
-    for (const { memberId } of healthy.slice(0, 2)) {
-      const candidate = this.guestMembers.get(memberId);
-      if (!candidate?.open) continue;
-      const result = await ack(this.local, 'room:migration-export', { candidateIds: [memberId] });
-      if (this.closed) return { cancelled: true };
-      if (!result.ok) {
-        // The server refused this handover (rate limit, room state). Try the next
-        // candidate instead of aborting the exit with an exception.
-        prepareError = new Error(result.error || '无法准备房间迁移。');
-        continue;
-      }
-      try {
-        const prepared = await this.sendControl(candidate, 'migration:prepare', {
-          transfer: result.transfer,
-          ticket: result.tickets[result.successorId],
-          inviteSecret: this.inviteSecret,
-        }, 8000);
-        if (this.closed) return { cancelled: true };
-        if (!prepared?.ok) throw new Error(prepared?.error || '新房主未能恢复房间。');
-        exported = result;
-        successor = candidate;
-        break;
-      } catch (error) {
-        prepareError = error;
-        await this.sendControl(candidate, 'migration:abort', {}, 500).catch(() => { });
-      }
-    }
-    if (!exported) {
-      // A handover that cannot complete must not trap the owner in the room. The
-      // server closes the room when the owner leaves without a finished migration,
-      // so exiting is safe and the members are told the room ended.
-      this.disconnect();
-
-      return {
-        ok: true,
-        closed: true,
-        reason: healthy.length
-          ? `移交未能完成（${prepareError?.message || '未知原因'}），房间已关闭。`
-          : '其他成员当前无法接管房间，房间已关闭。',
-      };
-    }
-
-    try {
-      const armed = await this.sendControl(successor, 'migration:arm', {
-        roomId: this.roomId,
-        successorId: exported.successorId,
-        ticket: exported.tickets[exported.successorId],
-        inviteSecret: this.inviteSecret,
-      }, 3000);
-      if (this.closed) return { cancelled: true };
-      if (!armed?.ok || armed.armed !== true || !successor.open) {
-        throw new Error(armed?.error || '新房主未确认接管。');
-      }
-    } catch (error) {
-      await this.sendControl(successor, 'migration:abort', {}, 2500).catch(() => { });
-
-      // Losing the successor at this point is not a reason to stay open: close the
-      // room and let the caller finish exiting.
-      this.disconnect();
-
-      return {
-        ok: true,
-        closed: true,
-        reason: `新房主未确认接管（${error.message}），房间已关闭。`,
-      };
-    }
-
-    const commits = [];
-
-    for (
-      const [
-        memberId,
-        connection,
-      ]
-      of this.guestMembers
-    ) {
-      const ticket =
-        exported.tickets[
-        memberId
-        ];
-
-      if (
-        connection.open
-        && ticket
-        && memberId !== exported.successorId
-      ) {
-        commits.push({
-          memberId,
-          promise:
-            this.sendControl(
-              connection,
-              'migration:commit',
-              {
-                roomId:
-                  this.roomId,
-                successorId:
-                  exported.successorId,
-                ticket,
-                reconnectSlot: commits.filter(entry => entry.memberId !== exported.successorId).length,
-                inviteSecret:
-                  this.inviteSecret,
-              },
-              3000,
-            ),
-        });
-      }
-    }
-
-    await Promise.allSettled(commits.map(entry => entry.promise));
-
-    await ack(
-      this.local,
-      'room:leave',
-    ).catch(() => { });
-
-    await pause(80);
-
+    // Room recovery is pre-copied to the remaining members. Local departure must
+    // never depend on remote acknowledgements or coordinator reachability.
     this.disconnect();
-
-    return {
-      ok: true,
-      migratedTo:
-        exported.successorId,
-    };
+    return { ok: true };
   }
 
   async accept(connection) {
@@ -1952,6 +2055,11 @@ export class P2PRoom {
       performance.now();
 
     let requests = 0;
+    let imageWindowStarted = windowStarted;
+    let imageRequests = 0;
+    const blockedImages = new Set();
+    let laserWindowStarted = windowStarted;
+    let laserRequests = 0;
 
     let timeout;
     let authReceive;
@@ -2178,10 +2286,21 @@ export class P2PRoom {
           event,
           data => {
             if (
-              !connection.open
+              this.closed || !connection.open
             ) {
               return;
             }
+
+            const messageId = data?.messageId;
+            if (
+              (event === 'image:chunk' || event === 'image:complete')
+              && blockedImages.has(messageId)
+            ) {
+              if (event === 'image:complete') blockedImages.delete(messageId);
+              return;
+            }
+            if (event === 'image:abort') blockedImages.delete(messageId);
+            if (event === 'laser:stroke' && laserQueueBusy(connection)) return;
 
             if (
               event
@@ -2193,7 +2312,11 @@ export class P2PRoom {
                 || 0,
               ) > 1024 * 1024
             ) {
-              connection.close();
+              blockedImages.add(messageId);
+              connection.send({
+                event: 'image:abort',
+                data: { messageId },
+              });
               return;
             }
 
@@ -2214,10 +2337,8 @@ export class P2PRoom {
             return;
           }
 
-          const binaryChunk =
-            message?.event
-            === 'image:chunk'
-            && message.payload?.data;
+          const imageChunk = message?.event === 'image:chunk';
+          const binaryChunk = imageChunk && message.payload?.data;
 
           const binaryLength =
             binaryChunk instanceof ArrayBuffer
@@ -2231,26 +2352,56 @@ export class P2PRoom {
           let serializedLength = 0;
 
           try {
-            serializedLength =
+            const serialized = JSON.stringify(
               binaryChunk
-                ? 0
-                : JSON.stringify(
-                  message,
-                ).length;
+                ? { ...message, payload: { ...message.payload, data: undefined } }
+                : message,
+            );
+            serializedLength = imageChunk
+              ? new TextEncoder().encode(serialized).byteLength
+              : serialized.length;
           } catch {
             connection.close();
             return;
           }
 
           const oversized =
-            binaryChunk
-              ? (
+            serializedLength > 65536
+            || (
+              binaryChunk && (
                 binaryLength < 1
                 || binaryLength
                 > 48 * 1024
               )
-              : serializedLength
-              > 65536;
+            );
+
+          const laser = message?.event === 'laser:stroke';
+          if (laser) {
+            // The existing room service remains authoritative for membership,
+            // screen membership, permissions and coordinate validation. Laser
+            // traffic has its own allowance and cannot consume control quota.
+            if (!socket.data.admitted || closed || !socket.connected || oversized
+                || serializedLength > LASER_MESSAGE_MAX_BYTES
+                || (message.id !== undefined && (typeof message.id !== 'string' || message.id.length > 64))) return;
+            const now = performance.now();
+            if (now - laserWindowStarted >= 1_000) {
+              laserWindowStarted = now;
+              laserRequests = 0;
+            }
+            laserRequests += 1;
+            if (laserRequests > LASER_PACKETS_PER_SECOND) return;
+            if (message.id === undefined) {
+              if (!laserQueueBusy(connection)) (socket.volatile || socket).emit('laser:stroke', message.payload);
+              return;
+            }
+            // Old PR clients send ordinary RPC envelopes. Acknowledge these
+            // without retaining pending requests in the host.
+            try {
+              const result = await ack(socket, 'laser:stroke', message.payload, 15_000);
+              if (connection.open && !laserQueueBusy(connection)) connection.send({ reply: message.id, result });
+            } catch { }
+            return;
+          }
 
           if (
             closed
@@ -2270,21 +2421,28 @@ export class P2PRoom {
           const now =
             performance.now();
 
-          if (
-            now - windowStarted
-            > 10_000
-          ) {
-            windowStarted = now;
-            requests = 0;
-          }
-
-          requests += 1;
-
-          if (
-            requests > 160
-          ) {
-            connection.close();
-            return;
+          if (message.event === 'image:chunk') {
+            // A valid 10 MiB image needs 214 chunks. Keep its transport budget
+            // separate from room control, matching the server's upload limit.
+            if (now - imageWindowStarted > 60_000) {
+              imageWindowStarted = now;
+              imageRequests = 0;
+            }
+            imageRequests += 1;
+            if (imageRequests > 1200) {
+              connection.close();
+              return;
+            }
+          } else {
+            if (now - windowStarted > 10_000) {
+              windowStarted = now;
+              requests = 0;
+            }
+            requests += 1;
+            if (requests > 160) {
+              connection.close();
+              return;
+            }
           }
 
           let result;
@@ -2325,12 +2483,13 @@ export class P2PRoom {
                     ?.ticket
                   ? 'room:migration-join'
                   : message.event,
-                {
-                  ...(
-                    message.payload
-                    || {}
-                  ),
-                },
+                imageChunk
+                  ? {
+                    uploadId: message.payload.uploadId,
+                    index: message.payload.index,
+                    data: binaryChunk,
+                  }
+                  : { ...(message.payload || {}) },
                 15_000,
               );
             } catch (error) {
@@ -2362,6 +2521,7 @@ export class P2PRoom {
                 memberId,
                 connection,
               );
+            this.scheduleRecoveryBackup(true);
           }
 
           if (
@@ -2585,6 +2745,13 @@ export class P2PRoom {
         this.screenPending
           .get(requestId)
           ?.(message);
+        if (kind === 'error' && message.error === 'NATIVE_MEDIA_FALLBACK' && !this.screenPending.has(requestId)) {
+          const viewer = this.screenViewers.get(requestId);
+          viewer?.pc.close();
+          // close() itself does not fire this event; let the existing media
+          // recovery state machine select its normal congestion-aware path.
+          viewer?.pc.dispatchEvent(new Event('connectionstatechange'));
+        }
       } else if (
         kind === 'answer'
         && message.session
@@ -2718,6 +2885,22 @@ export class P2PRoom {
       ...defaultScreenSettings,
       ...settings,
     };
+
+    // Capture backends can return motion hints (OBS camera / canvas). Apply
+    // the sharing preference before any sender or VDO clone is created.
+    // Content type also selects Chromium's encoder/rate-control path. Treat
+    // high-frame-rate sharing as interactive motion, while keeping the user's
+    // resolution preference in RTP parameters. Forcing `detail` for 60 FPS
+    // can accumulate a large motion burst in the pacer after an idle screen.
+    const contentHint = this.screenSettings.sourceType === 'camera'
+      || Number(this.screenSettings.fps) > 30
+      || this.screenSettings.performanceMode === 'smooth' ? 'motion' : 'detail';
+    for (const track of stream.getVideoTracks()) {
+      if ('contentHint' in track) track.contentHint = contentHint;
+    }
+
+    this.nativeScreenPublisher = createNativeScreenPublisher(stream, this.screenSettings);
+    this.nativeFallbackOwners = new Set();
 
     void this.startVdoPublisher(
       stream,
@@ -2901,6 +3084,8 @@ export class P2PRoom {
 
   stopScreenStream() {
     const release = callback => { try { callback(); } catch { } };
+    release(() => { void this.nativeScreenPublisher?.close(); });
+    this.nativeScreenPublisher = null;
     release(() => this.stopVdoPublisher());
 
     for (
@@ -3050,6 +3235,43 @@ export class P2PRoom {
       );
     }
 
+    if (route === 'p2p' && this.nativeScreenPublisher && !this.nativeFallbackOwners?.has(owner)) {
+      const publisher = this.nativeScreenPublisher;
+      const session = crypto.randomUUID();
+      const entry = { owner, pc: { remoteDescription: null, close() {} }, requestId, route, candidates: [] };
+      this.screenSessions.set(session, entry);
+      try {
+        const pc = await publisher.answer({
+          id: session, offer: sdp, iceServers: routeIceServers,
+          onPeer: value => {
+            if (this.closed || this.nativeScreenPublisher !== publisher || this.screenSessions.get(session) !== entry) throw new Error('共享已取消。');
+            entry.pc = value;
+            for (const candidate of entry.candidates.splice(0)) void value.addIceCandidate(candidate);
+          },
+          onCandidate: ({ candidate }) => {
+            if (this.connected && this.screenSessions.get(session) === entry) void this.request('screen:signal', {
+              kind: 'candidate', side: 'publisher', requestId, to: owner, candidate: candidate?.toJSON() || null,
+            }).catch(() => {});
+          },
+          onState: () => {
+            if (entry.pc.connectionState === 'failed' && this.screenSessions.get(session) === entry) {
+              this.nativeFallbackOwners?.add(owner);
+              void this.request('screen:signal', { kind: 'error', requestId, to: owner, error: 'NATIVE_MEDIA_FALLBACK' }).catch(() => {});
+              this.closeLocalScreen(owner, session);
+            }
+          },
+        });
+        if (this.screenSessions.get(session) !== entry) { pc.close(); throw new Error('共享已取消。'); }
+        return { sdp: pc.localDescription.sdp, session };
+      } catch (error) {
+        this.closeLocalScreen(owner, session);
+        if (this.closed || this.nativeScreenPublisher !== publisher || !this.screenStream?.active) throw error;
+        this.nativeFallbackOwners?.add(owner);
+        recordFailure('native-media', error);
+        // Capability/negotiation failure uses the existing complete A/V path.
+      }
+    }
+
     const pc =
       createRoomcastPeerConnection({
         iceServers:
@@ -3174,7 +3396,7 @@ export class P2PRoom {
       }
 
       if (videoSender) {
-        entry.videoPolicy = createP2pVideoPolicy({ pc, sender: videoSender, quality, route, adapt: route === 'p2p' || route === 'campus' });
+        entry.videoPolicy = createP2pVideoPolicy({ pc, sender: videoSender, quality, route });
       }
 
       const calibrateResolution =
@@ -3673,6 +3895,11 @@ export class P2PRoom {
     this.closed = true;
     this.connected = false;
     this.pendingMigrationCommit = null;
+    this.recoveryBackup = null;
+    clearTimeout(this.backupTimer);
+    this.backupTimer = null;
+    try { this.recoveryCandidate?.destroy(); } catch {}
+    this.recoveryCandidate = null;
     // Failure in one cleanup must not retain the other room connections.
     const release = callback => { try { callback(); } catch { } };
     release(() => stopCampusSession(this));

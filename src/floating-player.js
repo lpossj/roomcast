@@ -1,3 +1,6 @@
+import { attachLaserSurface } from './laser-surface.js';
+import { bindLaserShortcut } from './laser-shortcut.js';
+
 const AVATAR_PALETTE = [
   ['#394631', '#c5d4a7'],
   ['#383551', '#c6bbea'],
@@ -25,6 +28,7 @@ export function openFloatingPlayer(source, {
   soundEnabled,
   volume: initialVolume,
   info,
+  laser: laserOptions,
 } = {}) {
   const bridge = window.roomcast;
   const id = bridge?.prepareFloatingWindow?.();
@@ -42,6 +46,10 @@ export function openFloatingPlayer(source, {
   let alwaysOnTop = false;
   let uiTimer = null;
   let controlPointer = false;
+  let laserSurface = null;
+  let unbindLaserShortcut;
+  let laserActive = laserOptions?.active === true;
+  let laserAvailable = laserOptions?.available !== false;
 
   const doc = popup.document;
   doc.title = `${title || '共享画面'} — Roomcast`;
@@ -133,6 +141,7 @@ export function openFloatingPlayer(source, {
       border: 1px solid var(--control-border);
     }
     .floating-control-button svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .floating-control-button[aria-pressed="true"] { color: #fff; background: #0078d4; border-color: #0067b5; }
     .floating-volume {
       display: flex;
       align-items: center;
@@ -149,6 +158,10 @@ export function openFloatingPlayer(source, {
     html[data-appearance="light"] .floating-controls { background: linear-gradient(transparent, #f8fafcf2); color: #28445c; }
     .audio-hidden { display: none !important; }
     html.cursor-hidden, html.cursor-hidden * { cursor: none !important; }
+    .laser-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    .laser-layer canvas { display: block; width: 100%; height: 100%; pointer-events: none; }
+    .laser-layer.laser-drawing { pointer-events: auto; touch-action: none; }
+    html .laser-layer.laser-drawing, html.cursor-hidden .laser-layer.laser-drawing { cursor: crosshair !important; }
   `;
   doc.head.append(style);
 
@@ -170,9 +183,11 @@ export function openFloatingPlayer(source, {
   const icons = {
     volume: icon('<path d="M11 5 6 9H2v6h4l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path>'),
     muted: icon('<path d="M11 5 6 9H2v6h4l5 4z"></path><path d="m22 9-6 6"></path><path d="m16 9 6 6"></path>'),
-    fullscreen: icon('<path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M16 3h3a2 2 0 0 1 2 2v3"></path><path d="M8 21H5a2 2 0 0 1-2-2v-3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path>'),
-    exitFullscreen: icon('<path d="M8 3v3a2 2 0 0 1-2 2H3"></path><path d="M16 3v3a2 2 0 0 0 2 2h3"></path><path d="M8 21v-3a2 2 0 0 0-2-2H3"></path><path d="M16 21v-3a2 2 0 0 1 2-2h3"></path>'),
-    pin: icon('<path d="m16 3 5 5-4 1-3 4-1 4-2 2-2-2-4-4-2-2 2-2 4-1 4-3z"></path><path d="m9 15-5 5"></path>'),
+    // Match the Lucide PenLine / Expand / Minimize icons in ScreenPlayer.
+    laser: icon('<path d="M13 21h8"></path><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path>'),
+    fullscreen: icon('<path d="m15 15 6 6"></path><path d="m15 9 6-6"></path><path d="M21 16v5h-5"></path><path d="M21 8V3h-5"></path><path d="M3 16v5h5"></path><path d="m3 21 6-6"></path><path d="M3 8V3h5"></path><path d="M9 9 3 3"></path>'),
+    exitFullscreen: icon('<path d="M8 3v3a2 2 0 0 1-2 2H3"></path><path d="M21 8h-3a2 2 0 0 1-2-2V3"></path><path d="M3 16h3a2 2 0 0 1 2 2v3"></path><path d="M16 21v-3a2 2 0 0 1 2-2h3"></path>'),
+    pin: icon('<path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path>'),
     exitWindow: icon('<path d="M9 18H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"></path><path d="m16 15 3-3-3-3"></path><path d="M19 12H9"></path>'),
   };
 
@@ -253,6 +268,27 @@ export function openFloatingPlayer(source, {
     volume: Number.isFinite(Number(initialVolume)) ? Number(initialVolume) : Number(source.volume || 0),
   };
 
+  const laserButton = laserOptions && makeButton({
+    label: '激光笔（N 开关，按住拖动，Esc 退出）',
+    html: icons.laser,
+    action: () => {
+      if (!laserAvailable || !laserOptions.controller.allowed()) return;
+      updateLaser({ active: !laserActive });
+      laserOptions.onActiveChange?.(laserActive);
+    },
+  });
+  const updateLaser = next => {
+    if (!laserButton || disposed) return;
+    if (typeof next.available === 'boolean') laserAvailable = next.available;
+    laserActive = next.active === true && laserAvailable && laserOptions.controller.allowed();
+    laserButton.style.display = !laserAvailable || !laserOptions.controller.allowed() ? 'none' : '';
+    laserButton.setAttribute('aria-pressed', String(laserActive));
+    laserButton.title = laserActive ? '退出激光笔模式（N / Esc）' : '激光笔（N 开关，按住拖动）';
+    laserButton.setAttribute('aria-label', laserButton.title);
+    laserButton.setAttribute('aria-keyshortcuts', 'N');
+    laserSurface?.setActive(laserActive);
+  };
+
   const soundButton = makeButton({
     label: '播放共享声音',
     html: icons.muted,
@@ -299,6 +335,20 @@ export function openFloatingPlayer(source, {
   });
 
   doc.body.append(infoCard, viewers, video, controls);
+  if (laserOptions) {
+    const surface = doc.createElement('div'), canvas = doc.createElement('canvas');
+    surface.className = 'laser-layer'; surface.append(canvas); doc.body.append(surface);
+    laserSurface = attachLaserSurface({
+      surface, canvas, video, laser: laserOptions.controller,
+      stream: laserOptions.stream, selfId: laserOptions.selfId, active: laserActive,
+      onExit: () => { updateLaser({ active: false }); laserOptions.onActiveChange?.(false); },
+    });
+    updateLaser({ active: laserActive, available: laserOptions.available });
+    unbindLaserShortcut = bindLaserShortcut(doc.body, {
+      canToggle: () => laserAvailable && laserOptions.controller.allowed(),
+      onToggle: () => { updateLaser({ active: !laserActive }); laserOptions.onActiveChange?.(laserActive); showUi(); },
+    });
+  }
 
   function renderAudio() {
     soundButton.classList.toggle('audio-hidden', !audioState.available);
@@ -367,7 +417,6 @@ export function openFloatingPlayer(source, {
     topButton.title = alwaysOnTop ? '取消置顶' : '置顶小窗';
     topButton.setAttribute('aria-label', topButton.title);
     topButton.setAttribute('aria-pressed', String(alwaysOnTop));
-    topButton.style.color = alwaysOnTop ? 'var(--green)' : '';
     doc.documentElement.classList.toggle('is-fullscreen', fullscreen);
     fullscreenButton.title = fullscreen ? '取消全屏' : '全屏';
     fullscreenButton.setAttribute('aria-label', fullscreenButton.title);
@@ -465,6 +514,8 @@ export function openFloatingPlayer(source, {
 
     clearUiTimer();
     appearanceObserver.disconnect();
+    laserSurface?.destroy(); laserSurface = null;
+    unbindLaserShortcut?.();
     doc.documentElement.removeEventListener('pointerenter', pointerMoved);
     doc.documentElement.removeEventListener('pointermove', pointerMoved);
     doc.documentElement.removeEventListener('pointerleave', pointerLeft);
@@ -505,5 +556,5 @@ export function openFloatingPlayer(source, {
     throw error;
   }
 
-  return { close: dispose, id, updateAudio, updateInfo };
+  return { close: dispose, id, updateAudio, updateInfo, updateLaser };
 }

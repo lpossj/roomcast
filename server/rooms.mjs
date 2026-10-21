@@ -16,11 +16,20 @@ const IMAGE_BATCH_TIMEOUT_MS = 90_000;
 const IMAGE_BATCH_MAX = 4;
 const MIGRATION_TIMEOUT_MS = 45_000;
 const MIGRATION_TRANSFER_MAX_BYTES = 48 * 1024;
+const LASER_PACKETS_PER_SECOND = 24;
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const MIGRATION_ALLOWED_EVENTS = new Set([
+  'room:ping', 'room:leave', 'room:migration-export', 'room:migration-check', 'room:migration-cancel',
+  'chat:history', 'screen:signal', 'voice:signal', 'view:heartbeat',
+]);
 const token = () => randomBytes(32).toString('hex');
 const tokenHash = value => createHash('sha256').update(String(value)).digest('hex');
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = (error) => ({ ok: false, error });
+
+// Array.sort is stable, so equal timestamps retain admission order.
+const successorOrder = (left, right) => Number(right.role === 'admin') - Number(left.role === 'admin')
+  || left.joinedAt - right.joinedAt;
 
 function cleanText(value, max, label, { multiline = false, optional = false } = {}) {
   if (value === undefined && optional) return '';
@@ -370,6 +379,7 @@ export function attachRooms(io, {
             room.members.delete(
               member.id,
             );
+            forgetRecoveryMember(room, member.id);
           }
 
           room.migrationTickets
@@ -381,6 +391,9 @@ export function attachRooms(io, {
             room.members.size
           ) {
             broadcast(room);
+          } else {
+            rooms.delete(room.id);
+            try { onRoomClosed(room.id); } catch { }
           }
         }
 
@@ -425,9 +438,10 @@ export function attachRooms(io, {
 
   function snapshot(room) {
     return {
-      features: { profiles: 1, voice: 1 },
+      features: { profiles: 1, voice: 1, laser: 1, recovery: 1 },
       id: room.id,
       name: room.name,
+      laserEnabled: room.laserEnabled !== false,
       maxMembers: MAX_MEMBERS,
 
       members: [
@@ -440,6 +454,7 @@ export function attachRooms(io, {
           joinedAt,
           role,
           canShare,
+          canLaser,
           avatarColor,
           avatar,
           voiceEnabled,
@@ -451,6 +466,7 @@ export function attachRooms(io, {
           joinedAt,
           role,
           canShare,
+          canLaser: canLaser !== false,
           avatarColor,
           avatar: avatar || '',
           voiceEnabled: voiceEnabled === true,
@@ -500,6 +516,8 @@ export function attachRooms(io, {
   }
 
   function broadcast(room) {
+    if (closed) return;
+    room.revision = (room.revision || 0) + 1;
     // Direct socket delivery avoids waiting
     // for an asynchronous adapter join.
     const state = snapshot(room);
@@ -522,6 +540,7 @@ export function attachRooms(io, {
     system = false,
     extra = {},
   ) {
+    if (closed) return null;
     const item = {
       id: randomUUID(),
 
@@ -559,6 +578,7 @@ export function attachRooms(io, {
     };
 
     room.messages.push(item);
+    room.revision = (room.revision || 0) + 1;
 
     if (
       room.messages.length
@@ -628,6 +648,13 @@ export function attachRooms(io, {
 
   }
 
+  function forgetRecoveryMember(room, memberId) {
+    room.recoveryTickets?.delete(memberId);
+    for (const [hash, id] of room.migrationTickets || []) {
+      if (id === memberId) room.migrationTickets.delete(hash);
+    }
+  }
+
   function removeMember(
     socket,
     departure =
@@ -643,6 +670,11 @@ export function attachRooms(io, {
     delete socket.data
       .shareRoomId;
 
+    if (closed) {
+      delete socket.data.memberId;
+      return;
+    }
+
     if (!room) {
       return;
     }
@@ -656,7 +688,7 @@ export function attachRooms(io, {
         memberId,
       );
 
-    if (!member) {
+    if (!member || (member.socket && member.socket !== socket)) {
       return;
     }
 
@@ -688,6 +720,18 @@ export function attachRooms(io, {
       return;
     }
 
+    if (room.recoveryImport && member.recoveryConfirmed !== true
+      && member.role !== 'owner' && departure === 'disconnect'
+      && !socket.data.kicked && room.migrationDeadline > performance.now()
+      && [...(room.migrationTickets?.values() || [])].includes(member.id)) {
+      // A successful join reply can be lost with its data channel. Keep the
+      // identity/ticket for this bounded recovery window so a retry can rebind.
+      readers.delete(member.readToken);
+      member.readToken = '';
+      member.socket = null;
+      return;
+    }
+
     readers.delete(
       member.readToken,
     );
@@ -709,6 +753,7 @@ export function attachRooms(io, {
     room.members.delete(
       member.id,
     );
+    forgetRecoveryMember(room, member.id);
 
 
     // Explicit departures need immediate notification
@@ -743,106 +788,28 @@ export function attachRooms(io, {
       } catch { }
     } else {
       if (
-        member.role === 'owner'
-        && departure
-        === 'disconnect'
-      ) {
-        // A socket disappearing is not a completed
-        // two-phase migration. Close the coordinator
-        // state instead of advertising an
-        // unacknowledged HA takeover.
-        rooms.delete(room.id);
-
-        for (
-          const remaining
-          of room.members.values()
-        ) {
-          readers.delete(
-            remaining.readToken,
-          );
-
-          releaseStream(
-            room,
-            remaining.id,
-          );
-
-
-          remaining.socket?.emit(
-            'room:kicked',
-            {
-              error:
-                '房主连接异常中断；未完成安全迁移，房间已关闭。',
-            },
-          );
-
-          if (
-            remaining.socket
-          ) {
-            delete remaining.socket
-              .data.shareRoomId;
-
-            delete remaining.socket
-              .data.memberId;
-
-            remaining.socket
-              .disconnect(true);
-          }
-        }
-
-        try {
-          onRoomClosed(
-            room.id,
-          );
-        } catch { }
-
-        return;
-      }
-
-      if (
         member.role
         === 'owner'
       ) {
-        try {
-          onRoomClosed(
-            room.id,
-          );
-        } catch { }
-
         const successor =
           [
             ...room.members.values(),
-          ].sort(
-            (
-              left,
-              right,
-            ) =>
-              left.joinedAt
-              - right.joinedAt,
-          )[0];
+          ].filter(candidate => candidate.socket?.connected)
+            .sort(successorOrder)[0];
 
-        successor.role =
-          'owner';
+        // The room service is still alive; losing its owner socket must not
+        // terminate other members or their healthy media connections.
+        room.migrationExporting = false;
+        delete room.migrationExportRevision;
 
-        successor.canShare =
-          true;
-
-        successor.ownerToken =
-          token();
-
-        successor.socket?.emit(
-          'room:owner-token',
-          {
-            ownerToken:
-              successor.ownerToken,
-          },
-        );
-
-        message(
-          room,
-          null,
-          `${successor.name} 已继承房主权限`,
-          true,
-        );
+        if (successor) {
+          successor.role = 'owner';
+          successor.canShare = true;
+          successor.canLaser = true;
+          successor.ownerToken = token();
+          successor.socket.emit('room:owner-token', { ownerToken: successor.ownerToken });
+          message(room, null, `${successor.name} 已继承房主权限`, true);
+        }
       }
 
       message(
@@ -891,6 +858,9 @@ export function attachRooms(io, {
     role = 'user',
     memberId = socket.id,
   ) {
+    if (room.migrationExporting) {
+      throw new Error('房主正在移交房间，请稍后重试。');
+    }
     if (
       !socket.connected
       || closed
@@ -945,6 +915,7 @@ export function attachRooms(io, {
       joinedAt: Date.now(),
       role,
       canShare: true,
+      canLaser: true,
       readToken: token(),
 
       ownerToken:
@@ -1023,6 +994,10 @@ export function attachRooms(io, {
     const limits =
       new Map();
 
+    // Legacy PR clients have no stroke identifier. Keep only one transient
+    // stroke per shared screen, without adding anything to room history.
+    const legacyLaserStrokes = new Map();
+
     const ip =
       socket.handshake.address
       || 'unknown';
@@ -1034,6 +1009,7 @@ export function attachRooms(io, {
       new Map();
 
     const emitImageAbort = (room, memberId, messageId) => {
+      if (closed) return;
       for (const recipient of room.members.values()) {
         if (recipient.id !== memberId) {
           recipient.socket?.emit('image:abort', { messageId });
@@ -1176,6 +1152,11 @@ export function attachRooms(io, {
               );
             }
 
+            const room = rooms.get(socket.data.shareRoomId);
+            if (room?.migrationExporting && !MIGRATION_ALLOWED_EVENTS.has(name)) {
+              throw new Error('房主正在移交房间，请稍后重试。');
+            }
+
             reply(
               await handler(
                 payload ?? {},
@@ -1304,6 +1285,7 @@ export function attachRooms(io, {
             `room-${id}`,
 
           name,
+          laserEnabled: true,
           salt,
           passwordHash,
 
@@ -1323,6 +1305,7 @@ export function attachRooms(io, {
 
           viewers:
             new Map(),
+
 
           iceServers:
             cleanIceServers(
@@ -1482,6 +1465,69 @@ export function attachRooms(io, {
       },
     );
 
+    // Background recovery snapshots never freeze the live room or allocate a
+    // standby room. Only the local coordinator receives the plaintext tickets.
+    event('room:recovery-export', () => {
+      const { room, member } = current(socket);
+      if (!isTrustedLocalSocket(socket) || member.role !== 'owner') {
+        throw new Error('只有本机房主可以准备房间恢复状态。');
+      }
+      const remaining = [...room.members.values()].filter(candidate => candidate.id !== member.id
+        && candidate.socket?.connected && !candidate.socket.data.kicked);
+      room.recoveryTickets ||= new Map();
+      const memberIds = new Set(remaining.map(candidate => candidate.id));
+      for (const id of room.recoveryTickets.keys()) {
+        if (!memberIds.has(id)) room.recoveryTickets.delete(id);
+      }
+      const tickets = Object.create(null);
+      const members = remaining.map(candidate => {
+        if (!room.recoveryTickets.has(candidate.id)) {
+          room.recoveryTickets.set(candidate.id, randomBytes(32).toString('base64url'));
+        }
+        const resumeToken = room.recoveryTickets.get(candidate.id);
+        tickets[candidate.id] = resumeToken;
+        return {
+          id: candidate.id, name: candidate.name, avatarColor: candidate.avatarColor,
+          avatar: candidate.avatar || '', voiceEnabled: candidate.voiceEnabled === true,
+          voiceRevision: candidate.voiceRevision || 0, sharing: candidate.sharing,
+          joinedAt: candidate.joinedAt, role: candidate.role === 'admin' ? 'admin' : 'user',
+          canShare: candidate.canShare !== false, canLaser: candidate.canLaser !== false,
+          ticketHash: tokenHash(resumeToken),
+        };
+      });
+      const successorIds = [...members].sort(successorOrder).map(candidate => candidate.id);
+      room.recoveryEpoch ||= token();
+      const transfer = {
+        version: 3, epoch: room.recoveryEpoch, revision: room.revision || 0,
+        successorIds, roomId: room.id, name: room.name, laserEnabled: room.laserEnabled !== false,
+        salt: room.salt.toString('base64'), passwordHash: room.passwordHash?.toString('base64') || '',
+        members,
+        streams: [...room.streams.values()].filter(stream => memberIds.has(stream.memberId))
+          .map(stream => ({ ...stream, settings: shareSettings(stream.settings) })),
+        viewers: [...room.viewers].flatMap(([ownerId, entries]) => memberIds.has(ownerId)
+          ? [...entries.values()].filter(viewer => memberIds.has(viewer.memberId))
+            .map(viewer => ({ ownerId, memberId: viewer.memberId, name: viewer.name, lastSeen: viewer.lastSeen }))
+          : []),
+        messages: room.messages.slice(-MAX_MESSAGES).map(item => ({ ...item })),
+        nextMessageSeq: room.nextMessageSeq, iceServers: room.iceServers, ttlMs: MIGRATION_TIMEOUT_MS,
+      };
+      let transferBytes = Buffer.byteLength(JSON.stringify(transfer), 'utf8');
+      // Avatars are optional decoration; preserve permission/member state first.
+      for (const candidate of [...members].sort((left, right) => right.avatar.length - left.avatar.length)) {
+        if (transferBytes <= MIGRATION_TRANSFER_MAX_BYTES) break;
+        transferBytes -= candidate.avatar.length;
+        candidate.avatar = '';
+      }
+      while (transferBytes > MIGRATION_TRANSFER_MAX_BYTES && transfer.messages.length) {
+        const removed = transfer.messages.shift();
+        transferBytes -= Buffer.byteLength(JSON.stringify(removed), 'utf8') + (transfer.messages.length ? 1 : 0);
+      }
+      if (Buffer.byteLength(JSON.stringify(transfer), 'utf8') > MIGRATION_TRANSFER_MAX_BYTES) {
+        throw new Error('房间恢复状态超过大小限制。');
+      }
+      return { ok: true, tickets, transfer };
+    }, { max: 180, windowMs: 60_000 });
+
     event(
       'room:migration-export',
       payload => {
@@ -1506,15 +1552,7 @@ export function attachRooms(io, {
             .filter(
               candidate =>
                 candidate.id
-                !== member.id,
-            )
-            .sort(
-              (
-                left,
-                right,
-              ) =>
-                left.joinedAt
-                - right.joinedAt,
+                !== member.id && candidate.socket?.connected,
             );
 
         if (
@@ -1541,7 +1579,7 @@ export function attachRooms(io, {
           );
 
         const successor =
-          remaining.find(
+          [...remaining].sort(successorOrder).find(
             candidate =>
               candidateIds
                 .has(
@@ -1583,6 +1621,9 @@ export function attachRooms(io, {
                 avatarColor:
                   candidate.avatarColor,
 
+                voiceEnabled: candidate.voiceEnabled === true,
+                voiceRevision: candidate.voiceRevision || 0,
+
                 sharing:
                   candidate.sharing,
 
@@ -1603,6 +1644,8 @@ export function attachRooms(io, {
                     === successorId
                     ? true
                     : candidate.canShare,
+
+                canLaser: candidate.id === successorId ? true : candidate.canLaser !== false,
 
                 ticketHash:
                   tokenHash(
@@ -1687,6 +1730,8 @@ export function attachRooms(io, {
             name:
               room.name,
 
+            laserEnabled: room.laserEnabled !== false,
+
             salt:
               room.salt
                 .toString(
@@ -1733,13 +1778,40 @@ export function attachRooms(io, {
           transferBytes -= Buffer.byteLength(JSON.stringify(removed), 'utf8') + (transfer.messages.length ? 1 : 0);
         }
 
+        // Once exported, acknowledge no new writes against the old snapshot.
+        // Departures and timer cleanup still advance revision and invalidate it.
+        room.migrationExporting = true;
+        room.migrationExportRevision = room.revision || 0;
         return { ok: true, successorId, tickets, transfer };
       },
       {
-        max: 2,
+        max: MAX_MEMBERS,
         windowMs: 60_000,
       },
     );
+
+    event(
+      'room:migration-check',
+      () => {
+        const { room, member } = current(socket);
+        if (!isTrustedLocalSocket(socket) || member.role !== 'owner' || !room.migrationExporting
+          || room.migrationExportRevision !== (room.revision || 0)) {
+          throw new Error('移交期间房间状态已变化，不能恢复旧快照。');
+        }
+        return { ok: true };
+      },
+      { max: MAX_MEMBERS + 2, windowMs: 60_000 },
+    );
+
+    event('room:migration-cancel', () => {
+      const { room, member } = current(socket);
+      if (!isTrustedLocalSocket(socket) || member.role !== 'owner') {
+        throw new Error('只有本机房主可以取消房间移交。');
+      }
+      room.migrationExporting = false;
+      delete room.migrationExportRevision;
+      return { ok: true };
+    }, { max: MAX_MEMBERS + 2, windowMs: 60_000 });
 
     event(
       'room:migration-create',
@@ -1768,7 +1840,7 @@ export function attachRooms(io, {
 
         if (
           !isRecord(transfer)
-          || transfer.version !== 2
+          || ![2, 3].includes(transfer.version)
           || !Number.isSafeInteger(
             transfer.ttlMs,
           )
@@ -1817,6 +1889,24 @@ export function attachRooms(io, {
           );
         }
 
+        const recovery = transfer.version === 3;
+        if (recovery) {
+          if (members.some(candidate => !isRecord(candidate)
+            || !['admin', 'user'].includes(candidate.role)
+            || !Number.isSafeInteger(candidate.joinedAt))) {
+            throw new Error('房间恢复成员状态无效。');
+          }
+          const expected = [...members].sort(successorOrder).map(candidate => candidate.id);
+          if (!/^[a-f0-9]{64}$/.test(transfer.epoch || '')
+            || !Number.isSafeInteger(transfer.revision) || transfer.revision < 0
+            || !Array.isArray(transfer.successorIds)
+            || transfer.successorIds.length !== expected.length
+            || transfer.successorIds.some((id, index) => typeof id !== 'string' || id !== expected[index])
+            || Buffer.byteLength(JSON.stringify(transfer), 'utf8') > MIGRATION_TRANSFER_MAX_BYTES) {
+            throw new Error('房间恢复候选顺序、版本或大小无效。');
+          }
+        }
+
         const successorId =
           typeof payload.memberId
             === 'string'
@@ -1840,7 +1930,8 @@ export function attachRooms(io, {
 
         if (
           !own
-          || own.role !== 'owner'
+          || (!recovery && own.role !== 'owner')
+          || (recovery && !transfer.successorIds.includes(successorId))
           || !takeoverHash
           || consumedMigrationTickets
             .has(takeoverHash)
@@ -1888,7 +1979,7 @@ export function attachRooms(io, {
                   '昵称',
                 );
 
-              const role =
+              const role = (recovery && candidate.id === successorId) ? 'owner' : (
                 [
                   'owner',
                   'admin',
@@ -1897,7 +1988,7 @@ export function attachRooms(io, {
                   candidate.role,
                 )
                   ? candidate.role
-                  : 'user';
+                  : 'user');
 
               if (
                 !/^[a-f0-9]{64}$/
@@ -1929,7 +2020,9 @@ export function attachRooms(io, {
                 name,
                 avatarColor,
                 avatar: cleanAvatar(candidate.avatar),
-                voiceEnabled: false,
+                voiceEnabled: candidate.voiceEnabled === true,
+                voiceRevision: Number.isSafeInteger(candidate.voiceRevision) && candidate.voiceRevision >= 0
+                  ? candidate.voiceRevision : 0,
 
                 sharing:
                   candidate.sharing
@@ -1944,9 +2037,9 @@ export function attachRooms(io, {
 
                 role,
 
-                canShare:
-                  candidate.canShare
-                  !== false,
+                canShare: (recovery && candidate.id === successorId) || candidate.canShare !== false,
+
+                canLaser: (recovery && candidate.id === successorId) || candidate.canLaser !== false,
 
                 ticketHash:
                   candidate.ticketHash,
@@ -2055,6 +2148,7 @@ export function attachRooms(io, {
               '房间名称',
             ),
 
+          laserEnabled: transfer.laserEnabled !== false,
           salt,
           passwordHash,
 
@@ -2075,6 +2169,7 @@ export function attachRooms(io, {
           viewers:
             new Map(),
 
+
           iceServers:
             cleanIceServers(
               transfer.iceServers,
@@ -2089,6 +2184,7 @@ export function attachRooms(io, {
 
           migrationPrepared:
             true,
+          recoveryImport: recovery,
         };
 
         for (
@@ -2586,6 +2682,7 @@ export function attachRooms(io, {
 
         member.socket =
           socket;
+        if (room.recoveryImport) member.recoveryConfirmed = false;
 
         member.readToken =
           token();
@@ -2598,10 +2695,7 @@ export function attachRooms(io, {
           },
         );
 
-        room.migrationTickets
-          .delete(
-            ticketHash,
-          );
+        if (!room.recoveryImport) room.migrationTickets.delete(ticketHash);
 
         socket.data.shareRoomId =
           roomId;
@@ -2638,6 +2732,20 @@ export function attachRooms(io, {
       },
     );
 
+    event('room:migration-confirm', () => {
+      const { room, member } = current(socket);
+      if (!room.recoveryImport || member.socket !== socket) {
+        throw new Error('当前成员没有待确认的恢复连接。');
+      }
+      member.recoveryConfirmed = true;
+      // Confirmation means the client received its join reply. A later exit is
+      // an ordinary departure; the previous generation's ticket is retired.
+      for (const [hash, id] of room.migrationTickets || []) {
+        if (id === member.id) room.migrationTickets.delete(hash);
+      }
+      return { ok: true };
+    }, { max: 4, windowMs: 60_000 });
+
     event(
       'room:leave',
       () => {
@@ -2652,7 +2760,7 @@ export function attachRooms(io, {
           );
 
           if (
-            upload.started
+            !closed && upload.started
           ) {
             for (
               const recipient
@@ -2757,6 +2865,85 @@ export function attachRooms(io, {
         };
       },
     );
+
+    // Transient coordinates use the existing authenticated room control plane.
+    // No laser payloads are stored in room history or mixed into video frames.
+    event('laser:global-permission', payload => {
+      const { room, member } = current(socket);
+      if (!['owner', 'admin'].includes(member.role)) throw new Error('只有房主和管理员可以控制全局激光笔。');
+      if (typeof payload?.enabled !== 'boolean') throw new Error('激光笔开关无效。');
+      room.laserEnabled = payload.enabled;
+      broadcast(room);
+      return { ok: true };
+    }, { max: 30, windowMs: 60_000 });
+
+    event('laser:member-permission', payload => {
+      const { room, member } = current(socket);
+      const target = room.members.get(payload?.memberId);
+      if (!target || member.role === 'user'
+          || target.role === 'owner' || target.id === member.id
+          || (member.role === 'admin' && target.role !== 'user')) {
+        throw new Error('没有权限修改该成员的激光笔使用权。');
+      }
+      if (typeof payload?.enabled !== 'boolean') throw new Error('激光笔权限无效。');
+      target.canLaser = payload.enabled;
+      broadcast(room);
+      return { ok: true };
+    }, { max: 30, windowMs: 60_000 });
+
+    event('laser:stroke', payload => {
+      const { room, member } = current(socket);
+      if (room.laserEnabled === false || member.canLaser === false) throw new Error('激光笔已被禁用。');
+      const ownerId = typeof payload?.ownerId === 'string' ? payload.ownerId : '';
+      const stream = room.streams.get(ownerId);
+      if (!stream || payload.startedAt !== stream.startedAt) throw new Error('激光笔共享目标已变化。');
+      if (member.id !== ownerId && !room.viewers.get(ownerId)?.has(member.id)) {
+        throw new Error('必须先进入该共享画面。');
+      }
+      const points = payload.points;
+      if (!Array.isArray(points) || points.length > 8
+          || !Array.from(points).every(p => Array.isArray(p) && p.length === 2
+            && [p[0], p[1]].every(n => Number.isInteger(n) && n >= 0 && n <= 10000))
+          || (!points.length && payload.done !== true)) {
+        throw new Error('激光笔坐标格式无效。');
+      }
+      if (payload.done !== undefined && typeof payload.done !== 'boolean') {
+        throw new Error('激光笔结束标识无效。');
+      }
+      let strokeId = payload.strokeId;
+      let seq = payload.seq;
+      if (strokeId === undefined && seq === undefined) {
+        let legacy = legacyLaserStrokes.get(ownerId);
+        if (!legacy || legacy.roomId !== room.id || legacy.memberId !== member.id || legacy.startedAt !== stream.startedAt) {
+          legacy = { roomId: room.id, memberId: member.id, startedAt: stream.startedAt, strokeId: randomUUID(), seq: 0 };
+          // A socket can leave and join rooms; retain only current screens.
+          for (const [id, previous] of legacyLaserStrokes) {
+            if (previous.roomId !== room.id || !room.streams.has(id)) legacyLaserStrokes.delete(id);
+          }
+          legacyLaserStrokes.set(ownerId, legacy);
+        }
+        strokeId = legacy.strokeId;
+        seq = legacy.seq++;
+        if (payload.done === true) legacyLaserStrokes.delete(ownerId);
+      } else if (typeof strokeId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(strokeId)
+          || !Number.isSafeInteger(seq) || seq < 0) {
+        throw new Error('激光笔轨迹标识无效。');
+      }
+      const packet = {
+        ownerId, startedAt: stream.startedAt, from: member.id,
+        strokeId, seq, points, done: payload.done === true,
+      };
+      const recipients = new Set([ownerId, ...(room.viewers.get(ownerId)?.keys() || [])]);
+      for (const id of recipients) {
+        const recipient = room.members.get(id)?.socket;
+        if (id !== member.id && recipient) {
+          // A late laser trail has no value. Socket.IO may drop it while its
+          // transport is busy; reliable control and media signals stay intact.
+          (recipient.volatile || recipient).emit('laser:stroke', packet);
+        }
+      }
+      return { ok: true };
+    }, { max: LASER_PACKETS_PER_SECOND, windowMs: 1_000 });
 
     event(
       'member:share-permission',
@@ -2881,6 +3068,7 @@ export function attachRooms(io, {
         target.socket
           .data.kicked =
           true;
+        forgetRecoveryMember(room, target.id);
 
         // Notify only the coordinator; secrets remain outside the room service.
         [...room.members.values()].find(item => item.role === 'owner')?.socket?.emit('room:credential-revoke', { memberId: target.id });
@@ -2996,6 +3184,7 @@ export function attachRooms(io, {
         }
 
         if (!item.recalled) {
+          room.revision = (room.revision || 0) + 1;
           item.recalled =
             true;
 
@@ -4344,7 +4533,7 @@ export function attachRooms(io, {
           );
 
           if (
-            upload.started
+            !closed && upload.started
           ) {
             for (
               const recipient
@@ -4472,13 +4661,21 @@ export function attachRooms(io, {
         connect,
       );
 
+      const closingRooms = [...rooms.values()];
+      for (const room of closingRooms) {
+        for (const claim of room.claims.values()) clearTimeout(claim.timer);
+      }
+
       for (
         const socket
-        of sockets
+        of [...sockets]
       ) {
         removeMember(
           socket,
         );
+        // Run each socket's private upload/batch cleanup without publishing
+        // departures from a coordinator that is shutting down as a whole.
+        try { socket.disconnect(true); } catch { }
       }
 
       sockets.clear();
@@ -4486,6 +4683,9 @@ export function attachRooms(io, {
       consumedMigrationTickets.clear();
       rooms.clear();
       ipLimits.clear();
+      for (const room of closingRooms) {
+        try { onRoomClosed(room.id); } catch { }
+      }
 
     },
   };

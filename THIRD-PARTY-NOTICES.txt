@@ -17,6 +17,28 @@ GPL text: resources/runtime/obs-bundle/data/obs-studio/license/gplv2.txt
 Corresponding source archive: resources/runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz
 Source notice: resources/runtime/obs-source/OBS-SOURCE-NOTICE.txt
 
+Roomcast OBS encoded-output plugin
+----------------------------------
+File-specific license: GPL-2.0-or-later (the rest of Roomcast retains its existing license).
+Source/build: electron/native-media/roomcast-native.c, obs.def, obsconfig.h and build-obs-plugin.ps1,
+included in resources/app.asar and the matching Roomcast source archive.
+Binary: resources/runtime/native-media/roomcast-native.dll.
+GPL text: electron/native-media/GPL-2.0.txt; fixed OBS32.1.2 build headers are in the existing OBS source archive above.
+The plugin uses public OBS and obs-websocket APIs; OBS's original runtime DLLs are unmodified.
+
+libdatachannel and Roomcast native transport helper
+--------------------------------------------------
+Unmodified binary: resources/runtime/obs-bundle/bin/64bit/datachannel.dll.
+Binary SHA256: fab6be28221b31b65650deb3e2b994711916b85a5c89d3582f10b742665b7652.
+License: MPL-2.0. Source: https://github.com/paullouisageneau/libdatachannel/tree/9d5c46b8f506943727104d766e5dad0693c5a223
+OBS32.1.2 CMakePresets.json selects obs-deps 2025-08-23, whose pinned libdatachannel build is v0.21.0:
+https://github.com/obsproject/obs-deps/blob/2025-08-23/deps.ffmpeg/70-libdatachannel.ps1
+The source repository includes submodule references for the bundled dependencies; use that pinned revision recursively for corresponding source.
+MPL text and original libjuice/libsrtp/nlohmann-json/plog/usrsctp notices are retained in
+electron/native-media/MPL-2.0.txt and LIBDATACHANNEL-LICENSES.txt inside app.asar and the source archive.
+The Roomcast native transport helper's source/build instructions are in electron/native-media/;
+it dynamically loads the existing DLL and does not modify libdatachannel.
+
 Roomcast loopback capture addon
 ------------------------------
 License: MIT
@@ -130,7 +152,7 @@ License file: LICENSE
 
 ----------------------------------------------------------------
 
-@vdoninja/sdk 1.6.1
+@vdoninja/sdk 1.6.2
 Declared license: MPL-2.0
 License file: LICENSE
 

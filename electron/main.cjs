@@ -1,5 +1,5 @@
 const mainStartedAt = Date.now();
-const { app, BrowserWindow, ipcMain, session, dialog, desktopCapturer, safeStorage, clipboard, ClipboardItem, screen, nativeImage, systemPreferences, net, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, session, protocol, dialog, desktopCapturer, safeStorage, clipboard, ClipboardItem, screen, nativeImage, systemPreferences, net, shell } = require('electron');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -15,10 +15,13 @@ const { createChromiumSessionFetch, workerRequest } = require('./worker-client.c
 const { resolveRuntimePaths } = require('./runtime-paths.cjs');
 const { migratePreferences } = require('./preferences-migration.cjs');
 const { installFloatingWindows } = require('./floating-window.cjs');
+const { createDesktopLaser, registerDesktopLaserScheme } = require('./desktop-laser.cjs');
+registerDesktopLaserScheme(protocol);
 const { createWebInvite } = require('./web-invite.cjs');
 const { createCampusNetwork } = require('./campus-network.cjs');
 const { liveWebContents, ownsWindowEvent } = require('./window-owner.cjs');
 const { ObsFixedFpsEngine, validateVideoSettings, waitForObsVirtualCameraAvailable } = require('./obs-fixed-fps.cjs');
+const { NativeMedia } = require('./native-media.cjs');
 const { ensureObsVirtualCameraRegistration, registrationStatus } = require('./obs-virtualcam-registration.cjs');
 const { cleanText: cleanAudioText, normalizeCaptureSources, windowsAudioSources } = require('./windows-sources.cjs');
 let service;
@@ -37,7 +40,7 @@ let captureSelection = null;
 let quitting = false;
 let privateSession;
 let workerFetch;
-// Non-window quit paths (for example a finished update) retain bounded cleanup.
+// Every exit path retains bounded cleanup without waiting for the renderer.
 const EXIT_GRACE_MS = 5000;
 // Automatic update state. The updater window outlives the main window, so both are
 // tracked here, and `updaterState` is the single source of truth the progress UI reads
@@ -47,19 +50,34 @@ let updaterState = { status: 'idle' };
 const audioCaptures = new Map();
 let LoopbackCapture;
 let obsCaptureEngine = null;
+let nativeMedia = null;
+let nativeMediaStarting = null;
+let nativeMediaGeneration = 0;
+
+function stopNativeMedia(captureId = '') {
+  const current = nativeMedia;
+  if (captureId && current && current.captureId !== captureId) return Promise.resolve();
+  if (captureId && !current && captureId !== obsCaptureSessionId) return Promise.resolve();
+  nativeMediaGeneration += 1;
+  nativeMedia = null;
+  nativeMediaStarting = null;
+  return current?.close() || Promise.resolve();
+}
 let obsCaptureIdleTimer = null;
 let obsCaptureActive = false;
+let desktopLaser = null;
 let obsVideoPermissionUntil = 0;
 let obsCaptureSessionId = '';
 let obsCaptureOperationTail = Promise.resolve();
 let obsCaptureOperationGeneration = 0;
 const obsCaptureOperations = new Set();
+const obsCaptureClosures = new Set();
 
 function runObsCaptureOperation(task, { captureId = '' } = {}) {
   const generation = obsCaptureOperationGeneration;
   const operation = { captureId, cancelled: false };
   const assertCurrent = () => {
-    if (operation.cancelled || generation !== obsCaptureOperationGeneration) {
+    if (quitting || operation.cancelled || generation !== obsCaptureOperationGeneration) {
       const error = new Error('OBS 采集操作已取消。');
       error.code = 'OBS_CAPTURE_CANCELLED';
       throw error;
@@ -104,20 +122,26 @@ async function closeObsCaptureEngine({ expectedEngine = null, captureId = '', ca
   obsCaptureIdleTimer = null;
   const engine = obsCaptureEngine;
   const closedCaptureId = obsCaptureSessionId;
+  void stopNativeMedia(closedCaptureId);
+  desktopLaser?.stopObs();
   obsCaptureActive = false;
   obsVideoPermissionUntil = 0;
   obsCaptureSessionId = '';
   obsCaptureEngine = null;
   engine?.retire?.();
-  const result = engine ? await engine.close().catch(() => ({ ok: false })) : null;
+  const closing = engine ? engine.close().catch(() => ({ ok: false })) : null;
+  if (closing) obsCaptureClosures.add(closing);
+  const result = closing ? await closing.finally(() => obsCaptureClosures.delete(closing)) : null;
   return { ok: result?.ok !== false, stale: false, captureId: closedCaptureId || null };
 }
 
 function handleObsCaptureUnexpectedExit(engine, details = {}) {
   if (obsCaptureEngine !== engine) return;
+  void stopNativeMedia(obsCaptureSessionId);
   cancelObsCaptureOperations();
   const wasActive = obsCaptureActive;
   const endedCaptureId = obsCaptureSessionId;
+  desktopLaser?.stopObs();
   clearTimeout(obsCaptureIdleTimer);
   obsCaptureIdleTimer = null;
   obsCaptureActive = false;
@@ -195,6 +219,37 @@ function stopAllAudioCaptures() {
 async function clearChatSession() {
   if (!privateSession) return;
   await Promise.allSettled([privateSession.clearCache(), privateSession.clearStorageData(), privateSession.clearAuthCache()]);
+}
+function quitAfterCleanup() {
+  if (quitting) return;
+  quitting = true;
+  try { desktopLaser?.stop(); } catch {}
+  const finish = () => {
+    // Electron redirects process.exit to app.exit, which may block on Chromium.
+    if (typeof process.reallyExit === 'function') process.reallyExit(0);
+    else process.kill(process.pid, 'SIGTERM');
+  };
+  const hardExit = setTimeout(finish, EXIT_GRACE_MS);
+  try {
+    for (const opened of BrowserWindow.getAllWindows()) {
+      try { if (!opened.isDestroyed()) opened.hide(); } catch {}
+    }
+  } catch {}
+  try { stopAllAudioCaptures(); } catch {}
+  // Cancel a hung OBS startup/enumeration instead of queuing cleanup behind it.
+  void Promise.allSettled([
+    Promise.resolve().then(async () => {
+      await closeObsCaptureEngine({ cancelPending: true });
+      await Promise.allSettled([...obsCaptureClosures]);
+    }),
+    Promise.resolve().then(() => campusNetwork.stop()),
+    Promise.resolve().then(() => service?.close()),
+    Promise.resolve().then(() => webInvite?.stop()),
+  ]).finally(async () => {
+    await Promise.race([clearChatSession(), new Promise(resolve => setTimeout(resolve, 1000))]).catch(() => {});
+    clearTimeout(hardExit);
+    finish();
+  });
 }
 function inviteFrom(args) {
   for (const arg of args) {
@@ -310,7 +365,7 @@ else {
             if (!obsCaptureActive && obsCaptureEngine === expectedEngine) {
               await closeObsCaptureEngine({ expectedEngine });
             }
-          });
+          }).catch(() => {});
         }, 45_000);
       };
       const windowStatePath = path.join(app.getPath('userData'), 'window-state.json');
@@ -483,6 +538,7 @@ else {
       startupMark('service-ready');
       // No persist: prefix: chat DOM, browser storage and network cache stay in memory.
       const trusted = url => { try { return new URL(url).origin === service.url; } catch { return false; } };
+      desktopLaser = createDesktopLaser({ app, BrowserWindow, ipcMain, screen, session, isOwner: event => ownsWindowEvent(event, window, trusted) });
       webInvite = createWebInvite({
         viewerUrl: process.env.ROOMCAST_WEB_VIEWER_URL || undefined,
         onState: state => { if (window && !window.isDestroyed()) window.webContents.send('roomcast:web-invite-state', state); },
@@ -521,15 +577,18 @@ else {
         const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } }).catch(() => []);
         const source = sources.find(item => item.id === selection.id);
         if (!source) return callback(null);
+        desktopLaser.selectNative(source);
         callback({ video: source, ...(selection.audio && request.audioRequested ? { audio: 'loopback' } : {}) });
       });
       installFloatingWindows(window, trusted);
       window.webContents.on('render-process-gone', () => {
+        desktopLaser?.stop();
         void campusNetwork.stop();
         stopAllAudioCaptures();
         void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
       });
       window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+        if (isMainFrame && !isInPlace) desktopLaser?.stop();
         if (isMainFrame && !isInPlace) void campusNetwork.stop();
         if (isMainFrame && !isInPlace && obsCaptureEngine) {
           void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
@@ -547,24 +606,21 @@ else {
       window.on('move', saveWindowState);
       window.on('maximize', saveWindowState);
       window.on('unmaximize', saveWindowState);
-      const exitImmediately = () => {
+      const closeWindow = event => {
+        event?.preventDefault?.();
         clearTimeout(saveTimer);
-        quitting = true;
-        // Electron redirects process.exit to app.exit, which destroys windows and
-        // can still block on Chromium. Use Node's process termination entry instead.
-        // Electron 44 exposes it; the fallback also terminates only this process.
-        if (typeof process.reallyExit === 'function') process.reallyExit(0);
-        else process.kill(process.pid, 'SIGTERM');
+        quitAfterCleanup();
+        try { writeWindowState(); } catch {}
       };
       // Windows can wait for an unresponsive renderer before emitting `close`.
       // Handle native close requests directly, including the titlebar X/Alt+F4.
       if (process.platform === 'win32') {
-        window.hookWindowMessage(0x0010, exitImmediately); // WM_CLOSE
+        window.hookWindowMessage(0x0010, closeWindow); // WM_CLOSE
         window.hookWindowMessage(0x0112, wParam => { // WM_SYSCOMMAND
-          if ((wParam.readUInt32LE(0) & 0xfff0) === 0xf060) exitImmediately(); // SC_CLOSE
+          if ((wParam.readUInt32LE(0) & 0xfff0) === 0xf060) closeWindow(); // SC_CLOSE
         });
       }
-      window.on('close', exitImmediately);
+      window.on('close', closeWindow);
       ipcMain.on('roomcast:system-accent-color-get', event => {
         const allowed = owns(event, window);
         event.returnValue = allowed ? currentSystemAccentColor() : DEFAULT_TITLEBAR_COLOR;
@@ -603,9 +659,14 @@ else {
         if (!owns(event, window)) throw new Error('不允许此窗口开启网页入口。');
         return webInvite.start();
       });
-      ipcMain.handle('roomcast:campus-start', (event, value) => {
+      ipcMain.handle('roomcast:campus-start', async (event, value) => {
         if (!owns(event, window)) throw new Error('不允许此窗口开启校园互联。');
-        return campusNetwork.start(value);
+        try { return await campusNetwork.start(value); }
+        catch (error) {
+          // IPC exception serialization discards custom Error fields. Return only
+          // the bounded diagnostic fields, never command lines, paths or secrets.
+          return { failure: error.campusFailure || { stage: 'unknown', code: '' } };
+        }
       });
       ipcMain.handle('roomcast:campus-stop', (event, lease) => {
         if (!owns(event, window) || typeof lease !== 'string' || !lease) throw new Error('校园互联会话无效。');
@@ -780,7 +841,7 @@ else {
         // Destroy only the main window: normal window.close() now exits the process,
         // while the updater must stay alive to finish downloading and installing.
         stopAllAudioCaptures();
-        void runObsCaptureOperation(() => closeObsCaptureEngine()).catch(() => {});
+        void closeObsCaptureEngine({ cancelPending: true }).catch(() => {});
         if (window && !window.isDestroyed()) window.destroy();
         updatePipeline = runUpdatePipeline({ target, asset, version: release.version, checksumUrl: release.checksumUrl });
         return { ok: true, version: release.version, kind: target.kind, asset: asset.name };
@@ -1133,7 +1194,7 @@ else {
             await engine.configureVideo(settings);
             assertCurrent();
             startPhase = 'select-source';
-            await engine.selectSource({ type, id, cursor: payload.cursor !== false, clientArea: payload.clientArea !== false });
+            const selectedCapture = await engine.selectSource({ type, id, cursor: payload.cursor !== false, clientArea: payload.clientArea !== false });
             assertCurrent();
             startPhase = 'start-virtual-camera';
             await engine.startVirtualCamera();
@@ -1149,6 +1210,7 @@ else {
             if (!status.running || !status.connected || !status.virtualCamActive) {
               throw new Error('OBS 采集进程未保持运行状态。');
             }
+            desktopLaser?.selectObs(selectedCapture);
             return { ok: true, captureId: requestedCaptureId, status };
           } catch (error) {
             if (error?.code === 'OBS_CAPTURE_CANCELLED' || engine.retired) {
@@ -1198,6 +1260,60 @@ else {
         if (!owns(event, window)) throw new Error('不允许此窗口停止 OBS 采集。');
         const requestedCaptureId = normalizeObsCaptureId(payload?.captureId);
         return closeObsCaptureEngine({ captureId: requestedCaptureId, cancelPending: true });
+      });
+      ipcMain.handle('roomcast:native-media-start', async (event, payload = {}) => {
+        if (!owns(event, window)) throw new Error('不允许此窗口启动媒体。');
+        const captureId = normalizeObsCaptureId(payload.captureId);
+        if (!captureId || captureId !== obsCaptureSessionId || !obsCaptureActive || !obsCaptureEngine) return { ok: false, message: 'OBS 采集已结束。' };
+        if (nativeMedia?.captureId === captureId && nativeMediaStarting) return nativeMediaStarting;
+        const stopping = stopNativeMedia();
+        const generation = nativeMediaGeneration;
+        await stopping;
+        if (generation !== nativeMediaGeneration || captureId !== obsCaptureSessionId || !obsCaptureActive || !obsCaptureEngine) return { ok: false, message: 'OBS 采集已结束。' };
+        const media = new NativeMedia({ engine: obsCaptureEngine, runtimeRoot: runtimePaths.runtimeRoot, captureId, bitrateKbps: payload.bitrateKbps });
+        nativeMedia = media;
+        media.on('peer', message => {
+          if (nativeMedia === media && window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('roomcast:native-media-peer', message);
+        });
+        const pending = (async () => {
+          try {
+            const encoder = await media.start();
+            if (nativeMedia !== media || captureId !== obsCaptureSessionId) throw new Error('原生媒体启动已取消。');
+            return { ok: true, encoder };
+          } catch (error) {
+            if (nativeMedia === media) { nativeMedia = null; nativeMediaStarting = null; }
+            await media.close();
+            return { ok: false, message: String(error.message || '原生媒体不可用。') };
+          }
+        })();
+        nativeMediaStarting = pending;
+        return pending;
+      });
+      ipcMain.handle('roomcast:native-media-answer', async (event, payload = {}) => {
+        if (!owns(event, window)) throw new Error('不允许此窗口创建媒体连接。');
+        const media = nativeMedia;
+        if (!media || payload.captureId !== media.captureId) return { ok: false, message: '原生媒体已停止。' };
+        try {
+          const sdp = await media.answer(payload);
+          if (nativeMedia !== media) throw new Error('原生媒体已取消。');
+          return { ok: true, sdp };
+        } catch (error) { return { ok: false, message: String(error.message || '原生媒体协商失败。') }; }
+      });
+      ipcMain.handle('roomcast:native-media-stop', (event, captureId) => {
+        if (!owns(event, window)) throw new Error('不允许此窗口停止媒体。');
+        if (typeof captureId !== 'string' || !captureId) return;
+        return stopNativeMedia(captureId);
+      });
+      ipcMain.on('roomcast:native-media-candidate', (event, payload = {}) => {
+        if (owns(event, window) && nativeMedia?.captureId === payload.captureId) {
+          try { nativeMedia.candidate(payload.id, payload.candidate); } catch { }
+        }
+      });
+      ipcMain.on('roomcast:native-media-close-peer', (event, payload = {}) => {
+        if (owns(event, window) && nativeMedia?.captureId === payload.captureId) nativeMedia.closePeer(payload.id);
+      });
+      ipcMain.on('roomcast:native-media-audio', (event, payload = {}) => {
+        if (owns(event, window) && nativeMedia?.captureId === payload.captureId) nativeMedia.audio(payload);
       });
       ipcMain.handle('roomcast:fullscreen-prepare', event => {
         if (!owns(event, window)) throw new Error('不允许此窗口切换全屏。');
@@ -1253,21 +1369,12 @@ else {
       });
     } catch (e) {
       dialog.showErrorBox('同屏启动失败', `${e.message}\n\n请关闭其他正在运行的 Roomcast 后重试；若仍失败，请查看使用说明。`);
-      stopAllAudioCaptures(); await webInvite?.stop(); await service?.close(); app.quit();
+      app.quit();
     }
   });
   app.on('window-all-closed', () => app.quit());
   app.on('before-quit', event => {
-    if (quitting || !service) return;
-    event.preventDefault(); quitting = true;
-    stopAllAudioCaptures();
-    // Hard stop for the quitting path: a local service close that waits on a lingering
-    // connection, or session clearing that never settles, must not prevent the exit.
-    const hardExit = setTimeout(() => app.exit(0), EXIT_GRACE_MS);
-    void Promise.allSettled([campusNetwork.stop(), service.close(), webInvite?.stop(), runObsCaptureOperation(() => closeObsCaptureEngine())]).finally(async () => {
-      await Promise.race([clearChatSession(), new Promise(resolve => setTimeout(resolve, 1000))]).catch(() => { });
-      clearTimeout(hardExit);
-      app.exit(0);
-    });
+    event.preventDefault();
+    quitAfterCleanup();
   });
 }

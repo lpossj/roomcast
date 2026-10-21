@@ -11,6 +11,13 @@ const psString = text => `'${String(text).replace(/'/g, "''")}'`;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const ipv4Number = address => address.split('.').reduce((result, part) => ((result << 8) | Number(part)) >>> 0, 0);
 const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const failureStages = new Set(['runtime-integrity', 'network-conflict', 'session-files', 'elevate', 'adapter-wait', 'local-adapter',
+  'identity', 'integrity', 'compile', 'core-start', 'ready', 'running', 'cancelled']);
+const failureCodes = new Set(['EACCES', 'EPERM', 'ENOENT', 'EADDRINUSE', 'EADDRNOTAVAIL', 'ETIMEDOUT', 'ERR_WORKER_PATH', 'ERR_MODULE_NOT_FOUND']);
+function failureDetails(stage, code) {
+  return { stage: failureStages.has(stage) ? stage : 'unknown',
+    code: Number.isInteger(code) && code >= -2147483648 && code <= 4294967295 ? String(code) : failureCodes.has(code) ? code : '' };
+}
 function privateDirectory(directory) {
   const command = `$ErrorActionPreference='Stop'; $acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetAccessRuleProtection($true,$false); foreach($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544')) { $identity=New-Object Security.Principal.SecurityIdentifier($sid); $rule=New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule) }; Set-Acl -LiteralPath ${psString(directory)} -AclObject $acl`;
   return new Promise((resolve, reject) => {
@@ -39,7 +46,7 @@ function createCampusNetwork({ app, onActive }) {
     const value = campusRequest(payload);
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('校园互联目前支持 Windows x64 桌面端。');
     if (current) throw new Error('上一场校园互联尚未结束，请先离开房间。');
-    const session = { ...value, cancelled: false, directory: '' };
+    const session = { ...value, cancelled: false, directory: '', stage: 'runtime-integrity' };
     current = session;
     try {
       const runtime = app.isPackaged ? path.join(process.resourcesPath, 'runtime', 'easytier') : path.join(app.getAppPath(), 'runtime', 'easytier');
@@ -52,6 +59,7 @@ function createCampusNetwork({ app, onActive }) {
           throw new Error('校园互联组件已损坏，请重新安装完整版本。');
         }
       }
+      session.stage = 'network-conflict';
       const subnet = ipv4Number(`${value.prefix}.0`);
       for (const entries of Object.values(os.networkInterfaces())) for (const item of entries || []) {
         if (item.family !== 'IPv4' || item.internal) continue;
@@ -60,6 +68,7 @@ function createCampusNetwork({ app, onActive }) {
         if ((subnet & sharedMask) === (ipv4Number(item.address) & sharedMask)) throw new Error('校园互联地址与本机已有网络冲突，请创建一个新房间。');
       }
       if (session.cancelled) throw new Error('校园互联已取消。');
+      session.stage = 'session-files';
       const root = path.join(app.getPath('userData'), 'campus-sessions');
       await fs.mkdir(root, { recursive: true });
       session.directory = await fs.mkdtemp(path.join(root, 'session-'));
@@ -79,38 +88,56 @@ function createCampusNetwork({ app, onActive }) {
       const supervisor = path.join(runtime, 'campus-supervisor.ps1');
       // The non-elevated launcher holds this handle until the elevated helper
       // exits. Hashing and denying write/delete sharing closes the script race.
-      const command = `$ErrorActionPreference='Stop'; $handle=$null; $sha=$null; try {
+      const command = `$ErrorActionPreference='Stop'; $handle=$null; $sha=$null; $stage='integrity'; try {
         $cursor=${psString(supervisor)};
         while($cursor) { if((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point refused' }; $cursor=[IO.Path]::GetDirectoryName($cursor) };
         $handle=[IO.File]::Open(${psString(supervisor)},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);
         $sha=[Security.Cryptography.SHA256]::Create();
         $actual=([BitConverter]::ToString($sha.ComputeHash($handle))).Replace('-','').ToLowerInvariant();
         if($actual -ne ${psString(manifest.files['campus-supervisor.ps1'])}) { throw 'Supervisor changed' };
-        $p=Start-Process -FilePath ${psString(ps)} -Verb RunAs -WindowStyle Hidden -ArgumentList @(${args.map(psString).join(',')}) -PassThru -Wait; exit $p.ExitCode
-      } catch { exit 1223 } finally { if($sha){$sha.Dispose()}; if($handle){$handle.Dispose()} }`;
+        $stage='elevate'; $p=Start-Process -FilePath ${psString(ps)} -Verb RunAs -WindowStyle Hidden -ArgumentList @(${args.map(psString).join(',')}) -PassThru -Wait; exit $p.ExitCode
+      } catch {
+        $exception=$_.Exception; while($exception.InnerException){$exception=$exception.InnerException};
+        $code=$exception.HResult; if($exception -is [ComponentModel.Win32Exception]){$code=$exception.NativeErrorCode};
+        try { [IO.File]::WriteAllText(${psString(path.join(session.directory, 'failed'))}, (@{stage=$stage;code=$code}|ConvertTo-Json -Compress)) } catch {};
+        exit 1
+      } finally { if($sha){$sha.Dispose()}; if($handle){$handle.Dispose()} }`;
+      session.stage = 'elevate';
       const launcher = spawn(ps, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'ignore' });
       session.launcher = launcher;
-      launcher.once('error', () => { session.exited = true; });
-      launcher.once('exit', () => {
+      launcher.once('error', error => { session.exited = true; session.launchCode = error.code; });
+      launcher.once('exit', code => {
         session.exited = true;
+        session.launchCode = code;
         void fs.unlink(path.join(session.directory, 'network.toml')).catch(() => {});
-        if (current === session) void stop(session.lease);
+        // During startup let start() read the supervisor's failure before cleanup
+        // sets cancelled. Otherwise every failed launch is reported as cancellation.
+        if (current === session && session.started) void stop(session.lease);
       });
       let stable = '', since = 0;
       const deadline = Date.now() + 90000;
       while (!session.cancelled && Date.now() < deadline) {
-        if (session.exited) throw new Error('校园互联未能启动；请允许 Windows 权限请求，或关闭校园互联后重试。');
         const failure = await fs.readFile(path.join(session.directory, 'failed'), 'utf8').catch(() => '');
-        if (failure) throw new Error('校园互联初始化失败，请检查系统的网卡与防火墙权限。');
+        if (failure) {
+          let details;
+          try { const value = JSON.parse(failure); details = failureDetails(value.stage, value.code); } catch { details = failureDetails(session.stage); }
+          throw Object.assign(new Error('校园互联初始化失败。'), { campusFailure: details });
+        }
+        if (session.exited) throw Object.assign(new Error('校园互联启动程序已结束。'), { campusFailure: failureDetails('elevate', session.launchCode) });
         const entries = os.networkInterfaces()[value.device] || [];
         const address = entries.find(item => item.family === 'IPv4' && item.address.startsWith(`${value.prefix}.`))?.address;
         const ready = await fs.access(path.join(session.directory, 'ready')).then(() => true, () => false);
+        if (ready) session.stage = 'adapter-wait';
         if (address && ready) {
           if (stable !== address) { stable = address; since = Date.now(); }
           if (Date.now() - since >= 2000) {
-            session.adapter = createCampusAdapter(address, () => { if (current === session) void stop(session.lease); });
+            session.stage = 'local-adapter';
+            session.adapter = createCampusAdapter(address, () => { if (current === session && session.started) void stop(session.lease); });
             const iceServer = await session.adapter.ready;
+            if (session.exited) throw Object.assign(new Error('校园互联启动程序已结束。'), { campusFailure: failureDetails('running', session.launchCode) });
             if (session.cancelled || current !== session) { await session.adapter.stop(); throw new Error('EasyTier 已取消。'); }
+            session.started = true;
+            session.stage = 'ready';
             onActive({ lease: value.lease, address, ports: PORTS });
             let missingSince = 0;
             session.monitor = setInterval(() => {
@@ -127,6 +154,8 @@ function createCampusNetwork({ app, onActive }) {
       }
       throw new Error(session.cancelled ? '校园互联已取消。' : '校园互联启动超时，请重新加入房间。');
     } catch (error) {
+      // Capture the cause before stop() mutates the cancellation flag.
+      error.campusFailure ||= failureDetails(session.cancelled ? 'cancelled' : session.stage, error.code);
       try { await stop(value.lease); }
       finally {
         // Cancellation can clear current while directory protection is awaited.
