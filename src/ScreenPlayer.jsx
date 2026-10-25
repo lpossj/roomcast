@@ -148,6 +148,8 @@ export default function ScreenPlayer({ laser, room, stream, iceServers, outputDe
         const routes = new Set();
         const sessions = [...(transport.screenSessions?.values?.() || [])];
         for (const { pc } of sessions) {
+          // Native media sessions do not expose browser RTCStats.
+          if (typeof pc?.getStats !== 'function') continue;
           const report = await pc.getStats().catch(() => null);
           if (report) routes.add(campusStatsRoute(report));
           report?.forEach(item => {

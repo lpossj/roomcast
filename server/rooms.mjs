@@ -4271,7 +4271,8 @@ export function attachRooms(io, {
         };
       },
       {
-        max: 12,
+        // Each watched share sends its own heartbeat through this socket.
+        max: 12 * (MAX_MEMBERS - 1),
         windowMs: 60_000,
       },
     );

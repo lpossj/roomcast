@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "0.14.5-beta.2",
-  "recordedAt": "2026-10-21 20:49:31 +08:00",
+  "version": "0.14.5-beta.3",
+  "recordedAt": "2026-10-25T04:44:36.164Z",
   "obsVersion": "32.1.2",
   "libdatachannel": {
     "source": "https://github.com/paullouisageneau/libdatachannel/tree/9d5c46b8f506943727104d766e5dad0693c5a223",

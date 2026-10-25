@@ -1099,9 +1099,11 @@ class ObsFixedFpsEngine {
 
     await this.removeOwnedInput(CAPTURE_INPUT).catch(() => {});
     const descriptor = normalizedType === 'monitor' ? VIDEO_PROBES.monitors : VIDEO_PROBES.windows;
+    // WGC (2) captures GPU-backed windows that OBS Auto can send to BitBlt.
+    // OBS itself falls back to BitBlt on systems without WGC support.
     const inputSettings = normalizedType === 'monitor'
       ? { monitor_id: sourceId, capture_cursor: cursor === true }
-      : { window: sourceId, cursor: cursor === true, client_area: clientArea !== false };
+      : { window: sourceId, method: 2, cursor: cursor === true, client_area: clientArea !== false };
 
     await this.client.request('CreateInput', {
       sceneName: SCENE,

@@ -2,6 +2,12 @@
 
 Roomcast 使用 GitHub Releases 作为主发布记录。本文件保留版本索引，详细内容见 docs/RELEASE_NOTES-<version>.md。
 
+## 0.14.5-beta.3
+
+- OBS 窗口明确使用内置 WGC，修复部分 GPU 窗口被 Automatic 选为 BitBlt 后共享白屏。
+- 修复原生会话中断预览统计，以及多路观看正常心跳触发限流、观看登记过期。
+- 无新增依赖或设置项；校园 P2P/EasyTier/TURN 保持原样。实际验证及保留问题见 docs/RELEASE_NOTES-0.14.5-beta.3.md。
+
 ## 0.14.4-beta.8
 
 - 可调三栏、简化界面、网页后台不主动离房及标签状态提示；取消系统通知。
