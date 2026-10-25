@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "0.14.5-beta.3",
-  "recordedAt": "2026-10-25T04:44:36.164Z",
+  "version": "0.14.5-beta.4",
+  "recordedAt": "2026-10-25T05:26:05.214Z",
   "obsVersion": "32.1.2",
   "libdatachannel": {
     "source": "https://github.com/paullouisageneau/libdatachannel/tree/9d5c46b8f506943727104d766e5dad0693c5a223",
@@ -18,10 +18,10 @@
     "electron/native-media/OBS-PLUGIN.md": "8ac94b5ccbe5418d252d1e64dfcfc9a59f490a4385ab64d8c30592860ba7468a",
     "electron/native-media/obs.def": "2f61128414be801ca7de61a3a6730cfbe7f11012e25c714d12f8bb5cafb6d6d3",
     "electron/native-media/obsconfig.h": "b54704f92da4229aff445a5ebfea60209feb1e511be46487ff9b96e1278a6e00",
-    "electron/native-media/PROTOCOL.md": "d3b3746cc11f4c9b12f9f7342215752769ff1a1bb66cb65be4990e288f43ebbb",
-    "electron/native-media/roomcast-native-rtc.c": "91cd0ad5d421f63bd0a89534252beea5d995407e77361530d47233e21f826c51",
+    "electron/native-media/PROTOCOL.md": "f0bc1e9a9401ce1cf3693247b00f439edee6aaf4bdc284f842b974f64d52d475",
+    "electron/native-media/roomcast-native-rtc.c": "6ee889e5b2473ec5e4ab245aa3866e531a37e1dac5cffc2adb7f4324ee4dfab6",
     "electron/native-media/roomcast-native.c": "f626233a481934200ec2b22d8f477036d73cefc30273e9ace260196bb36c4d77",
-    "runtime/native-media/RoomcastNativeMedia.exe": "cc21a3b60e5a440aea26b9b8aba374f9146f9827744d01b11558919fa29783c0",
+    "runtime/native-media/RoomcastNativeMedia.exe": "b93fb12ac058c3103b8507c7a8a9e79ec8a99a0bc89ab035b77b2cea08fe5cde",
     "runtime/native-media/roomcast-native.dll": "61a07f4015f196aead42b4c60d8b15f8959ce795431b5441131f3005c648a591",
     "runtime/obs-bundle/bin/64bit/datachannel.dll": "fab6be28221b31b65650deb3e2b994711916b85a5c89d3582f10b742665b7652"
   }

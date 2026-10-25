@@ -1,4 +1,5 @@
 import { configureScreenVideoSender } from './video-sender-settings.js';
+import { prepareNativeReceiveOffer } from './video-codec-policy.js';
 import { createNativeScreenPublisher } from './transports/native-screen-publisher.js';
 import { configureCampusSession, prepareCampusConnection, stopCampusSession, campusRequestProof, verifyCampusRequest, campusStatsRoute } from './campus-session.js';
 import { Peer } from 'peerjs';
@@ -2848,7 +2849,7 @@ export class P2PRoom {
           return;
         }
 
-        await this.request(
+        const sent = await this.request(
           'screen:signal',
           {
             kind: 'answer',
@@ -2857,7 +2858,10 @@ export class P2PRoom {
             ...result,
           },
         );
+        if (sent.ok) this.screenSessions.get(result.session)?.onAnswerSent?.();
+        else this.closeLocalScreen(from, result.session);
       } catch (error) {
+        if (error?.name === 'AbortError') return;
         await this.request(
           'screen:signal',
           {
@@ -3240,6 +3244,17 @@ export class P2PRoom {
       const session = crypto.randomUUID();
       const entry = { owner, pc: { remoteDescription: null, close() {} }, requestId, route, candidates: [] };
       this.screenSessions.set(session, entry);
+      let answerSent = false;
+      const notifyFailure = () => {
+        // Before the answer is delivered, negotiation owns fallback; an error
+        // signal here would finish the viewer's still-pending request first.
+        if (answerSent && entry.pc.connectionState === 'failed' && this.screenSessions.get(session) === entry) {
+          this.nativeFallbackOwners?.add(owner);
+          void this.request('screen:signal', { kind: 'error', requestId, to: owner, error: 'NATIVE_MEDIA_FALLBACK' }).catch(() => {});
+          this.closeLocalScreen(owner, session);
+        }
+      };
+      entry.onAnswerSent = () => { answerSent = true; notifyFailure(); };
       try {
         const pc = await publisher.answer({
           id: session, offer: sdp, iceServers: routeIceServers,
@@ -3253,18 +3268,16 @@ export class P2PRoom {
               kind: 'candidate', side: 'publisher', requestId, to: owner, candidate: candidate?.toJSON() || null,
             }).catch(() => {});
           },
-          onState: () => {
-            if (entry.pc.connectionState === 'failed' && this.screenSessions.get(session) === entry) {
-              this.nativeFallbackOwners?.add(owner);
-              void this.request('screen:signal', { kind: 'error', requestId, to: owner, error: 'NATIVE_MEDIA_FALLBACK' }).catch(() => {});
-              this.closeLocalScreen(owner, session);
-            }
-          },
+          onState: notifyFailure,
         });
         if (this.screenSessions.get(session) !== entry) { pc.close(); throw new Error('共享已取消。'); }
+        if (['failed', 'closed'].includes(pc.connectionState)) throw new Error('原生媒体协商失败。');
         return { sdp: pc.localDescription.sdp, session };
       } catch (error) {
+        const cancelled = this.screenSessions.get(session) !== entry;
         this.closeLocalScreen(owner, session);
+        // A cancelled/superseded request must not create another connection.
+        if (cancelled) throw new DOMException('共享已取消。', 'AbortError');
         if (this.closed || this.nativeScreenPublisher !== publisher || !this.screenStream?.active) throw error;
         this.nativeFallbackOwners?.add(owner);
         recordFailure('native-media', error);
@@ -3632,11 +3645,13 @@ export class P2PRoom {
         await withAbort(prepareCampusConnection(this, pc), signal);
       }
       onStage?.('answer');
-      const offer =
+      let offer =
         await withAbort(
           pc.createOffer(),
           signal,
         );
+
+      if (route === 'p2p') offer = await withAbort(prepareNativeReceiveOffer(offer), signal);
 
       await withAbort(
         pc.setLocalDescription(

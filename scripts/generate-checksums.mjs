@@ -12,9 +12,9 @@ const releaseDir = path.resolve(process.argv.find(value => value.startsWith('--r
 const candidates = [
   path.join(releaseDir, `Roomcast-${version}.exe`),
   path.join(releaseDir, `Roomcast-${version}.zip`),
+  path.join(releaseDir, `Roomcast-${version}-source.zip`),
   path.join(releaseDir, `Roomcast-${version}-EasyTier-sources.zip`),
   ...(!publishedOnly ? [
-    path.join(releaseDir, `Roomcast-${version}-source.zip`),
     path.join(releaseDir, `Roomcast-${version}-loopback-capture.zip`),
   ] : []),
   path.join(rootDir, 'runtime', 'obs-source', 'OBS-Studio-32.1.2-Sources.tar.gz'),

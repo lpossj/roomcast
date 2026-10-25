@@ -125,6 +125,7 @@ jobs:
           $assets = @(
             "release/Roomcast-$env:VERSION.exe",
             "release/Roomcast-$env:VERSION.zip",
+            "release/Roomcast-$env:VERSION-source.zip",
             "release/Roomcast-$env:VERSION-EasyTier-sources.zip",
             "release/SHA256.txt",
             "runtime/obs-source/OBS-Studio-32.1.2-Sources.tar.gz"

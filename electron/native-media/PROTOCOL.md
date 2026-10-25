@@ -4,7 +4,7 @@ Launch `RoomcastNativeMedia.exe <absolute datachannel.dll path>`. The DLL is the
 
 Input objects have `cmd`:
 
-- `create`: `id` (unique <=95 ASCII bytes), `offer` (base64 UTF-8 SDP), `iceServers` (array of libdatachannel ICE URLs), `relay` (boolean), `video`/`audio` (booleans). Only the already authorized route configuration is supplied. Percent-encode TURN username/password in the URL. H264 High with packetization-mode=1 and Opus PT/mid are selected from the corresponding offer m-sections. A baseline-only receiver is rejected and should use the established fallback.
+- `create`: `id` (unique <=95 ASCII bytes), `offer` (base64 UTF-8 SDP), `iceServers` (array of libdatachannel ICE URLs), `relay` (boolean), `video`/`audio` (booleans), `profileLevelId` (six hex digits from the actual encoder SPS). Only the already authorized route configuration is supplied. Percent-encode TURN username/password in the URL. H264 High with packetization-mode=1 and Opus PT/mid are selected from the corresponding receiving offer m-sections. The receiver must support the actual SPS profile and level; the answer declares that actual format. A baseline/constrained-high-only receiver, inadequate receive level, or required audio without Opus/48000/2 is rejected and uses the established fallback. Audio-disabled sharing remains valid without Opus.
 - `candidate`: `id`, `candidate` (candidate string), `mid`. Candidate queuing before create is the bridge's responsibility.
 - `close`: `id`; unknown/already closed IDs are no-ops. Session IDs must not be reused while the old main-process request is pending.
 - `video`: `data` (base64 Annex-B access unit including SPS/PPS on IDR), `ptsUs` (common capture epoch microseconds), `keyframe` (boolean).
@@ -21,6 +21,10 @@ Output objects have `event`:
 - `closed`: `id` after that connection and its two tracks are deleted.
 
 H264 is encoded once outside the helper. Each viewer has independent SRTP/ICE, packetizer, SR reporter and NACK cache. New viewers wait for an IDR; open/PLI emits an encoder keyframe request. The helper does not implement a congestion controller: bridge must apply feedback to the encoder and bound its stdin queue. No ICE/TURN discovery or global route mutation happens in this process.
+
+The main bridge waits at most three seconds for the first IDR's Annex-B SPS before reporting native startup ready. OBS NVENC supplies its headers with the first encoded packet, so startup cannot infer a fixed level from a preset. This preserves native low-resolution streams (for example, 720p60 High 3.2) as well as 1080p60 High 4.2. Cancellation or missing metadata closes the session and permits the normal fallback.
+
+Chromium 152 advertises H264 using a default 720p30 configuration. The receiving browser therefore queries MediaCapabilities with `type: "webrtc"` for the existing 1080p60, 1080p30, and 720p60 formats, within one 1.5-second budget, and caches the highest supported smooth configuration. Only its recvonly High/mode-1 offer is raised to that confirmed level. Missing API, unsupported configurations, errors, or timeout preserve the original offer. RFC 6184 section 8.2.2 requires respecting the receiver's level even when level asymmetry is allowed; RFC 7587 section 7 requires Opus signaling at 48000 Hz with two channels.
 
 Build with existing MinGW gcc: `gcc -std=c11 -O2 -Wall -Wextra -municode roomcast-native-rtc.c -o RoomcastNativeMedia.exe -lcrypt32`. Windows Crypt32/Kernel32/UCRT and the existing datachannel.dll are used; no added Node addon or compiler is shipped.
 

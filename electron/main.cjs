@@ -259,7 +259,20 @@ function inviteFrom(args) {
       const room = url.pathname.match(/^\/([a-fA-F0-9]{8})\/?$/)?.[1];
       const relay = url.searchParams.get('relay');
       const secret = url.searchParams.get('secret');
-      if (url.protocol === 'roomcast:' && url.hostname === 'join' && room && /^[A-Za-z0-9_-]{43}$/.test(secret || '') && (!relay || /^[A-Za-z0-9_-]{1,6000}$/.test(relay))) return `roomcast://join/${room.toUpperCase()}?secret=${secret}${relay ? `&relay=${relay}` : ''}`;
+      const campus = url.searchParams.get('campus');
+      const signal = url.searchParams.get('signal');
+      if (url.protocol === 'roomcast:' && url.hostname === 'join' && room
+        && /^[A-Za-z0-9_-]{43}$/.test(secret || '')
+        && (!relay || /^[A-Za-z0-9_-]{1,6000}$/.test(relay))
+        && (!url.searchParams.has('campus') || /^[A-Za-z0-9_-]{43}$/.test(campus || ''))
+        && (!signal || /^https:\/\/[^\s]+$/i.test(signal))) {
+        // Preserve the same supported fields as an invite pasted into the renderer.
+        const params = new URLSearchParams({ secret });
+        for (const [key, value] of [['relay', relay], ['campus', campus], ['signal', signal]]) {
+          if (value) params.set(key, value);
+        }
+        return `roomcast://join/${room.toUpperCase()}?${params}`;
+      }
     } catch { }
   }
   return '';

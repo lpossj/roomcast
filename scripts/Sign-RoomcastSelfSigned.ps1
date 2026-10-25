@@ -59,7 +59,7 @@ if (-not $signtool) {
 }
 
 $targets = @(
-  (Join-Path $root "release\Roomcast-$Version-Windows.exe"),
+  (Join-Path $root "release\Roomcast-$Version.exe"),
   (Join-Path $root 'release\win-unpacked\Roomcast.exe')
 )
 
@@ -98,7 +98,7 @@ if ($signed -eq 0) {
   throw "No release EXE found for version $Version"
 }
 
-$zipPath = Join-Path $root "release\Roomcast-$Version-Windows.zip"
+$zipPath = Join-Path $root "release\Roomcast-$Version.zip"
 if (Test-Path -LiteralPath $zipPath) {
   Write-Warning "ZIP already exists. If you signed win-unpacked\Roomcast.exe after creating the ZIP, rebuild the ZIP so it contains the signed executable."
 }

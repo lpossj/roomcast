@@ -2,6 +2,12 @@
 
 Roomcast 使用 GitHub Releases 作为主发布记录。本文件保留版本索引，详细内容见 docs/RELEASE_NOTES-<version>.md。
 
+## 0.14.5-beta.4
+
+- 修复系统邀请丢校园/信令参数、原生协商取消及早期失败回退。
+- 按实际SPS与浏览器解码能力协商H.264，保护低规格共享；缺失所需Opus时完整回退。
+- 补齐发布源码附件和校验，修正签名辅助命名。详细验证见 docs/RELEASE_NOTES-0.14.5-beta.4.md。
+
 ## 0.14.5-beta.3
 
 - OBS 窗口明确使用内置 WGC，修复部分 GPU 窗口被 Automatic 选为 BitBlt 后共享白屏。

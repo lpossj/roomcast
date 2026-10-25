@@ -71,9 +71,18 @@ class NativeMedia extends EventEmitter {
         this.helperError = error => { clearTimeout(timer); reject(error); };
       });
       if (this.closed) throw new Error('原生媒体启动已取消。');
+      const profile = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('原生编码参数等待超时。')), 3000);
+        this.encoderProfileReady = value => { clearTimeout(timer); resolve(value); };
+        this.encoderProfileError = error => { clearTimeout(timer); reject(error); };
+      });
       this.frameListener = packet => this.video(packet);
       this.engine.onNativeMediaFrame(this.frameListener);
-      this.encoder = await this.engine.startNativeMedia({ session: this.session, bitrateKbps: this.bitrateKbps });
+      const [encoder, profileLevelId] = await Promise.all([
+        this.engine.startNativeMedia({ session: this.session, bitrateKbps: this.bitrateKbps }), profile,
+      ]);
+      this.encoder = { ...encoder, profileLevelId };
+      this.encoderProfileReady = this.encoderProfileError = null;
       if (this.closed) throw new Error('原生媒体启动已取消。');
       return this.encoder;
     } catch (error) { await this.close(); throw error; }
@@ -86,8 +95,21 @@ class NativeMedia extends EventEmitter {
   }
 
   video(packet) {
-    if (this.closed || packet?.session !== this.session || !this.peers.size) return;
+    if (this.closed || packet?.session !== this.session) return;
     if (typeof packet.data !== 'string' || packet.data.length > 4 * 1024 * 1024) return;
+    // NVENC exposes SPS only with its first encoded frame. Read the actual
+    // Annex-B profile/level before answering, including for lower resolutions.
+    if (this.encoderProfileReady && packet.keyframe) {
+      const bytes = Buffer.from(packet.data, 'base64');
+      for (let i = 0; i + 6 < bytes.length; i++) {
+        if (bytes[i] === 0 && bytes[i + 1] === 0 && bytes[i + 2] === 1 && (bytes[i + 3] & 31) === 7) {
+          this.encoderProfileReady(bytes.subarray(i + 4, i + 7).toString('hex'));
+          this.encoderProfileReady = null;
+          break;
+        }
+      }
+    }
+    if (!this.peers.size) return;
     // Never forward a dependent P frame after dropping its reference. Resume at
     // an IDR and request one; do not let local IPC backpressure grow unbounded.
     if (this.child.stdin.writableLength > 128 * 1024) {
@@ -151,7 +173,7 @@ class NativeMedia extends EventEmitter {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.closePeer(id); reject(new Error('原生媒体协商超时。')); }, 8000);
       this.peers.set(id, { resolve, reject, timer });
-      try { this.send({ type: 'create', id, offer: Buffer.from(offer).toString('base64'), iceServers: iceUrls(iceServers), relay: false, video: true, audio: !!audio }); }
+      try { this.send({ type: 'create', id, offer: Buffer.from(offer).toString('base64'), iceServers: iceUrls(iceServers), relay: false, video: true, audio: !!audio, profileLevelId: this.encoder?.profileLevelId }); }
       catch (error) { this.closePeer(id); reject(error); }
     });
   }
@@ -179,6 +201,8 @@ class NativeMedia extends EventEmitter {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.encoderProfileError?.(new Error('原生媒体启动已取消。'));
+    this.encoderProfileReady = this.encoderProfileError = null;
     for (const peer of this.peers.values()) { clearTimeout(peer.timer); peer.reject(new Error('原生媒体已停止。')); }
     this.peers.clear();
     this.engine.offNativeMediaFrame?.(this.frameListener);
