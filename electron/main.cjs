@@ -817,6 +817,7 @@ else {
       // window: reading `webContents` off a destroyed BrowserWindow throws, which would make
       // every updater-window call (status/retry/open page) fail once the main window is gone.
       const owns = (event, candidate) => ownsWindowEvent(event, candidate, trusted);
+      require('./share-performance.cjs').installSharePerformance({ ipcMain, owns, window });
       require('./native-ice.cjs').installNativeIce({ ipcMain, owns, window, runtimeRoot: runtimePaths.runtimeRoot, physicalDirect });
       const requireOwner = (event, reason) => {
         if (!owns(event, window) && !owns(event, updaterWindow)) throw new Error(reason);

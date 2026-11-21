@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('roomcast', {
     ipcRenderer.on('roomcast:native-ice-event', listener);
     return () => ipcRenderer.removeListener('roomcast:native-ice-event', listener);
   },
+  setSharingPerformance: process.platform === 'win32'
+    ? (id, active) => ipcRenderer.send('roomcast:share-performance', id, active) : undefined,
   networkDiagnostics: () => ipcRenderer.invoke('roomcast:network-diagnostics'),
   prepareNetwork: () => ipcRenderer.invoke('roomcast:network-prepare'),
   nativeMediaStart: payload => ipcRenderer.invoke('roomcast:native-media-start', payload),

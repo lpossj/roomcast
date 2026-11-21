@@ -2705,6 +2705,10 @@ export class P2PRoom {
 
     this.screenStream =
       stream;
+    if (window.roomcast?.setSharingPerformance && stream.active) {
+      this.sharePerformanceLease = crypto.randomUUID();
+      window.roomcast.setSharingPerformance(this.sharePerformanceLease, true);
+    }
 
     this.screenSettings = {
       ...defaultScreenSettings,
@@ -2930,6 +2934,10 @@ export class P2PRoom {
     release(() => this.screenStream?.roomcastCleanup?.());
 
     this.screenStream = null;
+    if (this.sharePerformanceLease) {
+      release(() => window.roomcast?.setSharingPerformance?.(this.sharePerformanceLease, false));
+      this.sharePerformanceLease = null;
+    }
   }
 
   closeLocalScreen(
