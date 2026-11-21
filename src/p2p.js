@@ -2705,9 +2705,9 @@ export class P2PRoom {
 
     this.screenStream =
       stream;
-    if (window.roomcast?.setSharingPerformance && stream.active) {
-      this.sharePerformanceLease = crypto.randomUUID();
-      window.roomcast.setSharingPerformance(this.sharePerformanceLease, true);
+    if (window.roomcast?.setSharingWakeLock && stream.active) {
+      this.shareWakeLease = crypto.randomUUID();
+      window.roomcast.setSharingWakeLock(this.shareWakeLease, true);
     }
 
     this.screenSettings = {
@@ -2934,9 +2934,9 @@ export class P2PRoom {
     release(() => this.screenStream?.roomcastCleanup?.());
 
     this.screenStream = null;
-    if (this.sharePerformanceLease) {
-      release(() => window.roomcast?.setSharingPerformance?.(this.sharePerformanceLease, false));
-      this.sharePerformanceLease = null;
+    if (this.shareWakeLease) {
+      release(() => window.roomcast?.setSharingWakeLock?.(this.shareWakeLease, false));
+      this.shareWakeLease = null;
     }
   }
 
