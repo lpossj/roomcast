@@ -72,6 +72,7 @@ func prepareSystemSocket(servers []webrtc.ICEServer) (*preparedSocket, error) {
 		if err != nil {
 			continue
 		}
+		resolve := physicalStunResolver(uint32(iface.Index), network.ResolveUDPAddr)
 		for _, addr := range addrs {
 			subnet, ok := addr.(*net.IPNet)
 			if !ok || !subnet.IP.IsGlobalUnicast() || subnet.IP.IsLinkLocalUnicast() {
@@ -92,7 +93,7 @@ func prepareSystemSocket(servers []webrtc.ICEServer) (*preparedSocket, error) {
 				surveys.Add(1)
 				go func() {
 					defer surveys.Done()
-					observeMapped(ctx, network, mux, socket.LocalAddr().(*net.UDPAddr).Port, socketID, servers, results)
+					observeMapped(ctx, resolve, mux, socket.LocalAddr().(*net.UDPAddr).Port, socketID, servers, results)
 				}()
 			}
 		}

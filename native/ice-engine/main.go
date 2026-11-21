@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"sort"
@@ -437,7 +438,8 @@ func (p *peer) emitMapped(value observation, mid, fragment, foundation, source s
 func (p *peer) stats() {
 	value := map[string]any{"event": "stats", "id": p.id, "state": p.pc.ConnectionState().String(), "elapsedMs": time.Since(p.started).Milliseconds(),
 		"ordinary": p.ordinary.Load(), "predicted": p.predicted.Load(), "observations": p.observations.Load(),
-		"accepted": p.accepted.Load(), "rejected": p.rejected.Load(), "mediaBytesSent": p.sent.Load(), "mediaBytesReceived": p.received.Load()}
+		"accepted": p.accepted.Load(), "rejected": p.rejected.Load(), "mediaBytesSent": p.sent.Load(), "mediaBytesReceived": p.received.Load(),
+		"physicalBinding": p.mux.listenPhysicalTCP != nil}
 	if p.budget != nil {
 		value["availableBitrate"] = p.budget()
 	}
@@ -450,6 +452,13 @@ func (p *peer) stats() {
 			value["localType"] = pair.Local.Typ.String()
 			value["remoteType"] = pair.Remote.Typ.String()
 			value["relay"] = pair.Local.Typ == webrtc.ICECandidateTypeRelay || pair.Remote.Typ == webrtc.ICECandidateTypeRelay
+			if ip := net.ParseIP(pair.Local.Address); ip != nil {
+				ipVersion := 6
+				if ip.To4() != nil {
+					ipVersion = 4
+				}
+				value["ipVersion"] = ipVersion
+			}
 		}
 		if stats, ok := transport.GetSelectedCandidatePairStats(); ok {
 			value["rttMs"] = stats.CurrentRoundTripTime * 1000

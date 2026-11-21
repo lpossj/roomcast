@@ -128,6 +128,8 @@ export function recordNativeTransport(id, role, message) {
     }
     if (message.protocol === 'udp' || message.protocol === 'tcp') entry.protocol = message.protocol;
     if (typeof message.relay === 'boolean') entry.relay = message.relay;
+    if (typeof message.physicalBinding === 'boolean') entry.physicalBinding = message.physicalBinding;
+    if (message.ipVersion === 4 || message.ipVersion === 6) entry.ipVersion = message.ipVersion;
   }
   nativeTransports.set(id, entry);
   if (nativeTransports.size > 32) nativeTransports.delete(nativeTransports.keys().next().value);

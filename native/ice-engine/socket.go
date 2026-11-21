@@ -39,12 +39,12 @@ func prepareSocket(network transport.Net, servers []webrtc.ICEServer) (*prepared
 	go func() {
 		defer cancel()
 		defer close(results)
-		observeMapped(ctx, network, mux, base.Port, 0, servers, results)
+		observeMapped(ctx, network.ResolveUDPAddr, mux, base.Port, 0, servers, results)
 	}()
 	return prepared, nil
 }
 
-func observeMapped(ctx context.Context, network transport.Net, mux *ice.UniversalUDPMuxDefault, basePort, socketID int, servers []webrtc.ICEServer, results chan<- observation) {
+func observeMapped(ctx context.Context, resolve func(string, string) (*net.UDPAddr, error), mux *ice.UniversalUDPMuxDefault, basePort, socketID int, servers []webrtc.ICEServer, results chan<- observation) {
 	seen := map[string]bool{}
 	for _, server := range servers {
 		for _, raw := range server.URLs {
@@ -56,7 +56,7 @@ func observeMapped(ctx context.Context, network transport.Net, mux *ice.Universa
 				return
 			}
 			seen[uri.String()] = true
-			target, e := network.ResolveUDPAddr("udp4", net.JoinHostPort(uri.Host, strconv.Itoa(uri.Port)))
+			target, e := resolve("udp4", net.JoinHostPort(uri.Host, strconv.Itoa(uri.Port)))
 			if e != nil || ctx.Err() != nil {
 				continue
 			}
