@@ -1,5 +1,8 @@
 export const PEER_AUTH_PROTOCOL = 2;
 export const PEER_AUTH_TIMEOUT_MS = 8_000;
+// The host starts its authentication timer only after the DataChannel opens.
+export const PEER_AUTH_ICE_TIMEOUT_MS = 25_000;
+export const PEER_AUTH_TOTAL_TIMEOUT_MS = PEER_AUTH_ICE_TIMEOUT_MS + PEER_AUTH_TIMEOUT_MS;
 export const MAX_UNAUTHENTICATED_PEERS = 6;
 
 const ROOM_ID = /^[A-F0-9]{8}$/;

@@ -12,7 +12,7 @@ export function roomInviteFromUrl(value) {
 export function readPageInvite(page, useRemembered = true) {
   const invite = roomInviteFromUrl(page.location.href);
   if (invite) {
-    try { page.sessionStorage.setItem('roomcast:invite', invite); } catch { }
+    try { page.sessionStorage.setItem('roomcast-campus-lab:invite', invite); } catch { }
     // Storage denial must not discard the invitation or prevent showing the form.
     try {
       const clean = new URL(page.location.href);
@@ -27,7 +27,7 @@ export function readPageInvite(page, useRemembered = true) {
     return invite;
   }
   if (useRemembered) {
-    try { return page.sessionStorage.getItem('roomcast:invite') || ''; } catch { }
+    try { return page.sessionStorage.getItem('roomcast-campus-lab:invite') || ''; } catch { }
   }
   return '';
 }

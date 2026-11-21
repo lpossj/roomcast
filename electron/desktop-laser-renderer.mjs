@@ -7,8 +7,9 @@ const engine = createLaserCanvas(canvas, {
   onIdle: () => window.desktopLaserSurface.idle(),
 });
 const unsubscribe = window.desktopLaserSurface.receive(value => {
+  if (value.clear) { members.clear(); engine.clear(); return; }
   members = new Map(value.members.map(member => [member.id, member]));
-  engine.receive(value.packet);
+  engine.receive(value.packet, Math.max(0, Date.now() - value.at));
 });
 window.addEventListener('unload', () => { unsubscribe(); engine.destroy(); }, { once: true });
 // Signal only after the canvas and packet listener exist. did-finish-load alone

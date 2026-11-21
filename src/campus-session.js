@@ -19,23 +19,35 @@ export function isCampusCandidate(candidate = '') {
   return isCampusAddress(candidate.trim().split(/\s+/)[4]);
 }
 
-export function campusStatsRoute(report, fallback = '路线检测中') {
-  let pair;
+function selectedIcePair(report) {
   for (const item of report.values()) {
-    if (item.type === 'transport' && item.selectedCandidatePairId) { pair = report.get(item.selectedCandidatePairId); break; }
+    if (item.type === 'transport' && item.selectedCandidatePairId) {
+      const pair = report.get(item.selectedCandidatePairId);
+      if (pair?.state === 'succeeded') return pair;
+    }
   }
-  if (!pair) for (const item of report.values()) {
-    if (item.type === 'candidate-pair' && item.state === 'succeeded' && item.nominated) { pair = item; break; }
+  for (const item of report.values()) {
+    if (item.type === 'candidate-pair' && item.state === 'succeeded' && item.nominated) return item;
   }
+  return null;
+}
+
+export function campusStatsRoute(report, fallback = '路线检测中') {
+  const pair = selectedIcePair(report);
   if (!pair) return fallback === 'EasyTier' ? '路线检测中' : fallback;
   const local = report.get(pair.localCandidateId);
   const remote = report.get(pair.remoteCandidateId);
+  if (fallback === '原生直连') {
+    const protocol = local?.protocol?.toUpperCase();
+    return ['TCP', 'UDP'].includes(protocol) ? `原生直连 · ${protocol}` : fallback;
+  }
   if (isCampusAddress(local?.address || local?.ip) || isCampusAddress(remote?.address || remote?.ip)) return 'EasyTier虚拟网';
   if (fallback === 'EasyTier') return '路线检测中';
   return [local, remote].some(item => item?.candidateType === 'relay') ? 'TURN中继' : 'P2P直连';
 }
 
 async function startCampusSession(room) {
+  if (room.closed) throw new Error('EasyTier 已取消。');
   if (active?.room === room) return active.result;
   if (room.campusStarting) return room.campusStarting;
   if (room.closed || !room.campusSecret || !window.roomcast?.startCampusNetwork) throw new Error('EasyTier 需要双方使用支持此功能的桌面端邀请。');
@@ -44,6 +56,11 @@ async function startCampusSession(room) {
   room.campusUnsubscribe = window.roomcast.onCampusEnded(endedLease => {
     if (endedLease !== lease) return;
     if (active?.lease === lease) active = null;
+    // Release the ended lease so the existing media/voice recovery can start
+    // another session. An ended process is not a permanent permission denial.
+    room.campusLease = null;
+    room.campusUnsubscribe?.();
+    room.campusUnsubscribe = null;
     for (const pc of [...(room.campusConnections || [])]) {
       pc.close();
       pc.dispatchEvent(new Event('iceconnectionstatechange'));
@@ -52,7 +69,7 @@ async function startCampusSession(room) {
   });
   const starting = window.roomcast.startCampusNetwork({ lease, roomId: room.roomId, secret: room.campusSecret }).then(async result => {
     if (result?.failure) throw Object.assign(new Error('备用连接本机准备失败。'), { campusFailure: result.failure });
-    if (room.closed || room.campusLease !== lease || !room.campusConnections?.size) {
+    if (room.closed || room.campusLease !== lease) {
       await window.roomcast.stopCampusNetwork(lease);
       throw new Error('EasyTier 已取消。');
     }
@@ -79,7 +96,8 @@ export function prepareCampusConnection(room, pc) {
   room.campusConnections.add(pc);
   pc.roomcastCampusCleanup = () => {
     room.campusConnections.delete(pc);
-    if (!room.campusConnections.size) stopCampusSession(room);
+    // Once needed and authorized, retain this room's session across individual
+    // media retries. disconnect() still releases it on leaving the room.
   };
   const ready = startCampusSession(room).then(result => {
     if (room.closed || pc.signalingState === 'closed') throw new Error('EasyTier 已取消。');

@@ -10,12 +10,12 @@ const output = releasePackage
   ? path.join(root, 'release', `Roomcast-${version}-WebViewer`)
   : path.join(root, '.test', `viewer-site-${version}-${Date.now()}`);
 await mkdir(path.dirname(output), { recursive: true });
-await mkdir(output, { recursive: false });
+await mkdir(output, { recursive: true });
 const allowed = /\.(?:js|css|svg|png|ico|woff|woff2|txt|webmanifest)$/;
 const copied = [];
 for (const directory of ['', 'assets']) {
   const target = path.join(output, directory);
-  if (directory) await mkdir(target);
+  if (directory) await mkdir(target, { recursive: true });
   for (const item of await readdir(path.join(dist, directory), { withFileTypes: true })) {
     if (!item.isFile()) continue;
     if (item.name.startsWith('updater.') || !(item.name === 'index.html' || allowed.test(item.name))) continue;
@@ -28,7 +28,10 @@ await access(path.join(output, 'index.html'));
 // A 404 page disables Pages' implicit SPA fallback, so desktop API/update paths
 // cannot even appear to exist on the public viewer origin.
 await writeFile(path.join(output, '404.html'), '<!doctype html><meta charset="utf-8"><title>404</title><p>页面不存在</p>');
-await writeFile(path.join(output, 'version.json'), JSON.stringify({ version, peerAuthProtocol: 2 }, null, 2));
+await writeFile(path.join(output, 'version.json'), JSON.stringify({ version, peerAuthProtocol: 2,
+  channel: 'beta', architectureBaseline: '1.0', diagnosticRevision: 'enhanced-ice-beta8-20261114',
+  controlNamespace: 'roomcast-v1-', predictionScope: 'control-and-browser-media',
+  nativeUdpMux: false }, null, 2));
 await writeFile(path.join(output, '_headers'), `/*
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer

@@ -3,6 +3,15 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('roomcast', {
   desktop: true,
+  nativeIce: process.platform === 'win32' && process.arch === 'x64' && process.argv.includes('--roomcast-native-ice')
+    ? payload => ipcRenderer.invoke('roomcast:native-ice', payload) : undefined,
+  onNativeIce: callback => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('roomcast:native-ice-event', listener);
+    return () => ipcRenderer.removeListener('roomcast:native-ice-event', listener);
+  },
+  networkDiagnostics: () => ipcRenderer.invoke('roomcast:network-diagnostics'),
+  prepareNetwork: () => ipcRenderer.invoke('roomcast:network-prepare'),
   nativeMediaStart: payload => ipcRenderer.invoke('roomcast:native-media-start', payload),
   nativeMediaAnswer: payload => ipcRenderer.invoke('roomcast:native-media-answer', payload),
   nativeMediaStop: captureId => ipcRenderer.invoke('roomcast:native-media-stop', captureId),
@@ -15,7 +24,9 @@ contextBridge.exposeInMainWorld('roomcast', {
     return () => ipcRenderer.removeListener('roomcast:native-media-peer', listener);
   },
   desktopLaser: value => ipcRenderer.send('roomcast:desktop-laser', value),
-  startCampusNetwork: value => ipcRenderer.invoke('roomcast:campus-start', value),
+  startCampusNetwork: process.platform === 'win32' && process.arch === 'x64'
+    ? value => ipcRenderer.invoke('roomcast:campus-start', value)
+    : undefined,
   stopCampusNetwork: lease => ipcRenderer.invoke('roomcast:campus-stop', lease),
   onCampusEnded: callback => {
     const listener = (_event, lease) => callback(lease);
@@ -175,6 +186,21 @@ contextBridge.exposeInMainWorld('roomcast', {
       'roomcast:preference-set',
       { key, value },
     ),
+
+  getGpuConfig: () =>
+    ipcRenderer.invoke('roomcast:gpu-config-get'),
+
+  setHardwareAcceleration: enabled =>
+    ipcRenderer.invoke('roomcast:gpu-hw-accel-set', enabled !== false),
+
+  relaunchApp: () =>
+    ipcRenderer.invoke('roomcast:app-relaunch'),
+
+  onWindowActivity: callback => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('roomcast:window-activity', listener);
+    return () => ipcRenderer.removeListener('roomcast:window-activity', listener);
+  },
 
   onInvite: callback => {
     const listener = (_event, roomId) => callback(roomId);

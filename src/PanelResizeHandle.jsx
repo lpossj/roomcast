@@ -10,10 +10,13 @@ export function usePanelWidths(showChat) {
   current.current = widths;
   const limits = side => {
     const root = shell.current;
-    const available = root.clientWidth - root.querySelector('.icon-rail').getBoundingClientRect().width;
-    const other = side === 'members' ? (showChat ? root.querySelector('.chat-panel')?.getBoundingClientRect().width || 0 : 0) : root.querySelector('.channel-sidebar').getBoundingClientRect().width;
-    const min = side === 'members' ? 180 : 200;
-    return { min, max: Math.max(min, Math.min(side === 'members' ? 420 : 600, available - other - 300)) };
+    const railWidth = root?.querySelector('.icon-rail')?.getBoundingClientRect().width || 0;
+    const available = (root?.clientWidth || window.innerWidth) - railWidth;
+    const other = side === 'members'
+      ? (showChat ? root?.querySelector('.chat-panel')?.getBoundingClientRect().width || 0 : 0)
+      : (root?.querySelector('.channel-sidebar')?.getBoundingClientRect().width || 0);
+    const min = side === 'members' ? 200 : 220;
+    return { min, max: Math.max(min, Math.min(side === 'members' ? 420 : 560, available - other - 320)) };
   };
   const change = (side, width, persist = false) => {
     const { min, max } = limits(side);

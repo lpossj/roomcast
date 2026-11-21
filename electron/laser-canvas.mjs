@@ -77,8 +77,9 @@ export function createLaserCanvas(canvas, { getBounds, getMember, onIdle } = {})
     }
     frame = view.requestAnimationFrame(paint);
   };
-  const receive = packet => {
+  const receive = (packet, ageMs = 0) => {
     if (destroyed || !packet || !Array.isArray(packet.points) || !getMember(packet.from)) return;
+    if (!Number.isFinite(ageMs) || ageMs >= LASER_LIFETIME_MS) return;
     const key = `${packet.from}:${packet.strokeId || 'legacy'}`;
     let trail = trails.get(key);
     if (trail && Number.isSafeInteger(packet.seq) && packet.seq <= trail.seq) return;
@@ -88,7 +89,7 @@ export function createLaserCanvas(canvas, { getBounds, getMember, onIdle } = {})
       trail = { from: packet.from, seq: -1, points: [] };
       trails.set(key, trail);
     }
-    const now = performance.now();
+    const now = performance.now() - Math.max(0, ageMs);
     // A late/reconnected packet starts a new segment instead of bridging an old trail.
     if (now - (trail.points.at(-1)?.at || 0) > 250) trail.points = [];
     trail.seq = packet.seq ?? trail.seq + 1;

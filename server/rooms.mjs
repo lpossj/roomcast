@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { cleanAvatar } from './avatar-policy.mjs';
+import { normalizeNetworkCapabilities } from './network-capabilities.mjs';
 
 const scrypt = promisify(scryptCallback);
 const MAX_MEMBERS = 10;
@@ -309,6 +310,9 @@ export function attachRooms(io, {
         const room
         of rooms.values()
       ) {
+        for (const [hash, entry] of room.detachedTickets || []) {
+          if (entry.deadline <= monotonicNow) room.detachedTickets.delete(hash);
+        }
         if (
           room.migrationPrepared
           && room.migrationDeadline
@@ -438,7 +442,7 @@ export function attachRooms(io, {
 
   function snapshot(room) {
     return {
-      features: { profiles: 1, voice: 1, laser: 1, recovery: 1 },
+      features: { profiles: 1, animatedAvatars: 1, voice: 1, laser: 1, recovery: 1 },
       id: room.id,
       name: room.name,
       laserEnabled: room.laserEnabled !== false,
@@ -650,6 +654,9 @@ export function attachRooms(io, {
 
   function forgetRecoveryMember(room, memberId) {
     room.recoveryTickets?.delete(memberId);
+    for (const [hash, entry] of room.detachedTickets || []) {
+      if (entry.member.id === memberId) room.detachedTickets.delete(hash);
+    }
     for (const [hash, id] of room.migrationTickets || []) {
       if (id === memberId) room.migrationTickets.delete(hash);
     }
@@ -753,8 +760,20 @@ export function attachRooms(io, {
     room.members.delete(
       member.id,
     );
+    const issued = room.recoveryTickets?.get(member.id);
+    const retry = socket.data.unconfirmedResume;
+    delete socket.data.unconfirmedResume;
     forgetRecoveryMember(room, member.id);
-
+    if (departure === 'disconnect' && !socket.data.kicked && member.role !== 'owner' && (issued || retry)) {
+      const now = performance.now();
+      const saved = { ...member, socket: null, readToken: '', sharing: false };
+      // These hashes belong only to this live room, outside its roster and exported snapshots.
+      room.detachedTickets ||= new Map();
+      if (issued) room.detachedTickets.set(tokenHash(issued), { member: saved, deadline: now + MIGRATION_TIMEOUT_MS });
+      if (retry && retry.deadline > now) {
+        room.detachedTickets.set(retry.hash, { member: saved, deadline: retry.deadline });
+      }
+    }
 
     // Explicit departures need immediate notification
     // for audio peer teardown.
@@ -2357,6 +2376,9 @@ export function attachRooms(io, {
                 raw.microphone
                 === true,
 
+              ...(typeof raw.nativeCapable === 'boolean' ? { nativeCapable: raw.nativeCapable } : {}),
+              ...(typeof raw.campusCapable === 'boolean' ? { campusCapable: raw.campusCapable } : {}),
+
               settings:
                 shareSettings(
                   raw.settings,
@@ -2654,31 +2676,20 @@ export function attachRooms(io, {
             resumeToken,
           );
 
-        const memberId =
-          room?.migrationDeadline
-            > performance.now()
-            ? room
-              .migrationTickets
-              ?.get(
-                ticketHash,
-              )
-            : '';
-
-        const member =
-          memberId
-            ? room.members
-              .get(memberId)
-            : null;
-
-        if (
-          !room
-          || !member
-          || member.socket
-        ) {
-          throw new Error(
-            '迁移恢复票据无效或已使用。',
-          );
+        const now = performance.now();
+        const importedId = room?.migrationDeadline > now ? room.migrationTickets?.get(ticketHash) : null;
+        const detached = room?.detachedTickets?.get(ticketHash);
+        let member = room?.members.get(importedId);
+        if (!member && detached?.deadline > now && !room.migrationPrepared && !room.migrationExporting
+          && isTrustedLocalSocket(socket) && !room.members.has(detached.member.id)) {
+          if (room.members.size >= MAX_MEMBERS) throw new Error('房间已满，最多 10 人。');
+          member = detached.member;
+          forgetRecoveryMember(room, member.id);
+          socket.data.unconfirmedResume = { hash: ticketHash, deadline: detached.deadline };
+          room.members.set(member.id, member);
         }
+        if (!member || member.socket) throw new Error('迁移恢复票据无效或已使用。');
+        const memberId = member.id;
 
         member.socket =
           socket;
@@ -2695,7 +2706,7 @@ export function attachRooms(io, {
           },
         );
 
-        if (!room.recoveryImport) room.migrationTickets.delete(ticketHash);
+        if (importedId && !room.recoveryImport) room.migrationTickets.delete(ticketHash);
 
         socket.data.shareRoomId =
           roomId;
@@ -2711,6 +2722,7 @@ export function attachRooms(io, {
           selfId:
             memberId,
 
+          ...(socket.data.unconfirmedResume ? { resumedHere: true } : {}),
           room:
             snapshot(room),
 
@@ -2734,9 +2746,10 @@ export function attachRooms(io, {
 
     event('room:migration-confirm', () => {
       const { room, member } = current(socket);
-      if (!room.recoveryImport || member.socket !== socket) {
+      if ((!room.recoveryImport && !socket.data.unconfirmedResume) || member.socket !== socket) {
         throw new Error('当前成员没有待确认的恢复连接。');
       }
+      delete socket.data.unconfirmedResume;
       member.recoveryConfirmed = true;
       // Confirmation means the client received its join reply. A later exit is
       // an ordinary departure; the previous generation's ticket is retired.
@@ -3040,10 +3053,8 @@ export function attachRooms(io, {
           );
         }
 
-        const target =
-          room.members.get(
-            payload.memberId,
-          );
+        const target = room.members.get(payload.memberId) || Array.from(room.detachedTickets?.values() || [])
+          .find(entry => entry.member.id === payload.memberId && entry.deadline > performance.now())?.member;
 
         if (
           !target
@@ -3058,22 +3069,20 @@ export function attachRooms(io, {
         }
 
         if (
-          !target.socket
+          !target.socket && room.members.has(target.id)
         ) {
           throw new Error(
             '该成员正在恢复连接，请稍后重试。',
           );
         }
 
-        target.socket
-          .data.kicked =
-          true;
+        if (target.socket) target.socket.data.kicked = true;
         forgetRecoveryMember(room, target.id);
 
         // Notify only the coordinator; secrets remain outside the room service.
         [...room.members.values()].find(item => item.role === 'owner')?.socket?.emit('room:credential-revoke', { memberId: target.id });
 
-        target.socket.emit(
+        target.socket?.emit(
           'room:kicked',
           {
             error:
@@ -3088,7 +3097,7 @@ export function attachRooms(io, {
           true,
         );
 
-        setTimeout(
+        if (target.socket) setTimeout(
           () =>
             target.socket
               .disconnect(true),
@@ -3940,6 +3949,8 @@ export function attachRooms(io, {
             'vdo-request',
             'vdo-descriptor',
             'vdo-error',
+            'frame-check',
+            'frame-status',
           ].includes(
             payload.kind,
           )
@@ -3961,6 +3972,7 @@ export function attachRooms(io, {
             'close',
             'cancel',
             'vdo-request',
+            'frame-check',
           ].includes(
             payload.kind,
           )
@@ -3986,6 +3998,16 @@ export function attachRooms(io, {
           throw new Error(
             '无权发送此画面信令。',
           );
+        }
+
+        if (payload.kind === 'frame-check' || payload.kind === 'frame-status') {
+          const self = socket.data.memberId || socket.id;
+          const publisher = viewerSide ? payload.to : self;
+          const viewer = viewerSide ? self : payload.to;
+          if (!room.viewers.get(publisher)?.has(viewer) || typeof payload.session !== 'string' || !payload.session
+            || (payload.kind === 'frame-status' && typeof payload.expectsVideo !== 'boolean')) {
+            throw new Error('观看会话无效。');
+          }
         }
 
         if (
@@ -4026,12 +4048,15 @@ export function attachRooms(io, {
           route =
             payload.route
             || 'p2p';
+          if (route === 'native' && (!room.streams.get(payload.to)?.nativeCapable
+            || !room.viewers.get(payload.to)?.has(socket.data.memberId || socket.id))) throw new Error('原生观看会话无效。');
 
           if (
             ![
               'p2p',
               'turn',
               'campus',
+              'native',
             ].includes(route)
           ) {
             throw new Error(
@@ -4139,6 +4164,10 @@ export function attachRooms(io, {
               session:
                 payload.session,
 
+              expectsVideo: payload.kind === 'frame-status' ? payload.expectsVideo : undefined,
+              requestKeyFrame: payload.kind === 'frame-check' && payload.requestKeyFrame === true ? true : undefined,
+              publisherRelayed: payload.kind === 'answer' && payload.publisherRelayed === true ? true : undefined,
+
               candidate,
 
               side:
@@ -4147,6 +4176,11 @@ export function attachRooms(io, {
               route,
 
               vdo,
+
+              networkCapabilities: ['offer', 'answer'].includes(payload.kind)
+                ? normalizeNetworkCapabilities(payload.networkCapabilities) : undefined,
+
+              restart: payload.kind === 'offer' && payload.restart === true && typeof payload.session === 'string',
 
               error:
                 typeof payload.error
@@ -4429,6 +4463,10 @@ export function attachRooms(io, {
           );
         }
 
+        if (['campusCapable', 'nativeCapable'].some(key => payload[key] !== undefined && typeof payload[key] !== 'boolean')) {
+          throw new Error('屏幕共享能力格式错误。');
+        }
+
         if (claim.timer) {
           clearTimeout(
             claim.timer,
@@ -4462,6 +4500,9 @@ export function attachRooms(io, {
               microphone:
                 payload.microphone
                 === true,
+
+              ...(payload.nativeCapable === undefined ? {} : { nativeCapable: payload.nativeCapable }),
+              ...(payload.campusCapable === undefined ? {} : { campusCapable: payload.campusCapable }),
 
               settings:
                 shareSettings(

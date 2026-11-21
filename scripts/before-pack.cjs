@@ -53,6 +53,7 @@ exports.default = async function beforePack(context) {
   await cleanAbandonedBuildScratch();
   require('./build-update-launcher.cjs');
   for (const [name, args] of [
+    ['prepare-native-ice.mjs', []],
     ['prepare-easytier.mjs', []],
     ['prepare-embedded-obs.mjs', ['--release']],
   ]) {

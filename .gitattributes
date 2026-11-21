@@ -1,0 +1,7 @@
+# Packaging verifies the exact bytes of these sources, including mixed EOLs.
+electron/native-media/* text eol=lf
+electron/native-media/GPL-2.0.txt -text
+electron/native-media/roomcast-native-rtc.c -text
+scripts/prepare-easytier.mjs text eol=lf
+scripts/easytier-source-patch.mjs text eol=lf
+electron/campus-supervisor.ps1 text eol=lf

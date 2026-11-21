@@ -1,893 +1,65 @@
-import { AppWindow, ArrowRight, AudioLines, Camera, Check, ChevronDown, ChevronRight, Copy, Download, Headphones, ImagePlus, Info, Link, LoaderCircle, LockKeyhole, LogOut, Maximize2, MessageSquare, Mic, Monitor, MonitorUp, Palette, PenLine, Plus, RefreshCw, RotateCcw, RotateCw, ScreenShare, Send, Server, Settings, ShieldCheck, Square, Sun, Moon, Users, Volume2, Wifi, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { Info, LoaderCircle, LogOut, Monitor, ScreenShare, Settings, Square, UserPlus, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ScreenPlayer from './ScreenPlayer.jsx';
 import { useLaser } from './useLaser.js';
-import Avatar, { safeAvatar } from './Avatar.jsx';
-import { ProfileSettings, VoiceSettings, VoiceControls, MemberVolumeControl } from './ProfileAudioSettings.jsx';
+import { safeAvatar, prepareAvatarForRoom } from './Avatar.jsx';
+import { usePanelWidths } from './PanelResizeHandle.jsx';
+import { VoiceControls } from './ProfileAudioSettings.jsx';
 import useRoomVoice from './useRoomVoice.js';
-import PanelResizeHandle, { usePanelWidths } from './PanelResizeHandle.jsx';
 import useBackgroundStatus from './useBackgroundStatus.js';
 import useAppearance from './useAppearance.js';
-import { playSound } from './sounds.js';
-import { ack, attachNativeAudio, getLifecycleDiagnostics, initials, integratedSources, nativeAudioSources, startIntegratedCapture, startObsFixedFpsCapture, timeLabel } from './lib.js';
-import { readImageDimensions } from './image-policy.js';
-import { loadPreference, savePreference } from './preferences.js';
-import { fetchRelayIce, loadRelaySettings, saveRelaySettings } from './relay.js';
-import { browserCapabilities, normalizeBrowserShareSettings } from './browser-capabilities.js';
-import { startCameraCapture } from './browser-capture.js';
 import useDevices from './useDevices.js';
 import useRoom from './useRoom.js';
-import { readPageInvite, roomInviteFromUrl } from './invite-entry.js';
-import { readP2pDiagnostics } from './p2p-video-policy.js';
+import { useGpuSettings } from './lib/useGpuSettings.js';
+import { playSound } from './sounds.js';
+import { attachNativeAudio, startIntegratedCapture, startObsFixedFpsCapture } from './lib.js';
+import { loadPreference, savePreference } from './preferences.js';
+import { loadRelaySettings, saveRelaySettings } from './relay.js';
+import { browserCapabilities } from './browser-capabilities.js';
+import { startCameraCapture } from './browser-capture.js';
+import { readPageInvite } from './invite-entry.js';
+import { ack } from './lib.js';
+import {
+  applyThemeColor,
+  DEFAULT_THEME_COLOR,
+  loadThemeSettings,
+  loadWindowsAccentColor,
+  normalizeThemeColor,
+  normalizeThemeMode,
+  THEME_MODE_CUSTOM,
+  THEME_MODE_WINDOWS,
+} from './lib/theme.js';
+import {
+  APP_VERSION,
+  clampPreviewScale,
+  cleanIpcError,
+  LATENCY_POLL_MS,
+  LATENCY_TIMEOUT_MS,
+  latencyToneFor,
+  MAX_CHAT_IMAGES,
+  PREVIEW_SCALE_MAX,
+  PREVIEW_SCALE_MIN,
+  PREVIEW_SCALE_STEP,
+  previewCardWidthFor,
+  shrinkForSharing,
+} from './lib/previewLayout.js';
+import StudioTopbar from './components/StudioTopbar.jsx';
+import MembersPanel from './components/MembersPanel.jsx';
+import EmptyScreen from './components/EmptyScreen.jsx';
+import EntryModal from './components/EntryModal.jsx';
+import ShareModal from './components/ShareModal.jsx';
+import InviteModal from './components/InviteModal.jsx';
+import SettingsDrawer, { UpdatePromptModal } from './components/SettingsDrawer.jsx';
+import MemberPermissionsModal from './components/MemberPermissionsModal.jsx';
+import ChatPanel from './components/ChatPanel.jsx';
+import ImagePreviewOverlay from './components/ImagePreviewOverlay.jsx';
 
-const presets = [
-  { id: '1080p30', label: '1080p', detail: '30 FPS · 推荐', width: 1920, height: 1080, fps: 30, bitrate: 4500 },
-  { id: '720p30', label: '720p', detail: '30 FPS · 节省带宽', width: 1280, height: 720, fps: 30, bitrate: 2500 },
-  { id: '1080p60', label: '1080p', detail: '最高 60 FPS · 自动均衡', width: 1920, height: 1080, fps: 60, bitrate: 6500 },
-];
-const defaultShareSettings = { captureBackend: 'obs', sourceType: 'monitor', sourceId: '', preset: '1080p30', width: 1920, height: 1080, fps: 30, bitrate: 6500, audioMode: 'none', audioSourceId: '', applicationMuted: false, microphoneMuted: false, systemAudio: false, microphone: false, compatibilityCanvas: false, performanceMode: 'quality', facingMode: 'user' };
-const avatarClass = color => `avatar-color-${Number.isInteger(color) && color >= 0 && color < 10 ? color : 0}`;
-function loadShareSettings() {
-  try {
-    const saved = loadPreference('shareSettings', {});
-    const legacyAudioMode = saved.systemAudio ? (saved.microphone ? 'system-microphone' : 'system') : saved.microphone ? 'microphone' : 'none';
-    const clean = { ...defaultShareSettings };
-    for (const key of Object.keys(defaultShareSettings)) if (Object.hasOwn(saved || {}, key)) clean[key] = saved[key];
-    // Undo beta.5's raised named-preset budget; numeric edits are saved as 'custom'.
-    if (clean.preset === '1080p60' && Number(clean.width) === 1920 && Number(clean.height) === 1080
-      && Number(clean.fps) === 60 && Number(clean.bitrate) === 16000) clean.bitrate = 6500;
-    clean.captureBackend = !window.roomcast?.desktop || clean.captureBackend === 'native' ? 'native' : 'obs';
-    clean.sourceType = clean.sourceType === 'window' ? 'window' : 'monitor';
-    clean.audioMode = ['none', 'system', 'application', 'exclude', 'microphone', 'system-microphone', 'application-microphone', 'exclude-microphone'].includes(saved.audioMode) ? saved.audioMode : legacyAudioMode;
-    clean.performanceMode = 'quality';
-    clean.compatibilityCanvas = false;
-    return window.roomcast?.desktop ? clean : normalizeBrowserShareSettings({ ...clean, sourceType: saved.sourceType }, browserCapabilities(window));
-  } catch { return { ...defaultShareSettings, captureBackend: window.roomcast?.desktop ? 'obs' : 'native' }; }
-}
-const params = new URLSearchParams(window.location.search);
 const initialInvite = readPageInvite(window);
-const MAX_CHAT_IMAGES = 4;
-// Phone photos decode to tens of MB at full resolution while the chat only ever shows a
-// small thumbnail, so oversized photos are downscaled once before being staged.
-const MAX_SHARED_IMAGE_EDGE = 2000;
-const APP_VERSION = typeof __ROOMCAST_VERSION__ === 'string' ? __ROOMCAST_VERSION__ : '';
-// Electron wraps IPC rejections as "Error invoking remote method 'x': Error: <message>".
-const cleanIpcError = error => String(error?.message || '操作失败')
-  .replace(/^Error invoking remote method '[^']*':\s*/, '')
-  .replace(/^Error:\s*/, '');
-
-async function shrinkForSharing(file) {
-  // GIF keeps its animation; re-encoding would flatten it.
-  if (String(file.type || '').toLowerCase() === 'image/gif') return file;
-  if (typeof createImageBitmap !== 'function') return file;
-  // Read the header instead of decoding first: a 12 megapixel JPEG can be well under
-  // 1 MB, so file size says nothing about the decoded bitmap.
-  let declared;
-  try { declared = readImageDimensions(file.type, new Uint8Array(await file.slice(0, 64 * 1024).arrayBuffer())); } catch { declared = null; }
-  if (declared && Math.max(declared.width, declared.height) <= MAX_SHARED_IMAGE_EDGE) return file;
-  let bitmap;
-  try { bitmap = await createImageBitmap(file); } catch { return file; }
-  try {
-    const longest = Math.max(bitmap.width, bitmap.height);
-    if (!longest || longest <= MAX_SHARED_IMAGE_EDGE) return file;
-    const scale = MAX_SHARED_IMAGE_EDGE / longest;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const context = canvas.getContext('2d');
-    if (!context) return file;
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.9));
-    // Browsers without WebP encoding would silently fall back to another format; keeping
-    // the original is safer than changing the user's image behind their back.
-    if (!blob || blob.type !== 'image/webp' || blob.size > 10 * 1024 * 1024) return file;
-    const stem = String(file.name || 'image').replace(/\.[^.]+$/, '') || 'image';
-    return new File([blob], `${stem}.webp`, { type: 'image/webp', lastModified: file.lastModified || Date.now() });
-  } finally { bitmap.close?.(); }
-}
-const DEFAULT_THEME_COLOR = '#78ddbd';
-const THEME_MODE_CUSTOM = 'custom';
-const THEME_MODE_WINDOWS = 'windows';
-const PREVIEW_SCALE_MIN = 0.55;
-const PREVIEW_SCALE_MAX = 1.6;
-const PREVIEW_SCALE_STEP = 0.1;
-const LATENCY_POLL_MS = 3000;
-const LATENCY_TIMEOUT_MS = 4000;
-const latencyToneFor = value => {
-  if (!Number.isFinite(value)) return 'neutral';
-  if (value < 120) return 'good';
-  if (value <= 250) return 'warning';
-  return 'bad';
-};
-const clampPreviewScale = value => Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, Math.round(value * 10) / 10));
-const previewColumnsFor = (count, width) => {
-  if (count <= 1 || width < 680) return 1;
-  if (count <= 4) return Math.min(2, count);
-  if (count <= 9) return width >= 1180 ? 3 : 2;
-  if (width >= 1480) return 4;
-  return width >= 900 ? 3 : 2;
-};
-const previewCardWidthFor = (count, width, scale) => {
-  const outerWidth = Number(width) || 0;
-  if (!count || outerWidth <= 0) return 0;
-  const gap = 12;
-  const horizontalPadding = 24;
-  const innerWidth = Math.max(0, outerWidth - horizontalPadding);
-  if (innerWidth <= 0) return 0;
-  const columns = Math.max(1, Math.min(count, previewColumnsFor(count, innerWidth)));
-  const baseWidth = Math.max(1, (innerWidth - (gap * (columns - 1))) / columns);
-  const minimum = Math.min(260, innerWidth);
-  return Math.round(Math.min(innerWidth, Math.max(minimum, baseWidth * clampPreviewScale(scale))));
-};
-const normalizeThemeColor = value => /^#[0-9a-f]{6}$/i.test(String(value || '').trim()) ? String(value).trim().toLowerCase() : DEFAULT_THEME_COLOR;
-const normalizeThemeMode = value => value === THEME_MODE_WINDOWS ? THEME_MODE_WINDOWS : THEME_MODE_CUSTOM;
-const themeForegroundFor = color => {
-  const raw = normalizeThemeColor(color).slice(1);
-  const red = Number.parseInt(raw.slice(0, 2), 16);
-  const green = Number.parseInt(raw.slice(2, 4), 16);
-  const blue = Number.parseInt(raw.slice(4, 6), 16);
-  return ((0.2126 * red) + (0.7152 * green) + (0.0722 * blue)) >= 150 ? '#0b1116' : '#ffffff';
-};
-function loadThemeSettings() {
-  try {
-    const saved = window.roomcast?.getThemeSettings?.();
-    if (saved && typeof saved === 'object') {
-      return {
-        mode: normalizeThemeMode(saved.mode),
-        color: normalizeThemeColor(saved.color),
-      };
-    }
-  } catch { }
-  return { mode: THEME_MODE_CUSTOM, color: DEFAULT_THEME_COLOR };
-}
-function loadWindowsAccentColor() {
-  try { return normalizeThemeColor(window.roomcast?.getSystemAccentColor?.() || DEFAULT_THEME_COLOR); }
-  catch { return DEFAULT_THEME_COLOR; }
-}
-function applyThemeColor(value) {
-  const color = normalizeThemeColor(value);
-  document.documentElement.style.setProperty('--accent', color);
-  document.documentElement.style.setProperty('--accent-foreground', themeForegroundFor(color));
-  return color;
-}
 const INITIAL_THEME_SETTINGS = loadThemeSettings();
 const INITIAL_THEME_MODE = INITIAL_THEME_SETTINGS.mode;
 const INITIAL_CUSTOM_THEME_COLOR = INITIAL_THEME_SETTINGS.color;
 const INITIAL_WINDOWS_ACCENT_COLOR = loadWindowsAccentColor();
 applyThemeColor(INITIAL_THEME_MODE === THEME_MODE_WINDOWS ? INITIAL_WINDOWS_ACCENT_COLOR : INITIAL_CUSTOM_THEME_COLOR);
-function Modal({ title, subtitle, children, onClose, wide, busy, cancellable = false }) {
-  const blocked = busy && !cancellable;
-  const dialog = useRef(null);
-  const closeRef = useRef(onClose); closeRef.current = onClose;
-  useEffect(() => {
-    const previous = document.activeElement;
-    const first = dialog.current?.querySelector('input, button, select'); first?.focus();
-    const key = event => {
-      if (event.key === 'Escape' && !blocked) closeRef.current();
-      if (event.key === 'Tab') {
-        const elements = [...dialog.current.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], textarea:not(:disabled)')];
-        if (!elements.length) return;
-        const start = elements[0], end = elements.at(-1);
-        if (event.shiftKey && document.activeElement === start) { event.preventDefault(); end.focus(); }
-        else if (!event.shiftKey && document.activeElement === end) { event.preventDefault(); start.focus(); }
-      }
-    };
-    document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('keydown', key); previous?.focus(); };
-  }, [blocked]);
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !blocked) onClose(); }}><section className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={dialog}><header className="modal-header"><div><h2 id="modal-title">{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose} disabled={blocked} aria-label="关闭"><X size={20} /></button></header>{children}</section></div>;
-}
-
-function Dropdown({ label, value, options, onChange, disabled = false, description = '', className = '' }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef(null);
-  const selected = options.find(option => option.value === value) || options[0];
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = event => { if (!root.current?.contains(event.target)) setOpen(false); };
-    document.addEventListener('pointerdown', close);
-    return () => document.removeEventListener('pointerdown', close);
-  }, [open]);
-  return <div className={`app-select-field standalone-label compact-select ${className}`} ref={root} onKeyDown={event => { if (event.key === 'Escape' && open) { event.stopPropagation(); setOpen(false); } }}>
-    <span className="app-select-label">{label}</span>
-    <button type="button" className="app-select-trigger" aria-label={label} aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen(current => !current)}><span>{selected?.label || ''}</span><ChevronDown size={18} aria-hidden="true" /></button>
-    {open && <div className="app-select-menu" role="listbox" aria-label={`${label}选项`}>{options.map(option => <button type="button" role="option" aria-selected={option.value === value} className={option.value === value ? 'selected' : ''} key={option.value} onClick={() => { onChange(option.value); setOpen(false); }}><span>{option.label}</span>{option.value === value && <Check size={15} />}</button>)}</div>}
-    {description && <small>{description}</small>}
-  </div>;
-}
-
-function EntryModal({ mode, onClose, onEnter, busy, defaultServer, peerServer, inviteRoom, canHost = true }) {
-  const [kind, setKind] = useState(canHost ? mode : 'join');
-  const [form, setForm] = useState({ nickname: loadPreference('nickname', ''), name: '朋友的放映室', roomId: inviteRoom || initialInvite, createKey: '', server: params.get('server') || loadPreference('server', '') || defaultServer || window.location.origin });
-  const [error, setError] = useState('');
-  useEffect(() => {
-    if (kind !== 'create' || !window.roomcast?.desktop) return;
-    let origin;
-    try { origin = new URL(peerServer || 'https://0.peerjs.com').origin; } catch { return; }
-    const hint = document.createElement('link');
-    hint.rel = 'preconnect';
-    hint.href = origin;
-    hint.crossOrigin = 'anonymous';
-    document.head.append(hint);
-    return () => hint.remove();
-  }, [kind, peerServer]);
-  const field = key => ({ value: form[key], onChange: event => setForm(value => ({ ...value, [key]: key === 'roomId' ? roomInviteFromUrl(event.target.value) || event.target.value : event.target.value })) });
-  const submit = async event => {
-    event.preventDefault();
-    setError('');
-
-    try {
-      if (kind === 'join' && !/^roomcast:\/\/join\//i.test(form.roomId.trim())) throw new Error('请粘贴完整的 Roomcast 邀请链接。');
-      await onEnter(kind, {
-        ...form,
-        networkMode: 'p2p',
-      });
-    } catch (failure) {
-      setError(failure.message);
-    }
-  };
-  return <Modal title={kind === 'create' ? '创建房间' : '加入房间'} onClose={onClose} busy={busy} cancellable>
-    {canHost && <div className="segmented"><button className={kind === 'create' ? 'selected' : ''} onClick={() => { setKind('create'); setError(''); }} disabled={busy}><Plus size={16} />创建</button><button className={kind === 'join' ? 'selected' : ''} onClick={() => { setKind('join'); setError(''); }} disabled={busy}><Link size={16} />加入</button></div>}
-    <form onSubmit={submit} className="entry-form">
-      <label>你的昵称<input {...field('nickname')} autoComplete="nickname" placeholder="大家怎么称呼你？" required maxLength={24} disabled={busy} /></label>
-      <label>{kind === 'create' ? '房间名称' : '邀请链接'}<input {...field(kind === 'create' ? 'name' : 'roomId')} placeholder={kind === 'create' ? '例如：周末放映室' : '粘贴 roomcast://join/…'} required maxLength={kind === 'create' ? 40 : 7000} disabled={busy} /></label>
-      {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
-      {kind === 'create' && !window.roomcast?.desktop && <p className="setting-inline-note">请保持房主网页在前台。关闭网页或手机进入后台可能中断房间，长时间使用建议由桌面端主持。</p>}
-      <button className="button primary full" type="submit" disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : kind === 'create' ? <Plus size={17} /> : <ArrowRight size={17} />}{busy ? '正在连接…' : kind === 'create' ? '创建并进入房间' : '进入房间'}</button>
-    </form>
-  </Modal>;
-}
-
-function ShareModal({ onClose, onStart, busy, audioDevices, capabilities, editing = false }) {
-  const desktop = window.roomcast?.desktop === true;
-  const [settings, setSettings] = useState(loadShareSettings);
-  const backend = settings.captureBackend === 'native' ? 'native' : 'obs';
-  const type = settings.sourceType;
-  const [sources, setSources] = useState({ monitors: [], windows: [], applications: [] });
-  const [loading, setLoading] = useState(false);
-  const [audioLoading, setAudioLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [audioError, setAudioError] = useState('');
-  const [backendNotice, setBackendNotice] = useState('');
-  const mounted = useRef(true);
-  const refreshGeneration = useRef(0);
-  const audioRefreshInFlight = useRef(false);
-  useEffect(() => () => { mounted.current = false; }, []);
-  const refreshAudioSources = useCallback(async ({ initial = false } = {}) => {
-    if (!window.roomcast?.desktop || audioRefreshInFlight.current || !mounted.current) return;
-    audioRefreshInFlight.current = true;
-    if (initial) setAudioLoading(true);
-    try {
-      const applications = await nativeAudioSources();
-      if (!mounted.current) return;
-      setAudioError('');
-      setSources(current => ({ ...current, applications }));
-      setSettings(current => ({
-        ...current,
-        audioSourceId: applications.some(item => String(item.id) === current.audioSourceId) ? current.audioSourceId : '',
-      }));
-    } catch (failure) {
-      if (mounted.current) setAudioError(String(failure?.message || 'Windows 音频应用枚举失败。'));
-    } finally {
-      audioRefreshInFlight.current = false;
-      if (initial && mounted.current) setAudioLoading(false);
-    }
-  }, []);
-
-  const load = async (overrides = {}) => {
-    if (!desktop) {
-      setSettings(current => normalizeBrowserShareSettings({ ...current, ...overrides }, capabilities));
-      setLoading(false);
-      return;
-    }
-    const generation = ++refreshGeneration.current;
-    const currentRequest = () => mounted.current && generation === refreshGeneration.current;
-    const requested = { ...settings, ...overrides };
-    const requestedBackend = requested.captureBackend === 'native' ? 'native' : 'obs';
-    const requestedType = requested.sourceType === 'window' ? 'window' : 'monitor';
-    const preferredSourceId = String(requested.sourceId || '');
-    setLoading(true); setAudioLoading(false); setError(''); setAudioError(''); setBackendNotice('');
-    // IDs belong to the backend that enumerated them. A failed refresh must
-    // never leave native sources selectable as OBS sources (or vice versa).
-    setSources(current => ({ ...current, monitors: [], windows: [] }));
-    setSettings(current => ({ ...current, sourceId: '' }));
-    const applySources = (value, activeBackend) => {
-      const items = requestedType === 'monitor' ? value.monitors : value.windows;
-      setSources(current => ({ ...value, applications: current.applications || [] }));
-      setSettings(current => ({
-        ...current,
-        captureBackend: activeBackend,
-        sourceType: requestedType,
-        sourceId: items?.some(item => String(item.id) === preferredSourceId) ? preferredSourceId : items?.[0]?.id == null ? '' : String(items[0].id),
-      }));
-    };
-    try {
-      const value = await integratedSources({ backend: requestedBackend, width: Number(requested.width) || 1920, height: Number(requested.height) || 1080, fps: Number(requested.fps) || 30 });
-      if (!currentRequest()) return;
-      // Make screen/window sharing available immediately. Application-audio enumeration
-      // is optional and runs independently because WMI/CIM can be slow on some PCs.
-      applySources(value, requestedBackend);
-      setLoading(false);
-
-      if (!window.roomcast?.desktop) return;
-      await refreshAudioSources({ initial: true });
-    } catch (failure) {
-      if (!currentRequest()) return;
-      // Never mutate the user's selected capture backend because OBS had a
-      // transient initialization error. Keeping OBS selected makes the real
-      // failure visible and prevents a failed clean-PC first registration from
-      // silently overwriting the saved preference with native capture.
-      setError(failure.message);
-    } finally { if (currentRequest()) setLoading(false); }
-  };
-  useEffect(() => { mounted.current = true; void load(); return () => { refreshGeneration.current += 1; }; }, []);
-  useEffect(() => {
-    if (!window.roomcast?.desktop) return undefined;
-    let cancelled = false;
-    let timer = null;
-    const tick = async () => {
-      if (cancelled || busy) return;
-      await refreshAudioSources();
-      if (!cancelled) timer = window.setTimeout(tick, 1500);
-    };
-    timer = window.setTimeout(tick, 1500);
-    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
-  }, [busy, refreshAudioSources]);
-  useEffect(() => { savePreference('shareSettings', settings); }, [settings]);
-  useEffect(() => { if (!desktop) setSettings(current => normalizeBrowserShareSettings(current, capabilities)); }, [desktop, capabilities.screen, capabilities.camera, capabilities.microphone]);
-  const items = (type === 'monitor' ? sources.monitors : sources.windows) || [];
-  const update = patch => setSettings(current => ({ ...current, ...patch }));
-  const switchBackend = next => { update({ captureBackend: next, sourceId: '' }); void load({ captureBackend: next, sourceId: '' }); };
-  const switchType = next => { if (!desktop) { update(normalizeBrowserShareSettings({ ...settings, sourceType: next }, capabilities)); return; } const nextItems = next === 'monitor' ? sources.monitors : sources.windows; update({ sourceType: next, sourceId: nextItems?.[0]?.id == null ? '' : String(nextItems[0].id) }); };
-  const selectPreset = item => update({ preset: item.id, width: item.width, height: item.height, fps: item.fps, bitrate: item.bitrate });
-  const numeric = (key, value) => update({ preset: 'custom', [key]: value === '' ? '' : Number(value) });
-  const currentAudioMode = settings.audioMode || 'none';
-  const sharesSystemAudio = currentAudioMode === 'system' || currentAudioMode === 'system-microphone';
-  const sharesApplicationAudio = currentAudioMode === 'application' || currentAudioMode === 'application-microphone';
-  const excludesApplicationAudio = currentAudioMode === 'exclude' || currentAudioMode === 'exclude-microphone';
-  const sharesMicrophone = currentAudioMode === 'microphone' || currentAudioMode.endsWith('-microphone');
-  const composeAudioMode = (source, microphone) => source ? `${source}${microphone ? '-microphone' : ''}` : microphone ? 'microphone' : 'none';
-  const toggleAudioSource = (source, enabled) => update({ audioMode: composeAudioMode(enabled ? source : '', sharesMicrophone) });
-  const processAudioAvailable = Boolean(window.roomcast?.startAudioCapture);
-  const audioApplicationLabel = item => {
-    const friendly = String(item?.name || '').trim();
-    const executable = String(item?.processName || '').trim();
-    if (!executable) return friendly || '未知应用';
-    const stem = executable.replace(/\.exe$/i, '');
-    if (!friendly || friendly.toLowerCase() === executable.toLowerCase() || friendly.toLowerCase() === stem.toLowerCase()) return executable;
-    return `${friendly}（${executable}）`;
-  };
-  const submit = async () => {
-    setError('');
-    const width = Number(settings.width), height = Number(settings.height), fps = Number(settings.fps), bitrate = Number(settings.bitrate);
-    const maxWidth = backend === 'obs' ? 4096 : 7680;
-    const maxHeight = backend === 'obs' ? 4096 : 4320;
-    if (!Number.isInteger(width) || width < 320 || width > maxWidth) return setError(`宽度范围为 320–${maxWidth}。`);
-    if (!Number.isInteger(height) || height < 240 || height > maxHeight) return setError(`高度范围为 240–${maxHeight}。`);
-    if (backend === 'obs' && (width % 2 || height % 2)) return setError('OBS 模式要求宽高为偶数。');
-    if (!Number.isInteger(fps) || fps < 1 || fps > 120) return setError('帧率范围为 1–120 FPS。');
-    if (!Number.isInteger(bitrate) || (bitrate !== 0 && (bitrate < 200 || bitrate > 50000))) return setError('码率请输入 0，或 200–50000 Kbps。');
-    const effective = desktop ? settings : normalizeBrowserShareSettings(settings, capabilities);
-    if (!desktop && !(effective.sourceType === 'camera' ? capabilities.camera : capabilities.screen)) return setError('当前浏览器或页面权限不支持此共享来源。');
-    const audioMode = effective.audioMode || 'none';
-    if ((audioMode.includes('application') || audioMode.includes('exclude')) && !processAudioAvailable) return setError('当前环境不支持按应用捕获或排除声音。');
-    if ((audioMode.includes('application') || audioMode.includes('exclude')) && !settings.audioSourceId) return setError(audioMode.includes('exclude') ? '请选择要从系统声音中排除的软件。' : '请选择要捕获声音的软件。');
-    const systemAudio = audioMode === 'system' || audioMode === 'system-microphone';
-    const microphone = audioMode === 'microphone' || audioMode.endsWith('-microphone');
-    try {
-      await onStart({ ...effective, width, height, fps, bitrate, audioMode, systemAudio, microphone });
-    } catch (failure) {
-      // OBS start errors stay on OBS. The user can switch to native manually,
-      // but Roomcast must not hide the failing phase by changing modes itself.
-      setError(failure.message);
-    }
-  };
-  return <Modal title={desktop ? "屏幕共享" : "画面共享"} onClose={onClose} wide busy={busy || loading}>
-    {window.roomcast?.desktop && <div className="segmented" role="group" aria-label="采集引擎"><button type="button" className={backend === 'obs' ? 'selected' : ''} onClick={() => switchBackend('obs')} disabled={busy || loading}>OBS</button><button type="button" className={backend === 'native' ? 'selected' : ''} onClick={() => switchBackend('native')} disabled={busy || loading}>原生采集</button></div>}
-    {desktop ? <><div className="source-tabs"><button className={type === 'monitor' ? 'active' : ''} onClick={() => switchType('monitor')} disabled={busy}><Monitor size={17} />整个屏幕</button><button className={type === 'window' ? 'active' : ''} onClick={() => switchType('window')} disabled={busy}><AppWindow size={17} />应用窗口</button><button className="icon-button refresh-sources" title="刷新采集来源" aria-label="刷新采集来源" onClick={() => load()} disabled={loading || busy}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button></div>
-    <div className="source-grid">{loading ? <div className="source-empty"><LoaderCircle className="spin" />正在读取本机采集来源…</div> : items.length ? items.map(source => <button key={source.id} className={`source-card ${settings.sourceId === String(source.id) ? 'selected' : ''}`} onClick={() => update({ sourceId: String(source.id) })} disabled={busy}><div className="source-art">{type === 'monitor' ? <Monitor size={38} strokeWidth={1.1} /> : <AppWindow size={38} strokeWidth={1.1} />}<span className="source-check">{settings.sourceId === String(source.id) && <Check size={13} />}</span></div><span title={source.name}>{source.name}</span></button>) : <div className="source-empty"><Monitor size={30} /><strong>还没有可用的采集来源</strong><span>请打开要共享的应用窗口，然后刷新来源。</span></div>}</div></> : <>
-      <div className="source-tabs">{capabilities.screen && <button className={type === 'monitor' ? 'active' : ''} onClick={() => switchType('monitor')} disabled={busy}><Monitor size={17} />屏幕或窗口</button>}{capabilities.camera && <button className={type === 'camera' ? 'active' : ''} onClick={() => switchType('camera')} disabled={busy}><Camera size={17} />摄像头</button>}</div>
-      <p className="setting-inline-note">{type === 'camera' ? '开始共享时，浏览器会请求摄像头权限。实际画质和帧率受设备能力限制。' : '开始共享时，由浏览器选择屏幕、窗口或标签页。可共享的声音由浏览器决定。'}</p>
-      {type === 'camera' && <Dropdown label="摄像头方向" value={settings.facingMode || 'user'} onChange={value => update({ facingMode: value })} disabled={busy} options={[{ value: 'user', label: '前置摄像头（优先）' }, { value: 'environment', label: '后置摄像头（优先）' }]} />}
-    </>}
-    <label className="section-label">画面质量</label><div className="quality-options">{presets.map(item => <button key={item.id} className={settings.preset === item.id ? 'selected' : ''} onClick={() => selectPreset(item)} disabled={busy}><strong>{item.label}</strong><span>{item.detail}</span>{settings.preset === item.id && <Check size={14} />}</button>)}</div>
-    <div className="custom-parameters"><label>宽度<input aria-label="共享宽度" type="number" min="320" max="7680" value={settings.width} onChange={event => numeric('width', event.target.value)} /></label><span>×</span><label>高度<input aria-label="共享高度" type="number" min="240" max="4320" value={settings.height} onChange={event => numeric('height', event.target.value)} /></label><label>帧率<input aria-label="共享帧率" type="number" min="1" max="120" value={settings.fps} onChange={event => numeric('fps', event.target.value)} /><small>FPS</small></label><label>码率<input aria-label="共享码率" type="number" min="0" max="50000" step="100" value={settings.bitrate} onChange={event => numeric('bitrate', event.target.value)} /><small>Kbps · 0=自动</small></label></div>
-    <div className="share-parameter-summary"><strong>共享参数</strong><span>{settings.width || '—'} × {settings.height || '—'} · {settings.fps || '—'} FPS · {Number(settings.bitrate) === 0 ? '自动码率' : `${settings.bitrate || '—'} Kbps`}</span></div>
-    <label className="section-label">共享声音</label>
-    <div className="audio-mode-options" role="radiogroup" aria-label="共享声音来源">
-      <label className={currentAudioMode === 'none' || currentAudioMode === 'microphone' ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={currentAudioMode === 'none' || currentAudioMode === 'microphone'} onChange={() => toggleAudioSource('', false)} disabled={busy} /><span><strong>不共享声音</strong><small>只共享画面</small></span></label>
-      {(desktop || type !== 'camera') && <label className={sharesSystemAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={sharesSystemAudio} onChange={() => toggleAudioSource('system', true)} disabled={busy} /><span><strong>{desktop ? '全部应用声音' : '浏览器允许的声音'}</strong><small>{desktop ? '包括游戏和播放器' : '取决于浏览器与共享来源'}</small></span></label>}
-      {desktop && <label className={sharesApplicationAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={sharesApplicationAudio} onChange={() => toggleAudioSource('application', true)} disabled={busy || !processAudioAvailable} /><span><strong>所选程序声音</strong><small>推荐，避免通话回声</small></span></label>}
-      {desktop && <label className={excludesApplicationAudio ? 'selected' : ''}><input type="radio" name="share-audio-mode" checked={excludesApplicationAudio} onChange={() => toggleAudioSource('exclude', true)} disabled={busy || !processAudioAvailable} /><span><strong>排除所选程序</strong><small>本机可听，观看者听不到</small></span></label>}
-    </div>
-    {backendNotice && <div className="setting-inline-note" role="status">{backendNotice}</div>}
-    {audioLoading && <div className="setting-inline-note">正在读取可按应用处理的声音来源…</div>}
-    {audioError && <div className="setting-inline-note" role="status" title={audioError}>应用声音列表暂不可用；仍可正常共享画面、全部应用声音或麦克风。Roomcast 会自动重试。</div>}
-    {(sharesApplicationAudio || excludesApplicationAudio) && <Dropdown label={excludesApplicationAudio ? '从系统声音中排除' : '选择游戏或应用'} value={settings.audioSourceId || ''} onChange={value => update({ audioSourceId: value })} disabled={busy} options={[...(!settings.audioSourceId ? [{ value: '', label: '请选择应用' }] : []), ...(sources.applications || []).map(item => ({ value: String(item.id), label: audioApplicationLabel(item) }))]} />}
-    {(sharesSystemAudio || sharesApplicationAudio || excludesApplicationAudio) && <label className="switch-row compact-audio-switch"><span><Volume2 size={18} /><span>静音共享声音</span></span><input type="checkbox" checked={settings.applicationMuted === true} onChange={event => update({ applicationMuted: event.target.checked })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
-    {(desktop || capabilities.microphone) && <label className="switch-row"><span><Mic size={18} /><span>加入麦克风<small>{audioDevices?.preferences.inputId ? '所选麦克风' : '系统默认'}</small></span></span><input type="checkbox" checked={sharesMicrophone} onChange={event => update({ audioMode: composeAudioMode(sharesSystemAudio ? 'system' : sharesApplicationAudio ? 'application' : excludesApplicationAudio ? 'exclude' : '', event.target.checked) })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
-    {sharesMicrophone && <label className="switch-row"><span><Mic size={18} /><span>静音共享麦克风</span></span><input type="checkbox" checked={settings.microphoneMuted === true} onChange={event => update({ microphoneMuted: event.target.checked })} disabled={busy} /><span className="switch" aria-hidden="true" /></label>}
-    {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
-    <footer className="modal-actions"><button className="button secondary" onClick={onClose} disabled={busy || loading}>取消</button><button className="button primary" onClick={submit} disabled={!settings.sourceId || busy || loading}>{busy ? <LoaderCircle size={17} className="spin" /> : <ScreenShare size={17} />}{busy ? editing ? '正在应用设置…' : '正在建立共享…' : editing ? '应用并重新共享' : '开始共享'}</button></footer>
-  </Modal>;
-}
-
-function UpdateSection({ version, update, autoCheck, setAutoCheck, onCheck, install, onAutoUpdate }) {
-  const { status, result, error } = update;
-  const [pageError, setPageError] = useState('');
-  const available = Boolean(result?.available);
-  const autoInstall = available && Boolean(install?.supported);
-  const notes = String(result?.notes || '').replace(/\s+/g, ' ').slice(0, 320);
-  const failure = error || pageError;
-  return <section className="settings-section"><h3><Download size={17} />软件更新</h3>
-    <div className="diagnostic-row"><span>当前版本</span><span className="muted-text">{version || '未知'}</span></div>
-    <label className="switch-row"><span><ShieldCheck size={18} /><span>启动时自动检查更新</span></span><input type="checkbox" checked={autoCheck} onChange={event => { setAutoCheck(event.target.checked); savePreference('autoCheckUpdates', event.target.checked); }} /><span className="switch" aria-hidden="true" /></label>
-    <div className="update-status">
-      {status === 'checking' && <><LoaderCircle size={14} className="spin" />正在检查…</>}
-      {status === 'done' && !failure && !available && <><Check size={14} />已是最新版本</>}
-      {available && <><Info size={14} />发现新版本 <strong>{result.version}</strong>{result.prerelease ? '（测试版）' : ''}{result.viaFeed ? '（GitHub 接口受限，已改用发布订阅检查）' : result.viaManifest ? '（GitHub 接口受限，已改用固定站点版本清单）' : ''}</>}
-      {status === 'done' && !available && !failure && !result && <><Info size={14} />尚未检查</>}
-    </div>
-    {available && notes && <p className="about-note update-notes">{notes}{String(result.notes || '').length > 320 ? '…' : ''}</p>}
-    {available && !notes && result.notesUnavailable && <p className="about-note update-notes">更新内容暂时读不到（GitHub 接口受限）；可以点下面的"打开发布页"查看，或直接更新。</p>}
-    {autoInstall && <div className="settings-buttons">
-      <button className="button primary small" onClick={onAutoUpdate} disabled={Boolean(install?.busy)}>
-        {install?.busy ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}
-        {install?.busy ? '正在准备自动更新…' : `立即更新到 ${result.version}`}
-      </button>
-    </div>}
-    {available && !autoInstall && <p className="about-note">当前运行方式不支持自动覆盖程序目录{install?.reason ? `：${install.reason}` : '。'}请用下面的「打开发布页」手动下载安装包。</p>}
-    {install?.error && <div className="update-manual" role="alert"><Info size={15} /><span>{install.error}</span></div>}
-    {failure && <div className="update-manual" role="alert"><Info size={15} /><span>{failure}</span></div>}
-    <div className="settings-buttons">
-      <button className="button subtle small" onClick={onCheck} disabled={status === 'checking'}>{status === 'checking' ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}检查更新</button>
-      {/* The only manual route: everything else installs itself, and the release page is always
-          reachable even when the API check or a download times out behind a proxy. */}
-      <button className={`button ${failure ? 'secondary' : 'subtle'} small`} onClick={() => { setPageError(''); window.roomcast?.openReleasePage?.().catch(failure => setPageError(cleanIpcError(failure))); }}><Link size={15} />打开发布页（手动下载）</button>
-    </div>
-    <details className="about-details"><summary>更新说明</summary><p className="about-note">更新包经 SHA256 校验后安装并重启；失败会回滚。Windows 程序未签名，网络受限时可手动下载。</p></details>
-  </section>;
-}
-
-// The startup prompt: what changed, and one button that actually updates. Closing it (X or
-// 稍后) can remember the version so the same release does not pop up again.
-function UpdatePromptModal({ current, result, install, dontRemind, setDontRemind, onClose, onUpdate, onOpenPage }) {
-  const [error, setError] = useState('');
-  const busy = Boolean(install?.busy);
-  const notes = String(result?.notes || '').trim();
-  const published = String(result?.publishedAt || '').slice(0, 10);
-  const run = () => { setError(''); Promise.resolve(onUpdate()).catch(failure => setError(cleanIpcError(failure))); };
-  return <Modal
-    title={`发现新版本 ${result?.version || ''}`}
-    subtitle={`当前版本 ${current || '未知'}${result?.prerelease ? ' · 公开测试版' : ''}`}
-    onClose={onClose}
-    busy={busy}
-  >
-    <div className="update-prompt">
-      <div className="update-prompt-head"><strong>{result?.name || `Roomcast ${result?.version || ''}`}</strong>{published && <span>{published}</span>}</div>
-      <div className="update-prompt-notes">{notes || (result?.notesUnavailable ? '更新内容暂时读不到（GitHub 接口受限）。可以点下面按钮到发布页查看，或直接更新。' : '本次更新没有提供说明。')}</div>
-      {!install?.supported && <div className="update-manual" role="status"><Info size={15} /><span>{install?.reason || '当前运行方式不支持自动更新，请手动下载安装包。'}</span></div>}
-      {(error || install?.error) && <div className="inline-error" role="alert"><Info size={16} />{error || install.error}</div>}
-      <label className="update-prompt-remind"><input type="checkbox" checked={dontRemind} onChange={event => setDontRemind(event.target.checked)} /><span>不再弹出此框（下次启动不再提示 {result?.version || '此版本'}）</span></label>
-    </div>
-    <footer className="modal-actions">
-      <button className="button secondary" onClick={onClose} disabled={busy}>稍后</button>
-      {install?.supported
-        ? <button className="button primary" onClick={run} disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}{busy ? '正在准备更新…' : '立即更新'}</button>
-        : <button className="button primary" onClick={onOpenPage} disabled={busy}><Link size={17} />打开发布页下载</button>}
-    </footer>
-  </Modal>;
-}
-
-function AboutPanel({ version = '' }) {
-  const exportDiagnostics = () => {
-    const diagnostics = {
-      ...getLifecycleDiagnostics(version),
-      media: {
-        connections: readP2pDiagnostics(),
-        vdoPublisher: window.roomcastVdoDiagnostics?.() ?? null,
-      },
-    };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(diagnostics, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Roomcast-${version || 'dev'}-diagnostics.json`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-  return <>
-    <section className="settings-section"><h3><Info size={17} />关于</h3>
-      <div className="about-card">
-        <div className="about-brand"><span className="brand-mark"><span /><span /></span><div><strong>同屏 Roomcast</strong><span>{version ? `版本 ${version}` : '本地开发版'} · 公开测试版（Beta）</span></div></div>
-        <p className="about-line">作者与维护：D4Y0 / Roomcast</p>
-        <p className="about-line">问题反馈：<a href="https://github.com/lpossj/roomcast/issues" target="_blank" rel="noreferrer noopener">GitHub Issues</a> · 2106841308@qq.com · z2106841308@163.com</p>
-        <p className="about-line">源码仓库：<a href="https://github.com/lpossj/roomcast" target="_blank" rel="noreferrer noopener">github.com/lpossj/roomcast</a></p>
-      </div>
-    </section>
-    <details className="settings-section about-details"><summary>隐私与使用说明</summary>
-      <p className="about-note">仅用于合法、知情同意的屏幕共享与聊天。禁止用于未经同意的监控、偷拍、监听、跟踪、骚扰或其他违法用途；使用者应自行遵守当地法律与平台规则。</p>
-      <p className="about-note">房间状态与聊天是内存态，房间结束后释放，不写入数据库。屏幕媒体通过 WebRTC DTLS-SRTP 在成员之间传输。</p>
-      <div className="settings-buttons"><button className="button subtle small" onClick={exportDiagnostics}><Download size={15} />导出诊断</button></div>
-      <p className="about-note">诊断保留本次页面会话最近 200 条操作阶段和耗时，以及有限的画质、编码和网络统计；不记录画面内容、网络地址、邀请、密钥、成员信息或聊天，不自动上传。</p>
-      <p className="about-note">网页观看入口使用固定 HTTPS 站点，分享者和观看者无需注册或登录；邀请链接等同于入房凭据，请只发给预期成员。站点可访问不代表信令和媒体连接一定可用。</p>
-      <p className="about-note">未使用商业代码签名，Windows SmartScreen 可能提示未知发布者；下载后请核对发布页提供的 SHA-256。</p>
-    </details>
-    <details className="settings-section about-details"><summary>许可与第三方组件</summary>
-      <p className="about-note">Roomcast 主体源码采用 Apache License 2.0。</p>
-      <p className="about-note">随包组件：OBS Studio 32.1.2（GPL-2.0-or-later，附对应源码归档）、Windows 系统音频 loopback 采集组件（第三方 MIT 预编译二进制）。完整清单见安装目录下的 <code>NOTICE</code> 与 <code>THIRD-PARTY-NOTICES.txt</code>，隐私与安全边界见 <code>PRIVACY.md</code> 与 <code>SECURITY.md</code>。</p>
-    </details>
-  </>;
-}
-
-function SettingsModal({ avatar, avatarName, onAvatar, voice, onClose, isDesktop, canShareScreen, localConfig, refresh, devices, devicePreferences, setDevicePreferences, refreshDevices, relaySettings, setRelaySettings, themeColor, setThemeColor, themeMode, setThemeMode, effectiveThemeColor, update, autoCheckUpdates, setAutoCheckUpdates, onCheckUpdates, updateInstall, onAutoUpdate }) {
-  const activeTest = useRef(true);
-  useEffect(() => { activeTest.current = true; return () => { activeTest.current = false; }; }, []);
-  const [working, setWorking] = useState('');
-  const [error, setError] = useState('');
-  const [section, setSection] = useState('general');
-  const testRelay = async () => { setWorking('relay'); setError(''); try { const servers = await fetchRelayIce(relaySettings); if (!activeTest.current) return; setRelaySettings(relaySettings); alert(`TURN 可用，已获取 ${servers.length} 组临时 ICE 地址。`); } catch (failure) { if (activeTest.current) setError(failure.message); } finally { if (activeTest.current) setWorking(''); } };
-  const themePresets = ['#78ddbd', '#6aa9ff', '#a98bff', '#ff8fb8', '#f0b35f', '#8bd36e'];
-  const canSelectOutput = typeof globalThis.HTMLMediaElement?.prototype?.setSinkId === 'function';
-  const canEnumerateDevices = typeof navigator.mediaDevices?.enumerateDevices === 'function';
-  const sections = [
-    { id: 'general', label: '通用', icon: Palette },
-    ...((canShareScreen || canSelectOutput) ? [{ id: 'audio', label: '音频与采集', icon: Headphones }] : []),
-    { id: 'network', label: '网络', icon: Wifi },
-    ...(isDesktop ? [{ id: 'service', label: '本地服务', icon: Server }] : []),
-    { id: 'about', label: '关于', icon: Info },
-  ];
-  const active = sections.some(item => item.id === section) ? section : 'general';
-  return <Modal title="设置" onClose={onClose} wide busy={!!working} cancellable>
-    <div className="settings-layout">
-      <nav className="settings-nav" aria-label="设置分类">
-        {sections.map(item => <button key={item.id} type="button" className={active === item.id ? 'selected' : ''} aria-current={active === item.id ? 'true' : undefined} onClick={() => setSection(item.id)}><item.icon size={16} />{item.label}</button>)}
-      </nav>
-      <div className="settings-panel">
-        {active === 'general' && <>
-          <ProfileSettings avatar={avatar} name={avatarName} onAvatar={onAvatar} />
-          <section className="settings-section"><h3><Palette size={17} />界面主题</h3>{isDesktop && <div className="theme-mode-toggle" role="group" aria-label="主题颜色来源"><button type="button" className={themeMode === THEME_MODE_WINDOWS ? 'selected' : ''} onClick={() => setThemeMode(THEME_MODE_WINDOWS)}>跟随 Windows</button><button type="button" className={themeMode === THEME_MODE_CUSTOM ? 'selected' : ''} onClick={() => setThemeMode(THEME_MODE_CUSTOM)}>自定义</button></div>}{themeMode === THEME_MODE_CUSTOM ? <><div className="theme-color-row"><label className="theme-color-picker" title="选择自定义主题色"><input type="color" value={themeColor} onChange={event => setThemeColor(event.target.value)} aria-label="选择主题色" /><span className="theme-color-swatch" style={{ background: themeColor }} /></label><div className="theme-preset-list" aria-label="主题色预设">{themePresets.map(color => <button key={color} type="button" className={`theme-preset ${themeColor === color ? 'selected' : ''}`} style={{ '--swatch': color }} onClick={() => setThemeColor(color)} aria-label={`使用主题色 ${color}`}><span /></button>)}</div><button type="button" className="button subtle small" onClick={() => setThemeColor(DEFAULT_THEME_COLOR)} disabled={themeColor === DEFAULT_THEME_COLOR}>恢复默认</button></div><div className="theme-color-value"><span>当前主题色</span><code>{themeColor.toUpperCase()}</code></div></> : <div className="theme-windows-color"><span className="theme-windows-swatch" style={{ background: effectiveThemeColor }} aria-hidden="true" /><span>使用 Windows 强调色</span><code>{effectiveThemeColor.toUpperCase()}</code></div>}</section>
-          {isDesktop && <section className="settings-section"><h3><MonitorUp size={17} />屏幕采集</h3><div className="diagnostic-row"><span>原生屏幕 / 窗口采集</span><span className="good-text"><Check size={14} />WebRTC P2P</span></div></section>}
-        </>}
-        {active === 'audio' && <><VoiceSettings voice={voice} avatar={avatar} name={avatarName} /><section className="settings-section"><h3><Headphones size={17} />共享音频设备</h3><div className="device-grid"><label>麦克风<select aria-label="选择麦克风" value={devicePreferences.inputId} onChange={event => setDevicePreferences(value => ({ ...value, inputId: event.target.value }))}><option value="">系统默认麦克风</option>{devices.inputs.filter(item => item.id && item.id !== 'default').map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>{canSelectOutput && <label>声音播放设备<select aria-label="选择扬声器" value={devicePreferences.outputId} onChange={event => setDevicePreferences(value => ({ ...value, outputId: event.target.value }))}><option value="">系统默认扬声器</option>{devices.outputs.filter(item => item.id && item.id !== 'default').map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}</div>{canEnumerateDevices && <div className="settings-buttons"><button className="button subtle small" onClick={() => refreshDevices().catch(failure => setError(failure.message))}><RefreshCw size={15} />刷新设备</button></div>}</section>
-          {isDesktop && <section className="settings-section"><h3><MonitorUp size={17} />屏幕采集</h3><div className="diagnostic-row"><span>原生屏幕 / 窗口采集</span><span className="good-text"><Check size={14} />WebRTC P2P</span></div><div className="diagnostic-row"><span>采集引擎</span><span className="muted-text">OBS 固定帧率 / 原生采集</span></div></section>}</>}
-        {active === 'network' && <section className="settings-section"><h3><Wifi size={17} />Cloudflare TURN 中继</h3><label className="switch-row"><span><ShieldCheck size={18} /><span>启用 TURN</span></span><input type="checkbox" checked={relaySettings.enabled} onChange={event => setRelaySettings({ ...relaySettings, enabled: event.target.checked })} /><span className="switch" aria-hidden="true" /></label><label className="standalone-label">Worker 地址<input value={relaySettings.endpoint} onChange={event => setRelaySettings({ ...relaySettings, endpoint: event.target.value })} placeholder="https://roomcast.example.com" spellCheck={false} /></label><label className="standalone-label">Worker 访问密钥<input type="password" value={relaySettings.accessKey} onChange={event => setRelaySettings({ ...relaySettings, accessKey: event.target.value })} placeholder="部署 Worker 时自己设置的随机密钥" autoComplete="off" /></label><div className="settings-buttons"><button className="button secondary small" onClick={testRelay} disabled={!relaySettings.enabled || !!working}>{working === 'relay' ? <LoaderCircle size={15} className="spin" /> : <Wifi size={15} />}保存并测试 TURN</button></div></section>}
-        {active === 'service' && isDesktop && <section className="settings-section"><h3><Server size={17} />本地服务</h3><div className="diagnostic-row"><span>房间控制服务</span><span className={localConfig ? 'good-text' : 'muted-text'}>{localConfig ? <><Check size={14} />正在运行 · :{localConfig.port}</> : '无法连接'}</span></div><div className="settings-buttons"><button className="button subtle small" onClick={refresh}><RefreshCw size={15} />刷新状态</button></div></section>}
-        {active === 'about' && <>
-          <AboutPanel version={localConfig?.version || APP_VERSION} />
-          {isDesktop && <UpdateSection version={localConfig?.version || APP_VERSION} update={update} autoCheck={autoCheckUpdates} setAutoCheck={setAutoCheckUpdates} onCheck={onCheckUpdates} install={updateInstall} onAutoUpdate={onAutoUpdate} />}
-        </>}
-        {error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}
-      </div>
-    </div>
-    <footer className="settings-footer"><span><ShieldCheck size={14} />P2P 房间 · 最多 10 人</span><span>{localConfig?.version || APP_VERSION ? `Roomcast ${localConfig?.version || APP_VERSION}` : 'Roomcast'}</span></footer>
-  </Modal>;
-}
-
-function MemberPermissionsModal({ member, self, onClose, command }) {
-  const [busy, setBusy] = useState('');
-  const [error, setError] = useState('');
-  const run = async (event, payload) => { setBusy(event); setError(''); try { await command(event, payload); onClose(); } catch (failure) { setError(failure.message); } finally { setBusy(''); } };
-  const owner = self?.role === 'owner';
-  const canManageLaser = member.id !== self?.id && member.role !== 'owner'
-    && (owner || (self?.role === 'admin' && member.role === 'user'));
-  return <Modal title={`管理 ${member.name}`} subtitle="" onClose={onClose} busy={!!busy}>
-    <div className="permission-member"><Avatar member={member} /><div><strong>{member.name}</strong><span>{member.role === 'admin' ? '管理员' : '用户'} · {member.canShare ? '允许共享' : '已禁止共享'}</span></div></div>
-    {owner && <section className="settings-section"><h3><ShieldCheck size={17} />成员角色</h3><div className="settings-buttons"><button className={`button small ${member.role === 'admin' ? 'primary' : 'secondary'}`} onClick={() => run('member:role', { memberId: member.id, role: 'admin' })} disabled={!!busy || member.role === 'admin'}>设为管理员</button><button className={`button small ${member.role === 'user' ? 'primary' : 'secondary'}`} onClick={() => run('member:role', { memberId: member.id, role: 'user' })} disabled={!!busy || member.role === 'user'}>设为用户</button></div></section>}
-    {(owner || (self?.role === 'admin' && member.role === 'user')) && <section className="settings-section"><h3><Mic size={17} />麦克风管理</h3><button className="button danger-share small" disabled={!!busy || !member.voiceEnabled} onClick={() => run('member:mute', { memberId: member.id })}>关闭该成员麦克风</button></section>}
-    {canManageLaser && <section className="settings-section"><h3><Palette size={17} />激光笔权限</h3><div className="settings-buttons"><button className="button secondary small" disabled={!!busy || member.canLaser !== false} onClick={() => run('laser:member-permission', { memberId: member.id, enabled: true })}>允许使用</button><button className="button danger-share small" disabled={!!busy || member.canLaser === false} onClick={() => run('laser:member-permission', { memberId: member.id, enabled: false })}>禁止使用</button></div></section>}
-    <section className="settings-section"><h3><ScreenShare size={17} />屏幕共享权限</h3><p className="setting-description">禁止后，该成员正在进行的共享会立即停止。</p><div className="settings-buttons"><button className="button secondary small" onClick={() => run('member:share-permission', { memberId: member.id, canShare: true })} disabled={!!busy || member.canShare}>允许共享</button><button className="button danger-share small" onClick={() => run('member:share-permission', { memberId: member.id, canShare: false })} disabled={!!busy || !member.canShare}>禁止共享</button></div></section>
-    <section className="settings-section"><h3><LogOut size={17} />成员管理</h3><p className="setting-description">踢出后，该成员的共享会立即结束并离开房间。</p><button className="button danger-share small" onClick={() => run('member:kick', { memberId: member.id })} disabled={!!busy}>{busy === 'member:kick' ? <LoaderCircle size={15} className="spin" /> : <LogOut size={15} />}踢出房间</button></section>
-    {error && <div className="inline-error"><Info size={16} />{error}</div>}
-  </Modal>;
-}
-
-function InviteModal({ room, server, localConfig, onClose, copy, isP2P, relayInvite, inviteSecret, peerServer, campusSecret }) {
-  const addresses = (localConfig?.addresses || []).map(value => typeof value === 'string' ? value : value.url).filter(Boolean);
-  const loopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(server);
-  const [address, setAddress] = useState(loopback ? addresses.find(value => /^https?:\/\/100\./.test(value)) || addresses.find(value => !/localhost|127\.0\.0\.1/.test(value)) || server : server);
-  const [webViewerUrl, setWebViewerUrl] = useState(window.roomcast?.desktop ? '' : new URL('.', window.location.href).href);
-  const [webViewerError, setWebViewerError] = useState('');
-  const [webViewerBusy, setWebViewerBusy] = useState(false);
-  const webRequest = useRef(0);
-  useEffect(() => () => { webRequest.current++; }, []);
-  const startWebViewer = useCallback(() => {
-    const request = ++webRequest.current;
-    if (!window.roomcast?.startWebInvite) return;
-    setWebViewerBusy(true);
-    setWebViewerError('');
-    window.roomcast.startWebInvite().then(result => { if (request === webRequest.current) setWebViewerUrl(result.url || ''); }).catch(error => { if (request === webRequest.current) setWebViewerError(cleanIpcError(error)); }).finally(() => { if (request === webRequest.current) setWebViewerBusy(false); });
-  }, []);
-  useEffect(() => {
-    if (!isP2P || !window.roomcast?.startWebInvite) return undefined;
-    startWebViewer();
-    return window.roomcast.onWebInviteState?.(state => { if (!state.url) setWebViewerUrl(''); });
-  }, [isP2P, startWebViewer]);
-  const link = `${address}/?room=${encodeURIComponent(room.id)}&server=${encodeURIComponent(address)}`;
-  const p2pLink = `roomcast://join/${room.id}?secret=${encodeURIComponent(inviteSecret || '')}${relayInvite ? `&relay=${relayInvite}` : ''}${peerServer ? `&signal=${encodeURIComponent(peerServer)}` : ''}${campusSecret ? `&campus=${encodeURIComponent(campusSecret)}` : ''}`;
-  const webLink = (() => {
-    try {
-      const url = new URL(webViewerUrl.trim());
-      if (url.protocol !== 'https:' || url.username || url.password) return '';
-      url.search = '';
-      url.hash = '';
-      // Browsers join through ordinary WebRTC; the overlay key stays in desktop invites.
-      const webInvite = new URL(p2pLink);
-      webInvite.searchParams.delete('campus');
-      url.hash = new URLSearchParams({ room: webInvite.href }).toString();
-      return url.href;
-    } catch { return ''; }
-  })();
-  if (isP2P) return <Modal title="分享房间" onClose={onClose}>
-    <div className="invite-room"><div className="room-symbol"><AudioLines size={27} /></div><div><strong>{room.name}</strong><span>{room.members.length} / 10 位成员在线</span></div></div>
-    <label className="standalone-label">邀请链接<input value={p2pLink} readOnly onFocus={event => event.target.select()} /></label>
-    <button className="button primary full" onClick={() => copy(p2pLink)}><Copy size={17} />复制邀请链接</button>
-    <label className="standalone-label">电脑／手机网页观看链接<input value={webLink} readOnly placeholder={webViewerBusy ? '正在生成网页观看链接…' : '网页入口尚未就绪'} onFocus={event => event.target.select()} /></label>
-      <button className="button secondary full" onClick={() => copy(webLink)} disabled={!webLink}><Copy size={17} />复制网页观看链接</button>
-      {webViewerError && <div className="inline-error"><Info size={16} />{webViewerError}<button className="button secondary small" onClick={startWebViewer} disabled={webViewerBusy}>重试</button></div>}
-  </Modal>;
-  return <Modal title="分享房间" onClose={onClose}>
-    <div className="invite-room"><div className="room-symbol"><AudioLines size={27} /></div><div><strong>{room.name}</strong><span>{room.members.length} / 10 位成员在线</span></div></div>
-    <label className="standalone-label">朋友可以连接的服务地址<input value={address} onChange={event => setAddress(event.target.value.replace(/\/$/, ''))} spellCheck={false} /></label>
-    {loopback && addresses.length > 1 && <div className="address-suggestions">{addresses.filter(value => !/localhost|127\.0\.0\.1/.test(value)).map(value => <button key={value} onClick={() => setAddress(value)}>{value}</button>)}</div>}
-    <button className="button primary full" onClick={() => copy(`来同屏「${room.name}」\n服务地址：${address}\n邀请链接：${link}`)}><Copy size={17} />复制邀请信息</button>
-  </Modal>;
-}
-
-function ChatItem({ message, selfId, onRecall, onPreview, onImageContextMenu }) {
-  if (message.system) return <div className="system-message">{message.text}</div>;
-  const own = message.memberId === selfId;
-  const images = message.kind === 'image'
-    ? (Array.isArray(message.images) && message.images.length
-      ? message.images
-      : [{ id: message.id, fileName: message.fileName, objectUrl: message.objectUrl }])
-    : [];
-  return <article className={`chat-message ${own ? 'own-message' : ''}`}>
-    <Avatar member={message} />
-    <div className="chat-message-body"><div className="chat-message-meta"><strong>{message.name}</strong><time dateTime={new Date(message.at).toISOString()}>{timeLabel(message.at)}</time>{own && !message.recalled && <button className="chat-recall" title="撤回消息" aria-label="撤回消息" onClick={() => onRecall(message.id)}><RotateCcw size={12} /></button>}</div>
-      {message.recalled ? <p className="recalled-message">该消息已撤回</p> : message.kind === 'image' ? <>
-        {message.text && <p>{message.text}</p>}
-        <div className={`chat-image-grid count-${Math.min(images.length, MAX_CHAT_IMAGES)}`}>
-          {images.map((image, index) => image.objectUrl
-            ? <button key={image.id || index} type="button" className="chat-image-button" onClick={() => onPreview({ src: image.objectUrl, alt: image.fileName || `聊天图片 ${index + 1}`, fileName: image.fileName || '' })} onContextMenu={event => onImageContextMenu(event, image.objectUrl)} aria-label={`查看第 ${index + 1} 张大图`}><img className="chat-image" src={image.objectUrl} alt={image.fileName || `聊天图片 ${index + 1}`} /></button>
-            : <p key={image.id || index} className="image-unavailable">图片未保留（{image.fileName || `图片 ${index + 1}`}）</p>)}
-        </div>
-      </> : <p>{message.text}</p>}
-    </div>
-  </article>;
-}
-
-function ImagePreviewOverlay({ image, onClose, onImageContextMenu, onCopy, onDownload }) {
-  const MIN_ZOOM = 0.001, MAX_ZOOM = 8;
-  const closeRef = useRef(onClose); closeRef.current = onClose;
-  const stageRef = useRef(null);
-  const imageRef = useRef(null);
-  const dragRef = useRef(null);
-  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
-  const [viewport, setViewport] = useState({ width: 0, height: 0 });
-  const [initialized, setInitialized] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  const [view, setView] = useState({ scale: 1, rotation: 0, panX: 0, panY: 0 });
-
-  const clampZoom = value => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
-  const normalizeRotation = value => ((value % 360) + 360) % 360;
-  const rotatedSize = (size, rotation) => {
-    const normalized = normalizeRotation(rotation);
-    const sideways = normalized === 90 || normalized === 270;
-    return sideways
-      ? { width: size.height, height: size.width }
-      : { width: size.width, height: size.height };
-  };
-  const fitScaleFor = (size, rotation, frame = viewport) => {
-    if (!size.width || !size.height || !frame.width || !frame.height) return 1;
-    const rotated = rotatedSize(size, rotation);
-    return clampZoom(Math.min(1, frame.width / rotated.width, frame.height / rotated.height));
-  };
-  const clampPan = (candidate, scale, rotation, size = naturalSize, frame = viewport) => {
-    if (!size.width || !size.height || !frame.width || !frame.height) return { x: 0, y: 0 };
-    const rotated = rotatedSize(size, rotation);
-    const displayWidth = rotated.width * scale;
-    const displayHeight = rotated.height * scale;
-    // Center-based coordinate model: when the transformed image is larger than
-    // the viewport, its edge can be brought exactly to the opposite viewport edge.
-    // When it is smaller, that axis stays centered instead of drifting.
-    const maxX = Math.max(0, (displayWidth - frame.width) / 2);
-    const maxY = Math.max(0, (displayHeight - frame.height) / 2);
-    return {
-      x: Math.min(maxX, Math.max(-maxX, candidate.x)),
-      y: Math.min(maxY, Math.max(-maxY, candidate.y)),
-    };
-  };
-  const zoomBy = (factor, anchor = null) => {
-    if (!initialized) return;
-    setView(current => {
-      const nextScale = clampZoom(current.scale * factor);
-      if (Math.abs(nextScale - current.scale) < 0.000001) return current;
-      let candidate = { x: current.panX, y: current.panY };
-      if (anchor) {
-        const ratio = nextScale / current.scale;
-        candidate = {
-          x: anchor.x - (anchor.x - current.panX) * ratio,
-          y: anchor.y - (anchor.y - current.panY) * ratio,
-        };
-      }
-      const nextPan = clampPan(candidate, nextScale, current.rotation);
-      return { ...current, scale: nextScale, panX: nextPan.x, panY: nextPan.y };
-    });
-  };
-  const resetSize = () => {
-    setView({ scale: 1, rotation: 0, panX: 0, panY: 0 });
-  };
-  const fitToWindow = () => {
-    if (!naturalSize.width || !naturalSize.height || !viewport.width || !viewport.height) return;
-    setView(current => ({
-      ...current,
-      scale: fitScaleFor(naturalSize, current.rotation),
-      panX: 0,
-      panY: 0,
-    }));
-  };
-  const rotate = delta => {
-    if (!initialized) return;
-    setView(current => {
-      const nextRotation = normalizeRotation(current.rotation + delta);
-      const nextPan = clampPan({ x: current.panX, y: current.panY }, current.scale, nextRotation);
-      return { ...current, rotation: nextRotation, panX: nextPan.x, panY: nextPan.y };
-    });
-  };
-
-  useEffect(() => {
-    const key = event => { if (event.key === 'Escape') closeRef.current(); };
-    document.addEventListener('keydown', key);
-    return () => document.removeEventListener('keydown', key);
-  }, []);
-
-  useEffect(() => {
-    const stage = stageRef.current;
-    if (!stage) return undefined;
-    const update = () => {
-      const width = stage.clientWidth;
-      const height = stage.clientHeight;
-      if (!width || !height) return;
-      setViewport(current => current.width === width && current.height === height ? current : { width, height });
-    };
-    update();
-    if (typeof ResizeObserver === 'function') {
-      const observer = new ResizeObserver(update);
-      observer.observe(stage);
-      return () => observer.disconnect();
-    }
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-
-  useEffect(() => {
-    if (initialized || !naturalSize.width || !naturalSize.height || !viewport.width || !viewport.height) return;
-    setView({ scale: fitScaleFor(naturalSize, 0, viewport), rotation: 0, panX: 0, panY: 0 });
-    setInitialized(true);
-  }, [initialized, naturalSize.width, naturalSize.height, viewport.width, viewport.height]);
-
-  useEffect(() => {
-    if (!initialized) return;
-    setView(current => {
-      const nextPan = clampPan({ x: current.panX, y: current.panY }, current.scale, current.rotation);
-      if (Math.abs(nextPan.x - current.panX) < 0.001 && Math.abs(nextPan.y - current.panY) < 0.001) return current;
-      return { ...current, panX: nextPan.x, panY: nextPan.y };
-    });
-  }, [initialized, viewport.width, viewport.height, naturalSize.width, naturalSize.height]);
-
-  if (!image) return null;
-  return <div className="image-preview-overlay" role="dialog" aria-modal="true" aria-label="图片预览">
-    <button type="button" className="image-preview-close" onClick={onClose} aria-label="关闭图片预览"><X size={24} /></button>
-    <div
-      className={`image-preview-canvas ${dragging ? 'dragging' : ''}`}
-      ref={stageRef}
-      onWheel={event => {
-        if (!initialized) return;
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        zoomBy(event.deltaY < 0 ? 1.12 : 1 / 1.12, {
-          x: event.clientX - rect.left - rect.width / 2,
-          y: event.clientY - rect.top - rect.height / 2,
-        });
-      }}
-      onPointerDown={event => {
-        if (!initialized || event.button !== 0 || event.target !== imageRef.current) return;
-        dragRef.current = {
-          pointerId: event.pointerId,
-          startX: event.clientX,
-          startY: event.clientY,
-          panX: view.panX,
-          panY: view.panY,
-        };
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-        setDragging(true);
-        event.preventDefault();
-      }}
-      onPointerMove={event => {
-        const drag = dragRef.current;
-        if (!drag || drag.pointerId !== event.pointerId) return;
-        if (event.buttons === 0) {
-          dragRef.current = null;
-          setDragging(false);
-          try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
-          return;
-        }
-        const candidate = {
-          x: drag.panX + event.clientX - drag.startX,
-          y: drag.panY + event.clientY - drag.startY,
-        };
-        setView(current => {
-          const nextPan = clampPan(candidate, current.scale, current.rotation);
-          return { ...current, panX: nextPan.x, panY: nextPan.y };
-        });
-        event.preventDefault();
-      }}
-      onPointerUp={event => {
-        if (dragRef.current?.pointerId !== event.pointerId) return;
-        dragRef.current = null;
-        setDragging(false);
-        try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
-      }}
-      onPointerCancel={event => {
-        if (dragRef.current?.pointerId !== event.pointerId) return;
-        dragRef.current = null;
-        setDragging(false);
-      }}
-      onLostPointerCapture={event => {
-        if (dragRef.current?.pointerId !== event.pointerId) return;
-        dragRef.current = null;
-        setDragging(false);
-      }}
-    >
-      <div
-        className="image-preview-transform"
-        style={{ transform: `translate3d(${view.panX}px, ${view.panY}px, 0)` }}
-      >
-        <img
-          ref={imageRef}
-          src={image.src}
-          alt={image.alt || '聊天图片预览'}
-          draggable={false}
-          style={{
-            width: naturalSize.width ? `${naturalSize.width}px` : undefined,
-            height: naturalSize.height ? `${naturalSize.height}px` : undefined,
-            transform: `translate(-50%, -50%) rotate(${view.rotation}deg) scale(${view.scale})`,
-            visibility: initialized ? 'visible' : 'hidden',
-          }}
-          onLoad={event => {
-            const size = {
-              width: event.currentTarget.naturalWidth || 1,
-              height: event.currentTarget.naturalHeight || 1,
-            };
-            setNaturalSize(size);
-          }}
-          onContextMenu={event => onImageContextMenu?.(event, image.src)}
-        />
-      </div>
-    </div>
-    <div className="image-preview-toolbar" role="toolbar" aria-label="图片预览工具">
-      <button type="button" title="缩小（以图片中心为中心）" aria-label="缩小" disabled={view.scale <= MIN_ZOOM + 0.0001} onClick={() => zoomBy(1 / 1.2)}><ZoomOut size={22} /></button>
-      <button type="button" title="放大（以图片中心为中心）" aria-label="放大" disabled={view.scale >= MAX_ZOOM - 0.001} onClick={() => zoomBy(1.2)}><ZoomIn size={22} /></button>
-      <button type="button" className="image-preview-reset-size" title="还原大小（100%）" aria-label="还原大小" onClick={resetSize}>1:1</button>
-      <button type="button" title="适应窗口" aria-label="适应窗口" onClick={fitToWindow}><Maximize2 size={21} /></button>
-      <span className="image-preview-tool-separator" aria-hidden="true" />
-      <button type="button" title="向左旋转 90°" aria-label="向左旋转 90 度" onClick={() => rotate(-90)}><RotateCcw size={22} /></button>
-      <button type="button" title="向右旋转 90°" aria-label="向右旋转 90 度" onClick={() => rotate(90)}><RotateCw size={22} /></button>
-      <span className="image-preview-tool-separator" aria-hidden="true" />
-      <button type="button" title="下载图片" aria-label="下载图片" onClick={() => onDownload?.(image)}><Download size={22} /></button>
-      <button type="button" title="复制图片" aria-label="复制图片" onClick={() => onCopy?.(image.src)}><Copy size={21} /></button>
-    </div>
-  </div>;
-}
-
-function EmptyScreen({ room, onShare, onCreate, onJoin, desktop }) {
-  return <div className="empty-screen">
-    <div className="empty-grid" aria-hidden="true" />
-    <div className="screen-illustration" aria-hidden="true"><div className="illustration-orbit orbit-one" /><div className="illustration-orbit orbit-two" /><div className="floating-tile tile-a"><AudioLines size={23} /></div><div className="floating-tile tile-b"><MessageSquare size={20} /></div><div className="monitor-assembly"><div className="illustration-monitor"><div className="illustration-title"><i /><i /><i /><span /></div><div className="illustration-content"><div className="share-glyph"><ScreenShare size={36} strokeWidth={1.35} /></div><div className="illustration-line" /><div className="illustration-line short" /></div><div className="illustration-cursor"><ArrowRight size={17} /></div></div><div className="monitor-neck" /><div className="monitor-foot" /></div></div>
-    <div className="empty-copy"><h1>{room ? '暂无共享' : '创建或加入房间'}</h1><div className="empty-actions">{room ? onShare ? <button className="button primary" onClick={onShare}><ScreenShare size={18} />{desktop ? '开始屏幕共享' : '开始画面共享'}<ArrowRight size={16} /></button> : <p className="setting-description">此浏览器仅支持观看和聊天</p> : <>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={18} />创建房间</button>}<button className={onCreate ? 'button secondary' : 'button primary'} onClick={onJoin}><Link size={17} />加入房间</button></>}</div></div>
-    <span className="stage-corner top-left" /><span className="stage-corner top-right" /><span className="stage-corner bottom-left" /><span className="stage-corner bottom-right" />
-  </div>;
-}
 
 export default function App() {
   const desktopChrome = window.roomcast?.desktop === true;
@@ -895,19 +67,29 @@ export default function App() {
   const capabilities = browserCapabilities(window, cameraPermission);
   const canShareScreen = desktopChrome || capabilities.screen || capabilities.camera;
   const canHostRoom = desktopChrome || capabilities.host;
+
   useEffect(() => {
     if (desktopChrome || !navigator.permissions?.query) return undefined;
-    let active = true, status;
+    let active = true;
+    let status;
     const changed = () => { if (active) setCameraPermission(status.state); };
     navigator.permissions.query({ name: 'camera' }).then(value => {
       if (!active) return;
-      status = value; changed(); status.addEventListener('change', changed);
-    }).catch(() => { /* Safari may not implement the camera permission query. */ });
+      status = value;
+      changed();
+      status.addEventListener('change', changed);
+    }).catch(() => { });
     return () => { active = false; status?.removeEventListener('change', changed); };
   }, [desktopChrome]);
+
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
-  const notify = useCallback(text => { clearTimeout(toastTimer.current); setToast({ text }); toastTimer.current = setTimeout(() => setToast(null), 8500); }, []);
+  const notify = useCallback(text => {
+    clearTimeout(toastTimer.current);
+    setToast({ text });
+    toastTimer.current = setTimeout(() => setToast(null), 8500);
+  }, []);
+
   const roomAction = useRef(0);
   const session = useRoom(notify);
   const { room, selfId, server, config, connection, socketRef, messages, hasOlderMessages, historyLoading, loadOlderMessages, sendMessage, sendImages, recallMessage, enter, leave, command } = session;
@@ -918,28 +100,48 @@ export default function App() {
   const profilePending = useRef(false);
   const voice = useRoomVoice({ room, selfId, socket: socketRef.current, config, devicePreferences: audioDevices.preferences });
   const selfAvatar = room?.members.find(member => member.id === selfId)?.avatar || '';
+  const animatedAvatars = room?.features?.animatedAvatars === 1;
+
   useEffect(() => {
-    if (room?.features?.profiles !== 1 || !room?.id || !selfId || selfAvatar === avatar || profilePending.current) return;
-    void command('member:profile', { avatar }).catch(failure => notify(failure.message));
-  }, [room?.id, room?.features?.profiles, selfId, selfAvatar, avatar, command, notify]);
+    if (room?.features?.profiles !== 1 || !room?.id || !selfId || profilePending.current) return;
+    let cancelled = false;
+    void prepareAvatarForRoom(avatar, animatedAvatars).then(value => {
+      if (!cancelled && !profilePending.current && selfAvatar !== value) return command('member:profile', { avatar: value });
+    }).catch(failure => { if (!cancelled) notify(failure.message); });
+    return () => { cancelled = true; };
+  }, [room?.id, room?.features?.profiles, selfId, selfAvatar, avatar, animatedAvatars, command, notify]);
+
   useEffect(() => { if (voice.error) notify(voice.error); }, [voice.error, notify]);
+
   const changeAvatar = async value => {
-    const previous = avatar; profilePending.current = true; setAvatar(value);
+    const socket = socketRef.current;
+    profilePending.current = true;
     try {
-      if (room?.features?.profiles === 1) await command('member:profile', { avatar: value });
+      if (room?.features?.profiles === 1) {
+        const outgoing = await prepareAvatarForRoom(value, animatedAvatars);
+        if (socketRef.current === socket) await command('member:profile', { avatar: outgoing });
+      }
       savePreference('avatar', value);
-    } catch (error) { setAvatar(previous); throw error; }
-    finally { profilePending.current = false; }
+      setAvatar(value);
+    } finally {
+      profilePending.current = false;
+    }
   };
+
   const [relaySettings, setRelaySettingsState] = useState(loadRelaySettings);
   const [themeColor, setThemeColorState] = useState(INITIAL_CUSTOM_THEME_COLOR);
   const [themeMode, setThemeModeState] = useState(INITIAL_THEME_MODE);
   const [windowsAccentColor, setWindowsAccentColor] = useState(INITIAL_WINDOWS_ACCENT_COLOR);
   const effectiveThemeColor = themeMode === THEME_MODE_WINDOWS ? windowsAccentColor : themeColor;
+
   const persistThemeSettings = useCallback((mode, color) => {
-    try { return window.roomcast?.setThemeSettings?.({ mode: normalizeThemeMode(mode), color: normalizeThemeColor(color) }) === true; }
-    catch { return false; }
+    try {
+      return window.roomcast?.setThemeSettings?.({ mode: normalizeThemeMode(mode), color: normalizeThemeColor(color) }) === true;
+    } catch {
+      return false;
+    }
   }, []);
+
   const setThemeColor = useCallback(value => {
     const nextColor = normalizeThemeColor(value);
     const nextMode = THEME_MODE_CUSTOM;
@@ -947,6 +149,7 @@ export default function App() {
     setThemeColorState(nextColor);
     setThemeModeState(nextMode);
   }, [persistThemeSettings]);
+
   const setThemeMode = useCallback(value => {
     const nextMode = desktopChrome ? normalizeThemeMode(value) : THEME_MODE_CUSTOM;
     persistThemeSettings(nextMode, themeColor);
@@ -954,13 +157,21 @@ export default function App() {
     if (nextMode === THEME_MODE_WINDOWS) {
       try { setWindowsAccentColor(normalizeThemeColor(window.roomcast?.getSystemAccentColor?.() || DEFAULT_THEME_COLOR)); } catch { }
     }
-  }, [persistThemeSettings, themeColor]);
+  }, [desktopChrome, persistThemeSettings, themeColor]);
+
   useEffect(() => { applyThemeColor(effectiveThemeColor); }, [effectiveThemeColor]);
   useEffect(() => window.roomcast?.onSystemAccentColor?.(color => setWindowsAccentColor(normalizeThemeColor(color))), []);
-  const setRelaySettings = useCallback(value => { const next = typeof value === 'function' ? value(loadRelaySettings()) : value; saveRelaySettings(next); setRelaySettingsState(next); }, []);
+
+  const setRelaySettings = useCallback(value => {
+    const next = typeof value === 'function' ? value(loadRelaySettings()) : value;
+    saveRelaySettings(next);
+    setRelaySettingsState(next);
+  }, []);
+
   const [modal, setModal] = useState(initialInvite ? 'join' : null);
   const [managedMember, setManagedMember] = useState(null);
   const [inviteRoom, setInviteRoom] = useState(initialInvite);
+
   useEffect(() => window.roomcast?.onInvite?.(roomId => { setInviteRoom(roomId); setModal('join'); }), []);
   useEffect(() => {
     const showInvite = () => {
@@ -971,7 +182,6 @@ export default function App() {
       setInviteRoom(invite);
       setModal('join');
     };
-    // Pasting a link with a new fragment can navigate within the same document.
     window.addEventListener('hashchange', showInvite);
     window.addEventListener('popstate', showInvite);
     return () => {
@@ -979,6 +189,7 @@ export default function App() {
       window.removeEventListener('popstate', showInvite);
     };
   }, [connection, leave]);
+
   useEffect(() => {
     if (!desktopChrome || !window.roomcast?.setTitleBarTheme) return undefined;
     let previous = '';
@@ -986,12 +197,12 @@ export default function App() {
       const color = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
       if (!/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(color) || color === previous) return;
       const raw = color.slice(1);
-      const full = raw.length === 3 ? [...raw].map(character => character + character).join('') : raw;
+      const full = raw.length === 3 ? [...raw].map(ch => ch + ch).join('') : raw;
       const red = Number.parseInt(full.slice(0, 2), 16);
       const green = Number.parseInt(full.slice(2, 4), 16);
       const blue = Number.parseInt(full.slice(4, 6), 16);
       const luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
-      document.documentElement.style.setProperty('--titlebar-foreground', luminance >= 150 ? '#0b1116' : '#ffffff');
+      document.documentElement.style.setProperty('--titlebar-foreground', luminance >= 150 ? '#091017' : '#ffffff');
       previous = color;
       window.roomcast.setTitleBarTheme(color);
     };
@@ -1001,6 +212,7 @@ export default function App() {
     if (document.body) observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
     return () => observer.disconnect();
   }, [desktopChrome]);
+
   const [localConfig, setLocalConfig] = useState(null);
   const [shareBusy, setShareBusy] = useState(false);
   const [chat, setChat] = useState('');
@@ -1013,13 +225,16 @@ export default function App() {
   const [previewImage, setPreviewImage] = useState(null);
   const [imageContextMenu, setImageContextMenu] = useState(null);
   const imageInput = useRef(null);
+
   useEffect(() => { pendingImagesRef.current = pendingImages; }, [pendingImages]);
+
   const clearPendingImages = useCallback(() => {
     setPendingImages(current => {
       current.forEach(item => { if (item.objectUrl) URL.revokeObjectURL(item.objectUrl); });
       return [];
     });
   }, []);
+
   useEffect(() => {
     if (!room) {
       void window.roomcast?.stopWebInvite?.();
@@ -1029,9 +244,11 @@ export default function App() {
       setChatDragActive(false);
     }
   }, [room, clearPendingImages]);
+
   useEffect(() => () => {
     pendingImagesRef.current.forEach(item => { if (item.objectUrl) URL.revokeObjectURL(item.objectUrl); });
   }, []);
+
   useEffect(() => {
     if (!imageContextMenu) return undefined;
     const closeMenu = () => setImageContextMenu(null);
@@ -1049,8 +266,52 @@ export default function App() {
       window.removeEventListener('resize', closeMenu);
     };
   }, [imageContextMenu]);
-  const [showChat, setShowChat] = useState(() => window.innerWidth > 850);
-  const [showMembers, setShowMembers] = useState(false);
+
+  const [compactPanels, setCompactPanels] = useState(() => window.matchMedia('(max-width: 850px)').matches);
+  const [openDrawer, setOpenDrawer] = useState(null);
+  const [wideChat, setWideChat] = useState(true);
+  const [wideMembers, setWideMembers] = useState(() => window.innerWidth > 1060);
+  const showChat = compactPanels ? openDrawer === 'chat' : wideChat;
+  const showMembers = compactPanels ? openDrawer === 'members' : wideMembers;
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 850px)');
+    const sync = () => {
+      setCompactPanels(query.matches);
+      setOpenDrawer(null);
+    };
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
+  useEffect(() => { setOpenDrawer(null); }, [room?.id]);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (desktopChrome || !viewport) return;
+    const root = document.documentElement;
+    // Some mobile keyboards resize only the visual viewport. Keep the chat
+    // composer and open dialog inside it without interfering with pinch zoom.
+    const sync = () => {
+      if (viewport.scale === 1 && viewport.height + 1 < root.clientHeight) {
+        root.style.setProperty('--web-visible-height', `${viewport.height}px`);
+        root.style.setProperty('--web-visible-top', `${viewport.offsetTop}px`);
+      } else {
+        root.style.removeProperty('--web-visible-height');
+        root.style.removeProperty('--web-visible-top');
+      }
+    };
+    sync();
+    viewport.addEventListener('resize', sync);
+    viewport.addEventListener('scroll', sync);
+    return () => {
+      viewport.removeEventListener('resize', sync);
+      viewport.removeEventListener('scroll', sync);
+      root.style.removeProperty('--web-visible-height');
+      root.style.removeProperty('--web-visible-top');
+    };
+  }, [desktopChrome]);
+  const [settingsSection, setSettingsSection] = useState('general');
+  const [unreadChat, setUnreadChat] = useState(false);
+  const lastSeenMessageCount = useRef(0);
   const [previewScale, setPreviewScale] = useState(1);
   const [latencyMs, setLatencyMs] = useState(null);
   const [screenGridWidth, setScreenGridWidth] = useState(0);
@@ -1062,6 +323,7 @@ export default function App() {
   const watchingStreams = useRef(new Set());
   const activeRoomId = useRef(null);
   activeRoomId.current = room?.id || null;
+
   const self = room?.members.find(member => member.id === selfId);
   const canManageGlobalLaser = room?.features?.laser === 1 && ['owner', 'admin'].includes(self?.role);
   const toggleGlobalLaser = async () => {
@@ -1071,14 +333,36 @@ export default function App() {
     catch (error) { notify(error.message); }
     finally { setGlobalLaserPending(false); }
   };
+
   const streams = room?.streams || [];
   const ownShare = streams.some(stream => stream.memberId === selfId);
-  const panels = usePanelWidths(showChat);
+  const panels = usePanelWidths(Boolean(room) && showChat);
   const appearance = useAppearance();
+  const gpu = useGpuSettings();
   useBackgroundStatus({ desktop: desktopChrome, room, sharing: ownShare });
+
+  useEffect(() => {
+    if (!room || showChat) {
+      lastSeenMessageCount.current = messages.length;
+      setUnreadChat(false);
+      return;
+    }
+    if (messages.length > lastSeenMessageCount.current) {
+      setUnreadChat(true);
+    }
+    lastSeenMessageCount.current = messages.length;
+  }, [room, showChat, messages.length]);
+
+  const openSettings = (section = 'general') => {
+    setSettingsSection(section);
+    setModal('settings');
+  };
+
   const previewCardWidth = previewCardWidthFor(streams.length, screenGridWidth, previewScale);
   const latencyTone = latencyToneFor(latencyMs);
+
   useEffect(() => { setPreviewScale(1); }, [room?.id]);
+
   useEffect(() => {
     let stopped = false;
     let timer = null;
@@ -1091,7 +375,10 @@ export default function App() {
     }
 
     const schedule = () => {
-      if (!stopped) timer = setTimeout(measure, LATENCY_POLL_MS);
+      const interval = (!gpu.isForegroundActive && gpu.settings.lowPowerBackground)
+        ? 10000
+        : LATENCY_POLL_MS;
+      if (!stopped) timer = setTimeout(measure, interval);
     };
 
     const measure = async () => {
@@ -1124,31 +411,23 @@ export default function App() {
     };
 
     void measure();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [room?.id, connection, socketRef, gpu.isForegroundActive, gpu.settings.lowPowerBackground]);
 
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [room?.id, connection, socketRef]);
   useEffect(() => {
     const grid = screenGridRef.current;
-    if (!grid) {
-      setScreenGridWidth(0);
-      return undefined;
-    }
+    if (!grid) { setScreenGridWidth(0); return undefined; }
     const measure = () => setScreenGridWidth(Math.round(grid.getBoundingClientRect().width));
     measure();
     if (typeof ResizeObserver !== 'function') {
       window.addEventListener('resize', measure);
       return () => window.removeEventListener('resize', measure);
     }
-    const observer = new ResizeObserver(entries => {
-      const width = entries[0]?.contentRect?.width;
-      if (Number.isFinite(width)) setScreenGridWidth(Math.round(width));
-    });
+    const observer = new ResizeObserver(measure);
     observer.observe(grid);
     return () => observer.disconnect();
   }, [streams.length]);
+
   useEffect(() => {
     const grid = screenGridRef.current;
     if (!grid) return undefined;
@@ -1163,10 +442,11 @@ export default function App() {
     grid.addEventListener('wheel', handlePreviewWheel, { passive: false });
     return () => grid.removeEventListener('wheel', handlePreviewWheel);
   }, [streams.length]);
+
   useEffect(() => {
-    const memberIds = new Set((room?.members || []).map(member => member.id));
-    for (const ownerId of watchingStreams.current) if (!memberIds.has(ownerId)) watchingStreams.current.delete(ownerId);
-  }, [room?.members]);
+    const activeKeys = new Set((room?.streams || []).map(stream => `${stream.memberId}:${stream.startedAt ?? ''}`));
+    for (const key of watchingStreams.current) if (!activeKeys.has(key)) watchingStreams.current.delete(key);
+  }, [room?.streams]);
 
   const stopLocalShare = useCallback(async (socket = socketRef.current) => {
     window.roomcast?.desktopLaser?.({ captureStopped: true });
@@ -1175,18 +455,27 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     if (!desktopChrome) return;
-    await fetch('/api/config').then(response => { if (!response.ok) throw new Error('本地服务未启动'); return response.json(); }).then(setLocalConfig).catch(() => setLocalConfig(null));
+    await fetch('/api/config')
+      .then(response => { if (!response.ok) throw new Error('本地服务未启动'); return response.json(); })
+      .then(setLocalConfig)
+      .catch(() => setLocalConfig(null));
   }, [desktopChrome]);
+
   useEffect(() => { refresh(); return () => clearTimeout(toastTimer.current); }, [refresh]);
   useEffect(() => {
     const ended = event => notify(event.detail || '声音来源已不可用。');
     window.addEventListener('roomcast:audio-capture-ended', ended);
     return () => window.removeEventListener('roomcast:audio-capture-ended', ended);
   }, [notify]);
+
   useEffect(() => { if (stickToChatEnd.current) chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [messages.at(-1)?.seq]);
   useEffect(() => {
-    if ((!room || self?.canShare === false) && ownsCapture.current) { ownsCapture.current = false; stopLocalShare().catch(error => notify(`停止采集失败：${error.message}`)); }
+    if ((!room || self?.canShare === false) && ownsCapture.current) {
+      ownsCapture.current = false;
+      stopLocalShare().catch(error => notify(`停止采集失败：${error.message}`));
+    }
   }, [room, self?.canShare, notify, stopLocalShare]);
+
   useEffect(() => {
     const unload = event => {
       if (event.type === 'pagehide' && event.persisted) return;
@@ -1196,7 +485,7 @@ export default function App() {
     if (desktopChrome) window.addEventListener('beforeunload', unload);
     window.addEventListener('pagehide', unload);
     return () => { window.removeEventListener('beforeunload', unload); window.removeEventListener('pagehide', unload); };
-  }, [leave, desktopChrome]);
+  }, [leave, desktopChrome, socketRef]);
 
   const copy = async text => {
     try {
@@ -1205,11 +494,21 @@ export default function App() {
         if (!result?.ok) throw new Error('Electron 剪贴板写入失败');
       } else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
       else {
-        const input = document.createElement('textarea'); input.value = text; input.style.position = 'fixed'; input.style.opacity = '0'; document.body.append(input); input.select();
-        const ok = document.execCommand('copy'); input.remove(); if (!ok) throw new Error('请手动选择并复制内容');
+        const input = document.createElement('textarea');
+        input.value = text;
+        input.style.position = 'fixed';
+        input.style.opacity = '0';
+        document.body.append(input);
+        input.select();
+        const ok = document.execCommand('copy');
+        input.remove();
+        if (!ok) throw new Error('请手动选择并复制内容');
       }
-    } catch (error) { notify(`复制失败：${error.message}`); }
+    } catch (error) {
+      notify(`复制失败：${error.message}`);
+    }
   };
+
   const handleEnter = async (mode, details) => {
     if (mode === 'create' && !canHostRoom) {
       setModal(null);
@@ -1220,11 +519,13 @@ export default function App() {
     const result = await enter(mode, { ...details, relaySettings });
     if (action === roomAction.current && !result?.cancelled) setModal(null);
   };
+
   const cancelEntry = () => {
     roomAction.current++;
     if (connection === 'connecting') void leave(true);
     setModal(null);
   };
+
   const handleLeave = async () => {
     const action = ++roomAction.current;
     setModal(null);
@@ -1237,15 +538,18 @@ export default function App() {
     try {
       const outcome = await leave(true);
       if (action !== roomAction.current) return;
-      setChat(''); refresh();
+      setChat('');
+      refresh();
       if (outcome?.closed) notify(outcome.reason || '房间已关闭。');
-    } catch (error) { if (action === roomAction.current) notify(error.message); }
+    } catch (error) {
+      if (action === roomAction.current) notify(error.message);
+    }
   };
-  // Desktop-only update check. The web client is served from the host's own bundle, so it
-  // has nothing to update; the main process owns the request, the asset URLs and hashing.
+
   const [update, setUpdate] = useState({ status: 'idle', result: null, error: '' });
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(() => loadPreference('autoCheckUpdates', true));
   const updateAvailable = Boolean(update.result?.available);
+
   const checkUpdates = useCallback(async () => {
     if (!window.roomcast?.checkForUpdates) return;
     setUpdate(current => ({ ...current, status: 'checking', error: '' }));
@@ -1256,21 +560,18 @@ export default function App() {
       setUpdate(current => ({ ...current, status: 'done', error: cleanIpcError(error) }));
     }
   }, []);
+
   useEffect(() => {
     if (!desktopChrome || !autoCheckUpdates) return undefined;
-    // A check is a plain GitHub API request; keep it off the startup path.
     const timer = setTimeout(() => { void checkUpdates(); }, 4000);
     return () => clearTimeout(timer);
   }, [desktopChrome, autoCheckUpdates, checkUpdates]);
-  // Automatic update. Main decides whether this install may replace itself (portable EXE,
-  // program folder, or neither) and then takes over: it closes this window and shows the
-  // progress in a dedicated updater window, so the renderer only has to ask and report.
+
   const [updateInstall, setUpdateInstall] = useState({ busy: false, error: '', supported: false, kind: '', reason: '' });
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(() => String(loadPreference('dismissedUpdateVersion', '') || ''));
   const [updatePrompt, setUpdatePrompt] = useState({ open: false, dontRemind: false });
-  // A version prompts at most once per run: closing with 稍后 must not bring it back, and
-  // a manual check in the settings panel must not reopen it either.
   const promptedUpdateVersion = useRef('');
+
   useEffect(() => {
     if (!desktopChrome || !window.roomcast?.updateTarget) return undefined;
     let cancelled = false;
@@ -1279,11 +580,10 @@ export default function App() {
       .catch(() => { });
     return () => { cancelled = true; };
   }, [desktopChrome]);
+
   useEffect(() => {
     if (!desktopChrome || !window.roomcast?.takeUpdateFailure) return undefined;
     let cancelled = false;
-    // The replacement runs after this program has exited, so a failed one can only be
-    // reported here, on the next start; the main process reads and clears the marker once.
     window.roomcast.takeUpdateFailure()
       .then(failure => {
         if (cancelled || !failure?.version) return;
@@ -1293,19 +593,18 @@ export default function App() {
       .catch(() => { });
     return () => { cancelled = true; };
   }, [desktopChrome, notify]);
+
   useEffect(() => {
     const result = update.result;
     if (!desktopChrome || !result?.available) return;
-    // Never stack on top of another dialog (settings, share, invite...). Once that dialog
-    // closes this effect runs again and the prompt still appears.
     if (modal) return;
-    // "不再弹出此框" remembers one version, not the whole check: the next release prompts again.
     const version = String(result.version || '');
     if (!version || version === dismissedUpdateVersion) return;
     if (promptedUpdateVersion.current === version) return;
     promptedUpdateVersion.current = version;
     setUpdatePrompt({ open: true, dontRemind: false });
   }, [desktopChrome, update.result, dismissedUpdateVersion, modal]);
+
   const rememberDismissedVersion = () => {
     const version = String(update.result?.version || '');
     if (!updatePrompt.dontRemind || !version) return;
@@ -1328,19 +627,28 @@ export default function App() {
       setUpdateInstall(current => ({ ...current, busy: false, error: cleanIpcError(error) }));
     }
   };
+
   const startShare = async options => {
     if (!room || shareBusy) return;
     const screenSocket = socketRef.current;
-    const expectedRoom = room.id, expectedSocket = screenSocket?.id;
-    let claimed = false, captured = null;
+    const expectedRoom = room.id;
+    const expectedSocket = screenSocket?.id;
+    let claimed = false;
+    let captured = null;
     const captureOptions = { ...options, inputDeviceId: audioDevices.preferences.inputId, outputDeviceId: audioDevices.preferences.outputId };
     const nativeShareAudio = Boolean(window.roomcast?.startAudioCapture && /(?:system|application|exclude)/.test(String(options.audioMode || '')));
     const captureRequest = nativeShareAudio ? { ...captureOptions, systemAudio: false, microphone: false } : captureOptions;
     const captureFactory = options.sourceType === 'camera' ? startCameraCapture : options.captureBackend === 'obs' ? startObsFixedFpsCapture : startIntegratedCapture;
-    const capturePromise = captureFactory(captureRequest).then(stream => ({ stream }), error => ({ error }));
+    // Retry incomplete desktop setup on an explicit share action. Preserve the
+    // browser's immediate capture call and its transient user activation.
+    const captureTask = window.roomcast?.prepareNetwork
+      ? window.roomcast.prepareNetwork().catch(() => null).then(() => captureFactory(captureRequest))
+      : captureFactory(captureRequest);
+    const capturePromise = captureTask.then(stream => ({ stream }), error => ({ error }));
     setShareBusy(true);
     try {
-      const result = await command('share:claim'); claimed = true;
+      await command('share:claim');
+      claimed = true;
       const capture = await capturePromise;
       if (capture.error) throw capture.error;
       captured = capture.stream;
@@ -1364,26 +672,47 @@ export default function App() {
       if (activeRoomId.current !== expectedRoom || socketRef.current?.id !== expectedSocket) throw new Error('房间连接已变化，已取消屏幕共享');
       if (captureEnded || capturedVideoTrack?.readyState === 'ended') throw new Error(captureEndedReason || '屏幕采集在共享建立前已经结束。');
       ownsCapture.current = true;
-      await command('share:started', { settings: options, microphone: options.microphone === true });
+      await command('share:started', {
+        settings: options,
+        microphone: options.microphone === true,
+        campusCapable: screenSocket.canUseCampus?.() === true,
+        nativeCapable: !!screenSocket.p2p && !!window.roomcast?.nativeIce,
+      });
       if (captureEnded || capturedVideoTrack?.readyState === 'ended') throw new Error(captureEndedReason || '屏幕采集在共享建立时已经结束。');
       if (options.sourceType !== 'camera') window.roomcast?.desktopLaser?.({ captureStarted: true });
-      setModal(null); await refresh();
+      setModal(null);
+      await refresh();
     } catch (error) {
       window.roomcast?.desktopLaser?.({ captureStopped: true });
       if (!captured) captured = (await capturePromise).stream || null;
       if (screenSocket?.screenStream === captured) screenSocket.stopScreenStream();
-      else { for (const track of captured?.getTracks() || []) track.stop(); captured?.roomcastCleanup?.(); }
+      else {
+        for (const track of captured?.getTracks() || []) track.stop();
+        captured?.roomcastCleanup?.();
+      }
       if (claimed && socketRef.current?.id === expectedSocket) await command('share:stop').catch(() => { });
-      ownsCapture.current = false; throw error;
-    } finally { setShareBusy(false); }
+      ownsCapture.current = false;
+      throw error;
+    } finally {
+      setShareBusy(false);
+    }
   };
+
   const stopShare = async () => {
     if (shareBusy) return;
     setShareBusy(true);
-    try { ownsCapture.current = false; await stopLocalShare(); await command('share:stop'); }
-    catch (error) { notify(error.message); }
-    finally { setShareBusy(false); refresh(); }
+    try {
+      ownsCapture.current = false;
+      await stopLocalShare();
+      await command('share:stop');
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setShareBusy(false);
+      refresh();
+    }
   };
+
   const restartShare = async options => {
     if (!ownShare) return startShare(options);
     setShareBusy(true);
@@ -1402,21 +731,30 @@ export default function App() {
       throw new Error(`旧共享已关闭，但重新开启失败：${error.message}`);
     }
   };
+
   const openShare = () => {
     if (!room) { setModal(canHostRoom ? 'create' : 'join'); return; }
     if (!canShareScreen) { notify('此浏览器仅支持观看和聊天'); return; }
     if (!self?.canShare && !ownShare) { notify('管理员已关闭你的屏幕共享权限。'); return; }
     setModal('share');
   };
+
   const sendChat = async event => {
     event?.preventDefault();
     if ((!chat.trim() && !pendingImages.length) || sending || sendingImage || !room) return;
     if (pendingImages.length) { await sendPendingImages(chat.trim()); return; }
     setSending(true);
-    try { await sendMessage(chat.trim()); setChat(''); stickToChatEnd.current = true; }
-    catch (error) { notify(error.message); }
-    finally { setSending(false); }
+    try {
+      await sendMessage(chat.trim());
+      setChat('');
+      stickToChatEnd.current = true;
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setSending(false);
+    }
   };
+
   const stageImages = useCallback(files => {
     if (sendingImage || !room) return;
     const socket = socketRef.current;
@@ -1458,11 +796,13 @@ export default function App() {
       stickToChatEnd.current = true;
       requestAnimationFrame(() => chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
     })();
-  }, [notify, room, sendingImage]);
+  }, [notify, room, sendingImage, socketRef]);
+
   const chooseImage = event => {
     stageImages(event.target.files);
     event.target.value = '';
   };
+
   const normalizeIncomingImageFiles = (files, prefix = 'image') => [...(files || [])].map((source, index) => {
     if (!source) return null;
     const mimeToExtension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
@@ -1480,6 +820,7 @@ export default function App() {
       : `${prefix}-${Date.now()}-${index + 1}.${normalizedExtension}`;
     return new File([source], safeName, { type: normalizedMime, lastModified: source.lastModified || Date.now() });
   }).filter(Boolean);
+
   const pasteImage = event => {
     if (!room || sendingImage) return;
     const items = [...(event.clipboardData?.items || [])].filter(entry => entry.kind === 'file' && String(entry.type || '').toLowerCase().startsWith('image/'));
@@ -1489,12 +830,14 @@ export default function App() {
     event.preventDefault();
     stageImages(files);
   };
+
   const dragContainsFiles = dataTransfer => {
     if (!dataTransfer) return false;
     const items = [...(dataTransfer.items || [])];
     if (items.some(item => item.kind === 'file' && (!item.type || String(item.type).toLowerCase().startsWith('image/')))) return true;
     return [...(dataTransfer.types || [])].includes('Files');
   };
+
   const handleChatDragEnter = event => {
     if (!dragContainsFiles(event.dataTransfer)) return;
     event.preventDefault();
@@ -1502,6 +845,7 @@ export default function App() {
     chatDragDepth.current += 1;
     setChatDragActive(true);
   };
+
   const handleChatDragOver = event => {
     if (!dragContainsFiles(event.dataTransfer)) return;
     event.preventDefault();
@@ -1509,12 +853,14 @@ export default function App() {
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     setChatDragActive(true);
   };
+
   const handleChatDragLeave = event => {
     if (!chatDragActive) return;
     event.preventDefault();
     chatDragDepth.current = Math.max(0, chatDragDepth.current - 1);
     if (chatDragDepth.current === 0) setChatDragActive(false);
   };
+
   const handleChatDrop = event => {
     if (!dragContainsFiles(event.dataTransfer)) return;
     event.preventDefault();
@@ -1531,6 +877,7 @@ export default function App() {
     if (!files.length) return;
     stageImages(files);
   };
+
   const removePendingImage = index => {
     setPendingImages(current => {
       const item = current[index];
@@ -1538,6 +885,7 @@ export default function App() {
       return current.filter((_, itemIndex) => itemIndex !== index);
     });
   };
+
   const sendPendingImages = async (caption = chat.trim()) => {
     if (!pendingImages.length || sendingImage || !room) return;
     const files = pendingImages.map(item => item.file);
@@ -1547,14 +895,21 @@ export default function App() {
       clearPendingImages();
       setChat('');
       stickToChatEnd.current = true;
-    } catch (error) { notify(error.message); }
-    finally { setSendingImage(false); }
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setSendingImage(false);
+    }
   };
+
   const handleImageContextMenu = (event, src) => {
     if (!window.roomcast?.copyImage || !src) return;
     event.preventDefault();
     event.stopPropagation();
-    const menuWidth = 136, menuHeight = 40, edge = 8, titlebarOffset = desktopChrome ? 32 : 0;
+    const menuWidth = 136;
+    const menuHeight = 40;
+    const edge = 8;
+    const titlebarOffset = desktopChrome ? 32 : 0;
     const maxX = Math.max(edge, window.innerWidth - menuWidth - edge);
     const maxY = Math.max(titlebarOffset + edge, window.innerHeight - menuHeight - edge);
     setImageContextMenu({
@@ -1563,6 +918,7 @@ export default function App() {
       y: Math.min(Math.max(titlebarOffset + edge, event.clientY), maxY),
     });
   };
+
   const imageToPngBytes = async src => {
     const image = new Image();
     image.src = src;
@@ -1577,6 +933,7 @@ export default function App() {
     if (!blob) throw new Error('无法读取图片。');
     return new Uint8Array(await blob.arrayBuffer());
   };
+
   const copyImageToClipboard = async src => {
     const bytes = await imageToPngBytes(src);
     if (desktopChrome) {
@@ -1587,6 +944,7 @@ export default function App() {
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': new Blob([bytes], { type: 'image/png' }) })]);
     }
   };
+
   const copyContextImage = async () => {
     const src = imageContextMenu?.src;
     setImageContextMenu(null);
@@ -1594,11 +952,13 @@ export default function App() {
     try { await copyImageToClipboard(src); }
     catch (error) { notify(`复制图片失败：${error.message}`); }
   };
+
   const copyPreviewImage = async src => {
     if (!src) return;
     try { await copyImageToClipboard(src); }
     catch (error) { notify(`复制图片失败：${error.message}`); }
   };
+
   const downloadPreviewImage = async image => {
     if (!image?.src) return;
     try {
@@ -1613,70 +973,387 @@ export default function App() {
         link.download = `${stem}.png`;
         link.click();
       }
-    } catch (error) { notify(`下载图片失败：${error.message}`); }
+    } catch (error) {
+      notify(`下载图片失败：${error.message}`);
+    }
   };
-  const recall = async messageId => { try { await recallMessage(messageId); } catch (error) { notify(error.message); } };
-  const reportViewing = useCallback((ownerId, event) => command(event, { ownerId }), [command]);
-  const rememberViewing = useCallback((ownerId, viewing) => {
-    if (viewing) watchingStreams.current.add(ownerId);
-    else watchingStreams.current.delete(ownerId);
+
+  const recall = async messageId => {
+    try { await recallMessage(messageId); }
+    catch (error) { notify(error.message); }
+  };
+
+  const viewingSocket = socketRef.current;
+  const reportViewing = useCallback((ownerId, event) => ack(viewingSocket, event, { ownerId }), [viewingSocket]);
+  const rememberViewing = useCallback((ownerId, viewing, startedAt = '') => {
+    const key = `${ownerId}:${startedAt ?? ''}`;
+    if (viewing) watchingStreams.current.add(key);
+    else watchingStreams.current.delete(key);
   }, []);
+
   const scrollChat = () => {
     const element = chatList.current;
     if (!element) return;
     stickToChatEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
     if (element.scrollTop > 40 || historyLoading || !hasOlderMessages) return;
-    const beforeHeight = element.scrollHeight, beforeTop = element.scrollTop;
+    const beforeHeight = element.scrollHeight;
+    const beforeTop = element.scrollTop;
     void loadOlderMessages().then(count => {
       if (!count) return;
       requestAnimationFrame(() => { if (chatList.current === element) element.scrollTop = element.scrollHeight - beforeHeight + beforeTop; });
     }).catch(error => notify(error.message));
   };
 
-  return <div ref={panels.shell} style={panels.style} className={`app-shell ${showChat ? '' : 'chat-hidden'} ${showMembers ? 'members-open' : ''} ${desktopChrome ? 'desktop-chrome' : ''}`}>
-    {desktopChrome && <div className="roomcast-titlebar" aria-hidden="true"><span className="roomcast-titlebar-logo"><span className="roomcast-titlebar-mark"><i /><i /></span></span><span className="roomcast-titlebar-name">同屏 Roomcast</span></div>}
-    <aside className="icon-rail"><button className="brand-icon" title={appearance.appearance === 'dark' ? '切换日间主题' : '切换夜间主题'} aria-label={appearance.appearance === 'dark' ? '切换日间主题' : '切换夜间主题'} aria-pressed={appearance.appearance === 'light'} onClick={appearance.toggle}><span className="brand-mark"><span /><span /></span><span className="brand-appearance" aria-hidden="true">{appearance.appearance === 'dark' ? <Moon size={10} /> : <Sun size={10} />}</span></button><div className="rail-divider" /><button className="rail-button active" title="房间" aria-label="房间" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><AudioLines size={25} /><span className="rail-active-indicator" /></button><button className="rail-button add-room" title={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} aria-label={room ? '邀请朋友' : canHostRoom ? '创建房间' : '加入房间'} onClick={() => setModal(room ? 'invite' : canHostRoom ? 'create' : 'join')}><Plus size={23} /></button>{room && <button className="rail-button leave-room-rail" title="离开房间" aria-label="离开房间" onClick={handleLeave}><LogOut size={20} /></button>}<div className="rail-spacer" /><button className={`rail-button ${updateAvailable ? 'has-update' : ''}`} title={updateAvailable ? `设置 · 有可用更新 ${update.result.version}` : '设置'} aria-label={updateAvailable ? `设置，有可用更新 ${update.result.version}` : '设置'} onClick={() => setModal('settings')}><Settings size={21} />{updateAvailable && <span className="rail-update-dot" aria-hidden="true" />}</button><Avatar className="rail-avatar" member={{ ...self, avatar, name: self?.name || loadPreference('nickname', '访客') }} title={self?.name || '访客'} /></aside>
+  return (
+    <div
+      ref={panels.shell}
+      style={panels.style}
+      className={`app-shell studio-shell ${room ? 'in-room' : 'pre-room'} ${room && showChat ? '' : 'chat-hidden'} ${room && showMembers ? 'members-open' : ''} ${desktopChrome ? 'desktop-chrome' : ''}`}
+    >
+      {desktopChrome && (
+        <div className="roomcast-titlebar" aria-hidden="true">
+          <span className="roomcast-titlebar-logo"><span className="roomcast-titlebar-mark"><i /><i /></span></span>
+          <span className="roomcast-titlebar-name">同屏 Roomcast</span>
+        </div>
+      )}
 
-    <aside className="channel-sidebar"><PanelResizeHandle side="members" handlers={panels.handle('members')} /><header className="brand-header"><div><strong>同屏<span>Roomcast</span></strong></div><span className="version-pill">BETA</span>{!desktopChrome && <button className="icon-button mobile-members-close" aria-label="关闭成员栏" onClick={() => setShowMembers(false)}><X size={18} /></button>}</header><div className="sidebar-section-heading"><span>房间</span></div><button className="channel-item selected" onClick={() => { if (!room) setModal(canHostRoom ? 'create' : 'join'); }}><Volume2 size={19} /><span>{room?.name || (canHostRoom ? '开始你的房间' : '加入房间')}</span>{room ? <span className="channel-count">{room.members.length}</span> : <ChevronRight size={16} />}</button><div className="channel-subtitle"><span className={`status-dot ${room ? 'online' : ''}`} />{room ? `${room.members.length} 人在线 · 最多 10 人` : '未加入房间'}</div>
-      <div className="sidebar-section-heading members-heading"><span>成员 <small>{room ? String(room.members.length).padStart(2, '0') : '00'}</small></span><Users size={14} /></div>
-      <div className="sidebar-members">{room ? room.members.map(member => { const manageable = member.id !== selfId && member.role !== 'owner' && ['owner', 'admin'].includes(self?.role); return <div className="member-row" key={member.id}><Avatar member={member} speaking={voice.speaking[member.id] === true} /><div className="member-details"><span>{member.name}{member.id === selfId && <small>你</small>}<em className={`role-badge ${member.role}`}>{member.role === 'owner' ? '房主' : member.role === 'admin' ? '管理员' : '用户'}</em></span></div>{member.id !== selfId && room.features?.voice === 1 && <MemberVolumeControl member={member} voice={voice} />}{manageable ? <button className="icon-button" aria-label={`管理成员 ${member.name}`} onClick={() => setManagedMember(member)}><Settings size={14} /></button> : member.sharing ? <MonitorUp size={15} className="green-icon" /> : !member.canShare ? <LockKeyhole size={14} /> : null}</div>; }) : <div className="members-empty"><div className="empty-member-icons"><span /><span /><span /></div></div>}</div>
-      <div className="sidebar-bottom"><span className={`network-latency ${latencyTone}`} aria-label={`网络延迟：${latencyMs == null ? '-- ms' : `${latencyMs} ms`}`}><Wifi className="network-latency-icon" size={17} strokeWidth={2.2} aria-hidden="true" /><span>{latencyMs == null ? '-- ms' : `${latencyMs} ms`}</span></span><VoiceControls voice={voice} inRoom={room?.features?.voice === 1} /></div>
-    </aside>
+      <StudioTopbar
+        appearance={appearance}
+        room={room}
+        self={self}
+        avatar={avatar}
+        config={config}
+        latencyMs={latencyMs}
+        latencyTone={latencyTone}
+        canManageGlobalLaser={canManageGlobalLaser}
+        globalLaserPending={globalLaserPending}
+        onToggleGlobalLaser={toggleGlobalLaser}
+        showMembers={showMembers}
+        onToggleMembers={() => compactPanels ? setOpenDrawer(showMembers ? null : 'members') : setWideMembers(!wideMembers)}
+        showChat={showChat}
+        onToggleChat={() => compactPanels ? setOpenDrawer(showChat ? null : 'chat') : setWideChat(!wideChat)}
+        unreadChat={unreadChat}
+        updateAvailable={updateAvailable}
+        updateVersion={update.result?.version}
+        onOpenSettings={() => openSettings('general')}
+      />
 
-    <main className="main-content"><header className="room-header">{room && <div className="room-header-title"><Volume2 size={22} /><h2>{room.name}</h2></div>}<div className="room-header-actions">{canManageGlobalLaser && <button type="button" className="icon-button global-laser-toggle" title="全局激光笔" aria-label="全局激光笔" aria-pressed={room.laserEnabled !== false} disabled={globalLaserPending} onClick={toggleGlobalLaser}><PenLine size={21} /></button>}<span className={`connection-pill ${room ? 'connected' : ''}`}><span className="status-dot" />房间连接：{room ? config?.roomConnection || 'P2P' : '未连接'}</span>{!desktopChrome && <button className={`icon-button mobile-members-toggle ${showMembers ? 'toggled' : ''}`} title={showMembers ? '收起成员' : '查看成员'} aria-label={showMembers ? '收起成员' : '查看成员'} onClick={() => { setShowChat(false); setShowMembers(value => !value); }}><Users size={19} /></button>}<button className={`icon-button ${showChat ? 'toggled' : ''}`} title={showChat ? '收起聊天' : '展开聊天'} aria-label={showChat ? '收起聊天' : '展开聊天'} onClick={() => { setShowMembers(false); setShowChat(value => !value); }}><MessageSquare size={19} /></button></div></header>
-      <div className="content-columns"><section className="stage-column"><div className="stage-heading"><div><span className="small-icon-box"><Monitor size={17} /></span><h3>共享屏幕</h3><span className="stage-state">{streams.length ? `${streams.length} 路共享` : '等待分享'}</span></div></div>
-        <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>{streams.length ? <div ref={screenGridRef} className={`screen-grid count-${streams.length}`} data-preview-scale={previewScale.toFixed(1)} style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}>{streams.map(stream => <ScreenPlayer key={[stream.memberId, stream.startedAt].join("-")} laser={laser} room={room} stream={stream} iceServers={config?.mediaIceServers} outputDeviceId={audioDevices.preferences.outputId} viewerMemberId={selfId} initialSound={true} transport={socketRef.current?.mediaP2P ? socketRef.current : undefined} reportViewing={reportViewing} initiallyEntered={watchingStreams.current.has(stream.memberId)} onViewingChange={rememberViewing} />)}</div> : <EmptyScreen desktop={desktopChrome} room={room} onShare={canShareScreen ? openShare : null} onCreate={canHostRoom ? () => setModal('create') : null} onJoin={() => setModal('join')} />}</div>
-      </section>
-        {showChat && <aside className={`chat-panel ${chatDragActive ? 'chat-drag-active' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}><PanelResizeHandle side="chat" handlers={panels.handle('chat')} /><header><h3><MessageSquare size={17} />房间聊天</h3></header><div className="chat-messages" ref={chatList} onScroll={scrollChat} role="log" aria-label="房间聊天记录" aria-live="polite">{room && (historyLoading || hasOlderMessages) && <div className="chat-history-status">{historyLoading ? <><LoaderCircle size={13} className="spin" />正在加载消息…</> : '向上滚动加载更早消息'}</div>}{messages.length > 0 && <div className="chat-date"><span />今天<span /></div>}{messages.map(message => <ChatItem key={message.seq} message={message} selfId={selfId} onRecall={recall} onPreview={setPreviewImage} onImageContextMenu={handleImageContextMenu} />)}<div ref={chatEnd} /></div><form className="chat-compose" onSubmit={sendChat}>
-          <input ref={imageInput} className="visually-hidden" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" onChange={chooseImage} />
-          <div className="chat-input-wrap">
-            {pendingImages.length > 0 && <div className={`chat-pending-images count-${pendingImages.length}`}>
-              {pendingImages.map((item, index) => <div className="chat-pending-tile" key={`${item.file.name}-${item.file.lastModified}-${index}`}>
-                <button type="button" className="chat-pending-preview" onClick={() => setPreviewImage({ src: item.objectUrl, alt: item.file.name || `待发送图片 ${index + 1}`, fileName: item.file.name || '' })} aria-label={`查看第 ${index + 1} 张待发送图片`}><img src={item.objectUrl} alt={item.file.name || `待发送图片 ${index + 1}`} /></button>
-                <button type="button" className="chat-pending-remove" title="移除图片" aria-label={`移除第 ${index + 1} 张待发送图片`} disabled={sendingImage} onClick={() => removePendingImage(index)}><X size={13} /></button>
-              </div>)}
-            </div>}
-            <textarea aria-label="发送消息" placeholder={room ? `发消息给 ${room.name}` : '加入房间后发送消息'} value={chat} onChange={event => setChat(event.target.value)} onPaste={pasteImage} maxLength={2000} disabled={!room || sending || sendingImage} rows={2} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendChat(event); } }} />
-            <div className="chat-input-footer">
-              <span>Enter 发送</span>
-              <span className="chat-actions"><button type="button" title="选择图片" aria-label="选择图片" disabled={!room || sendingImage || pendingImages.length >= MAX_CHAT_IMAGES} onClick={() => imageInput.current?.click()}>{sendingImage ? <LoaderCircle size={16} className="spin" /> : <ImagePlus size={16} />}</button><button type="submit" title="发送消息" aria-label="发送消息" disabled={!room || (!chat.trim() && !pendingImages.length) || sending || sendingImage}>{sending ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}</button></span>
+      <main className="main-content studio-workspace">
+        <div className="content-columns">
+          {room && compactPanels && openDrawer && (
+            <button type="button" className="panel-scrim" aria-label={showChat ? '关闭聊天面板' : '关闭成员面板'} onClick={() => setOpenDrawer(null)} />
+          )}
+          {room && showMembers && (
+            <MembersPanel
+              room={room}
+              self={self}
+              selfId={selfId}
+              onCloseMembers={() => compactPanels ? setOpenDrawer(null) : setWideMembers(false)}
+              onManageMember={setManagedMember}
+              voice={voice}
+              memberResizeHandlers={panels.handle('members')}
+            />
+          )}
+
+          <section className="stage-column">
+            {room && (
+              <div className="stage-heading">
+                <div className="stage-heading-left">
+                  <span className="small-icon-box"><Monitor size={16} /></span>
+                  <h3>共享屏幕</h3>
+                  <span className="stage-state">{streams.length ? `${streams.length} 路共享` : '等待分享'}</span>
+                </div>
+                {streams.length > 0 && (
+                  <div className="stage-zoom-controls" aria-label="画面缩放">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      data-tooltip="缩小预览"
+                      data-tooltip-pos="bottom"
+                      aria-label="缩小预览"
+                      disabled={previewScale <= PREVIEW_SCALE_MIN}
+                      onClick={() => setPreviewScale(s => clampPreviewScale(s - PREVIEW_SCALE_STEP))}
+                    >
+                      <ZoomOut size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="stage-zoom-readout"
+                      title="重置预览缩放 (100%)"
+                      onClick={() => setPreviewScale(1)}
+                    >
+                      {Math.round(previewScale * 100)}%
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="放大预览（最大 100%）"
+                      aria-label="放大预览"
+                      disabled={previewScale >= PREVIEW_SCALE_MAX}
+                      onClick={() => setPreviewScale(s => clampPreviewScale(s + PREVIEW_SCALE_STEP))}
+                    >
+                      <ZoomIn size={15} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className={`screen-stage ${streams.length ? 'has-stream multi-stage' : ''}`}>
+              {streams.length ? (
+                <div
+                  ref={screenGridRef}
+                  className={`screen-grid count-${streams.length}`}
+                  data-preview-scale={previewScale.toFixed(1)}
+                  style={previewCardWidth ? { '--preview-card-width': `${previewCardWidth}px` } : undefined}
+                >
+                  {streams.map(stream => (
+                    <ScreenPlayer
+                      key={[stream.memberId, stream.startedAt].join('-')}
+                      laser={laser}
+                      room={room}
+                      stream={stream}
+                      iceServers={config?.mediaIceServers}
+                      outputDeviceId={audioDevices.preferences.outputId}
+                      viewerMemberId={selfId}
+                      initialSound={true}
+                      transport={viewingSocket?.mediaP2P ? viewingSocket : undefined}
+                      reportViewing={reportViewing}
+                      initiallyEntered={watchingStreams.current.has(`${stream.memberId}:${stream.startedAt ?? ''}`)}
+                      onViewingChange={rememberViewing}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <EmptyScreen
+                  room={room}
+                  canShare={canShareScreen && self?.canShare}
+                  onCreate={canHostRoom ? () => setModal('create') : undefined}
+                  onJoin={() => setModal('join')}
+                  gpuStageMode={gpu.settings.stageMode}
+                  hwAccelActive={gpu.hwAccel.activeHardwareAcceleration}
+                  isForegroundActive={gpu.isForegroundActive || !gpu.settings.lowPowerBackground}
+                />
+              )}
             </div>
-          </div>
-        </form></aside>}
-      </div>
 
-      <footer className="voice-dock">{canShareScreen && <div className="dock-controls"><button className="button share-button" onClick={openShare} disabled={shareBusy || (!!room && !self?.canShare && !ownShare)}>{shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={19} />}<span>{ownShare ? '修改共享设置' : desktopChrome ? '共享屏幕' : '共享画面'}</span></button>{ownShare && <button className="control-button leave-button" onClick={stopShare} disabled={shareBusy} title="停止共享" aria-label="停止共享"><Square size={16} /></button>}</div>}</footer>
-    </main>
-    {updatePrompt.open && update.result?.available && <UpdatePromptModal current={update.result.current || localConfig?.version || APP_VERSION} result={update.result} install={updateInstall} dontRemind={updatePrompt.dontRemind} setDontRemind={value => setUpdatePrompt(current => ({ ...current, dontRemind: value }))} onClose={closeUpdatePrompt} onUpdate={startAutoUpdate} onOpenPage={() => { window.roomcast?.openReleasePage?.().catch(() => { }); }} />}
-    {['create', 'join'].includes(modal) && <EntryModal key={inviteRoom} inviteRoom={inviteRoom} mode={modal} canHost={canHostRoom} onClose={cancelEntry} onEnter={handleEnter} busy={connection === 'connecting'} defaultServer={server} peerServer={localConfig?.peerServer} />}
-    {modal === 'share' && room && canShareScreen && <ShareModal onClose={() => setModal(null)} onStart={ownShare ? restartShare : startShare} editing={ownShare} busy={shareBusy} audioDevices={audioDevices} capabilities={capabilities} />}
-    {modal === 'settings' && <SettingsModal avatar={avatar} avatarName={self?.name || loadPreference('nickname', '访客')} onAvatar={changeAvatar} voice={voice} onClose={() => setModal(null)} isDesktop={desktopChrome} canShareScreen={canShareScreen} update={update} autoCheckUpdates={autoCheckUpdates} setAutoCheckUpdates={setAutoCheckUpdates} onCheckUpdates={checkUpdates} updateInstall={updateInstall} onAutoUpdate={startAutoUpdate} localConfig={localConfig} refresh={refresh} devices={audioDevices.devices} devicePreferences={audioDevices.preferences} setDevicePreferences={audioDevices.setPreferences} refreshDevices={audioDevices.refresh} relaySettings={relaySettings} setRelaySettings={setRelaySettings} themeColor={themeColor} setThemeColor={setThemeColor} themeMode={themeMode} setThemeMode={setThemeMode} effectiveThemeColor={effectiveThemeColor} />}
-    {modal === 'invite' && room && <InviteModal isP2P={config?.p2p} room={room} server={server} localConfig={localConfig} onClose={() => setModal(null)} copy={copy} relayInvite={config?.relayInvite} inviteSecret={config?.inviteSecret} peerServer={config?.peerServer} campusSecret={config?.campusSecret} />}
-    {managedMember && room?.members.some(member => member.id === managedMember.id) && <MemberPermissionsModal member={room.members.find(member => member.id === managedMember.id)} self={self} command={command} onClose={() => setManagedMember(null)} />}
-    {previewImage && <ImagePreviewOverlay key={previewImage.src} image={previewImage} onClose={() => setPreviewImage(null)} onImageContextMenu={handleImageContextMenu} onCopy={copyPreviewImage} onDownload={downloadPreviewImage} />}
-    {imageContextMenu && <div className="image-context-menu" role="menu" style={{ left: imageContextMenu.x, top: imageContextMenu.y }} onPointerDown={event => event.stopPropagation()}>
-      <button type="button" role="menuitem" onClick={() => void copyContextImage()}>复制图片</button>
-    </div>}
-    {toast && <div className="toast error" role="alert"><Info size={18} /><span>{toast.text}</span><button className="icon-button" aria-label="关闭提示" onClick={() => setToast(null)}><X size={15} /></button></div>}
-  </div>;
+            {room && (
+              <footer className="voice-dock studio-dock">
+                {canShareScreen && (
+                  <div className="dock-controls">
+                    <button
+                      type="button"
+                      className="button share-button"
+                      onClick={openShare}
+                      disabled={shareBusy || (!self?.canShare && !ownShare)}
+                    >
+                      {shareBusy ? <LoaderCircle size={18} className="spin" /> : ownShare ? <Settings size={18} /> : <ScreenShare size={18} />}
+                      <span>{ownShare ? '共享设置' : desktopChrome ? '共享屏幕' : '共享画面'}</span>
+                    </button>
+                    {ownShare && (
+                      <button
+                        type="button"
+                        className="dock-action-btn dock-leave-btn"
+                        onClick={stopShare}
+                        disabled={shareBusy}
+                        title="停止共享"
+                        aria-label="停止共享"
+                      >
+                        <Square size={14} />
+                        <span>停止共享</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <div className="studio-dock-divider" aria-hidden="true" />
+                <VoiceControls voice={voice} inRoom={room.features?.voice === 1} />
+
+                <div className="studio-dock-divider" aria-hidden="true" />
+                <button
+                  type="button"
+                  className="dock-action-btn dock-invite-btn"
+                  aria-label="邀请好友"
+                  onClick={() => setModal('invite')}
+                >
+                  <UserPlus size={16} />
+                  <span>邀请好友</span>
+                </button>
+                <button
+                  type="button"
+                  className="control-button leave-button"
+                  data-tooltip="退出房间"
+                  aria-label="退出房间"
+                  onClick={handleLeave}
+                >
+                  <LogOut size={16} />
+                </button>
+              </footer>
+            )}
+          </section>
+
+          {room && showChat && (
+            <ChatPanel
+              room={room}
+              selfId={selfId}
+              desktopChrome={desktopChrome}
+              resizeHandlers={panels.handle('chat')}
+              chatDragActive={chatDragActive}
+              onDragEnter={handleChatDragEnter}
+              onDragOver={handleChatDragOver}
+              onDragLeave={handleChatDragLeave}
+              onDrop={handleChatDrop}
+              chatListRef={chatList}
+              chatEndRef={chatEnd}
+              onScroll={scrollChat}
+              historyLoading={historyLoading}
+              hasOlderMessages={hasOlderMessages}
+              messages={messages}
+              onRecall={recall}
+              onPreviewImage={setPreviewImage}
+              onImageContextMenu={handleImageContextMenu}
+              imageInputRef={imageInput}
+              onChooseImage={chooseImage}
+              pendingImages={pendingImages}
+              onRemovePendingImage={removePendingImage}
+              chat={chat}
+              setChat={setChat}
+              onPasteImage={pasteImage}
+              sending={sending}
+              sendingImage={sendingImage}
+              onSendChat={sendChat}
+            />
+          )}
+        </div>
+      </main>
+
+      {updatePrompt.open && update.result?.available && (
+        <UpdatePromptModal
+          current={update.result.current || localConfig?.version || APP_VERSION}
+          result={update.result}
+          install={updateInstall}
+          dontRemind={updatePrompt.dontRemind}
+          setDontRemind={value => setUpdatePrompt(current => ({ ...current, dontRemind: value }))}
+          onClose={closeUpdatePrompt}
+          onUpdate={startAutoUpdate}
+          onOpenPage={() => { window.roomcast?.openReleasePage?.().catch(() => { }); }}
+        />
+      )}
+
+      {['create', 'join'].includes(modal) && (
+        <EntryModal
+          key={inviteRoom}
+          inviteRoom={inviteRoom}
+          mode={modal}
+          canHost={canHostRoom}
+          onClose={cancelEntry}
+          onEnter={handleEnter}
+          busy={connection === 'connecting'}
+          defaultServer={server}
+          peerServer={localConfig?.peerServer}
+        />
+      )}
+
+      {modal === 'share' && room && canShareScreen && (
+        <ShareModal
+          onClose={() => setModal(null)}
+          onStart={ownShare ? restartShare : startShare}
+          editing={ownShare}
+          busy={shareBusy}
+          audioDevices={audioDevices}
+          capabilities={capabilities}
+        />
+      )}
+
+      {modal === 'settings' && (
+        <SettingsDrawer
+          avatar={avatar}
+          avatarName={self?.name || loadPreference('nickname', '访客')}
+          onAvatar={changeAvatar}
+          voice={voice}
+          onClose={() => setModal(null)}
+          isDesktop={desktopChrome}
+          canShareScreen={canShareScreen}
+          update={update}
+          autoCheckUpdates={autoCheckUpdates}
+          setAutoCheckUpdates={setAutoCheckUpdates}
+          onCheckUpdates={checkUpdates}
+          updateInstall={updateInstall}
+          onAutoUpdate={startAutoUpdate}
+          localConfig={localConfig}
+          refresh={refresh}
+          devices={audioDevices.devices}
+          devicePreferences={audioDevices.preferences}
+          setDevicePreferences={audioDevices.setPreferences}
+          refreshDevices={audioDevices.refresh}
+          relaySettings={relaySettings}
+          setRelaySettings={setRelaySettings}
+          themeColor={themeColor}
+          setThemeColor={setThemeColor}
+          themeMode={themeMode}
+          setThemeMode={setThemeMode}
+          effectiveThemeColor={effectiveThemeColor}
+          gpu={gpu}
+          initialSection={settingsSection}
+        />
+      )}
+
+      {modal === 'invite' && room && (
+        <InviteModal
+          isP2P={config?.p2p}
+          room={room}
+          server={server}
+          localConfig={localConfig}
+          onClose={() => setModal(null)}
+          copy={copy}
+          relayInvite={config?.relayInvite}
+          inviteSecret={config?.inviteSecret}
+          peerServer={config?.peerServer}
+          campusSecret={config?.campusSecret}
+          nativeHost={socketRef.current?.isHost ? !!window.roomcast?.nativeIce : !!socketRef.current?.nativeHost}
+        />
+      )}
+
+      {managedMember && room?.members.some(member => member.id === managedMember.id) && (
+        <MemberPermissionsModal
+          member={room.members.find(member => member.id === managedMember.id)}
+          self={self}
+          command={command}
+          onClose={() => setManagedMember(null)}
+        />
+      )}
+
+      {previewImage && (
+        <ImagePreviewOverlay
+          key={previewImage.src}
+          image={previewImage}
+          onClose={() => setPreviewImage(null)}
+          onImageContextMenu={handleImageContextMenu}
+          onCopy={copyPreviewImage}
+          onDownload={downloadPreviewImage}
+        />
+      )}
+
+      {imageContextMenu && (
+        <div
+          className="image-context-menu"
+          role="menu"
+          style={{ left: imageContextMenu.x, top: imageContextMenu.y }}
+          onPointerDown={event => event.stopPropagation()}
+        >
+          <button type="button" role="menuitem" onClick={() => void copyContextImage()}>复制图片</button>
+        </div>
+      )}
+
+      {toast && (
+        <div className="toast error" role="alert">
+          <Info size={18} />
+          <span>{toast.text}</span>
+          <button type="button" className="icon-button" aria-label="关闭提示" onClick={() => setToast(null)}>
+            <X size={15} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }

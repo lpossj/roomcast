@@ -13,7 +13,12 @@ export function normalizeVoiceSettings(value = {}) {
 export function createSpeakingDetector() {
   let lastVoice = -Infinity;
   return (samples, now) => {
-    const rms = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / Math.max(1, samples.length));
+    let sum = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const sample = samples[i];
+      sum += sample * sample;
+    }
+    const rms = Math.sqrt(sum / Math.max(1, samples.length));
     if (rms >= 0.015) lastVoice = now;
     return { level: Math.min(1, rms * 5), speaking: now - lastVoice < 400 };
   };
@@ -23,10 +28,19 @@ export function meterStream(stream, onLevel, context) {
   const ownedContext = !context;
   context ||= new AudioContext({ latencyHint: 'interactive' });
   const source = context.createMediaStreamSource(stream);
-  const analyser = context.createAnalyser(); analyser.fftSize = 1024;
+  const analyser = context.createAnalyser(); analyser.fftSize = 256;
   source.connect(analyser);
   const samples = new Float32Array(analyser.fftSize), detect = createSpeakingDetector();
-  const timer = setInterval(() => { analyser.getFloatTimeDomainData(samples); onLevel(detect(samples, performance.now())); }, 50);
+  let lastSpeaking = false, lastLevel = -1;
+  const timer = setInterval(() => {
+    analyser.getFloatTimeDomainData(samples);
+    const next = detect(samples, performance.now());
+    if (next.speaking !== lastSpeaking || (next.speaking && Math.abs(next.level - lastLevel) >= 0.08) || (!next.speaking && lastLevel > 0)) {
+      lastSpeaking = next.speaking;
+      lastLevel = next.speaking ? next.level : 0;
+      onLevel(next);
+    }
+  }, 100);
   void context.resume().catch(() => {});
   return () => { clearInterval(timer); source.disconnect(); analyser.disconnect(); if (ownedContext) void context.close().catch(() => {}); };
 }

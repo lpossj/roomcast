@@ -34,6 +34,7 @@ export function attachLaserSurface({ canvas, surface, video, laser, stream, self
   }
   function release() {
     const captured = pointer; pointer = null;
+    surface.classList.remove('laser-stroking');
     if (captured !== null) { try { surface.releasePointerCapture(captured); } catch { /* Already released. */ } }
   }
   function cancel() {
@@ -59,7 +60,7 @@ export function attachLaserSurface({ canvas, surface, video, laser, stream, self
     if (!enabled || !laser.allowed() || pointer !== null || event.button !== 0) return;
     strokeId = crypto.randomUUID(); seq = 0;
     if (!sample(event)) return;
-    pointer = event.pointerId; surface.setPointerCapture(pointer); event.preventDefault();
+    pointer = event.pointerId; surface.classList.add('laser-stroking'); surface.setPointerCapture(pointer); event.preventDefault();
   };
   const move = event => {
     if (event.pointerId !== pointer) return;
@@ -82,7 +83,7 @@ export function attachLaserSurface({ canvas, surface, video, laser, stream, self
   return {
     setActive,
     destroy() {
-      cancel(); unsubscribe(); painter.destroy(); surface.classList.remove('laser-drawing');
+      cancel(); unsubscribe(); painter.destroy(); surface.classList.remove('laser-drawing', 'laser-stroking');
       surface.removeEventListener('pointerdown', down); surface.removeEventListener('pointermove', move);
       surface.removeEventListener('pointerup', up); surface.removeEventListener('pointercancel', up);
       surface.removeEventListener('lostpointercapture', blur);

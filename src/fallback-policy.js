@@ -7,25 +7,24 @@ export const CAMPUS_ANSWER_TIMEOUT_MS = 115_000;
 export const CAMPUS_TOTAL_TIMEOUT_MS = 220_000;
 
 // loadeddata means a decoded current frame exists; ICE/ontrack alone do not.
-export function watchPlayableFrame(video, ready) {
+export function watchPlayableFrame(video, ready, stream) {
   let disposed = false;
-
+  // An audio track can trigger loadeddata before the first video track is
+  // added to the playing stream. resize also fires when its dimensions arrive.
+  const events = ['loadeddata', 'canplay', 'resize', 'playing'];
+  const dispose = () => {
+    disposed = true;
+    for (const event of events) video.removeEventListener(event, check);
+  };
   const check = () => {
-    if (!disposed && video.readyState >= 2 && video.videoWidth > 0) {
-      disposed = true;
-      video.removeEventListener('loadeddata', check);
-      video.removeEventListener('canplay', check);
+    if (disposed || video.readyState < 2 || !video.videoWidth) return;
+    if (!stream || (video.srcObject === stream && stream.getVideoTracks().length)) {
+      dispose();
       ready();
     }
   };
 
-  video.addEventListener('loadeddata', check);
-  video.addEventListener('canplay', check);
+  for (const event of events) video.addEventListener(event, check);
   check();
-
-  return () => {
-    disposed = true;
-    video.removeEventListener('loadeddata', check);
-    video.removeEventListener('canplay', check);
-  };
+  return dispose;
 }

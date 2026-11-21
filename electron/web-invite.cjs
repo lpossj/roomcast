@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.webmanifest': 'application/manifest+json' };
+// beta.8 retains protocol-2/roomcast-v1 compatibility with the existing web app.
+// That site keeps ordinary ICE until its enhanced build is explicitly deployed.
 const DEFAULT_WEB_VIEWER_URL = 'https://roomcast-2dy.pages.dev/';
 const PUBLIC_FILE = /^[A-Za-z0-9_.-]+\.(?:js|css|svg|png|ico|woff|woff2|txt|webmanifest)$/;
 
@@ -61,6 +63,7 @@ function createStaticViewer(distDir) {
 // require the host to publish a local server or connect to a tunnel edge.
 function createWebInvite({ viewerUrl = DEFAULT_WEB_VIEWER_URL, onState = () => {} } = {}) {
   async function start() {
+    if (!viewerUrl) throw new Error('此版本网页尚未部署，请在另一端同版本客户端中粘贴邀请链接。');
     let url;
     try { url = new URL(viewerUrl); } catch { throw new Error('网页入口地址无效。'); }
     if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) {

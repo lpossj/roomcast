@@ -3,16 +3,27 @@ import { createNativeFrameStream } from './frame-cadence.js';
 export function startIntegratedCapture({ sourceId, width = 1920, height = 1080, fps = 30, systemAudio = false, microphone = false, applicationMuted = false, microphoneMuted = false, inputDeviceId = '', compatibilityCanvas = false } = {}) {
   if (window.roomcast?.selectCapture && !window.roomcast.selectCapture({ id: sourceId, audio: systemAudio })) throw new Error('所选屏幕或窗口已经不可用，请刷新后重试。');
   // Keep the display request in the original click's activation scope.
-  const request = navigator.mediaDevices.getDisplayMedia({ video: true, audio: systemAudio });
+  const targetFps = Math.max(1, Math.min(120, Math.round(Number(fps) || 30)));
+  const desktop = Boolean(window.roomcast?.desktop);
+  // Choose the browser capturer's format when the source is opened. Starting
+  // at the browser default and raising only FPS later can leave the original
+  // resolution and cadence in place for both senders.
+  const browserVideo = {
+    width: { ideal: width, max: width },
+    height: { ideal: height, max: height },
+    frameRate: { ideal: targetFps, max: targetFps },
+  };
+  const request = navigator.mediaDevices.getDisplayMedia({ video: desktop ? true : browserVideo, audio: systemAudio });
   return request.then(async stream => {
     try {
       const track = stream.getVideoTracks()[0];
       if (!track) throw new Error('未获得屏幕画面。');
-      const targetFps = Math.max(1, Math.min(120, Math.round(Number(fps) || 30)));
-      try {
-        await track.applyConstraints({ frameRate: window.roomcast?.desktop ? { min: targetFps, ideal: targetFps, max: targetFps } : { ideal: targetFps, max: targetFps } });
-      } catch (error) {
-        throw new Error(`无法锁定 ${targetFps} FPS：${error.message}`);
+      if (desktop) {
+        try {
+          await track.applyConstraints({ frameRate: { min: targetFps, ideal: targetFps, max: targetFps } });
+        } catch (error) {
+          throw new Error(`无法锁定 ${targetFps} FPS：${error.message}`);
+        }
       }
       if (microphone) {
         let micStream;
@@ -46,7 +57,7 @@ export function startIntegratedCapture({ sourceId, width = 1920, height = 1080, 
       } else {
         for (const audio of stream.getAudioTracks()) audio.enabled = !applicationMuted;
       }
-      if ('contentHint' in track) track.contentHint = 'detail';
+      if ('contentHint' in track) track.contentHint = targetFps > 30 ? 'motion' : 'detail';
       for (const audio of stream.getAudioTracks()) if ('contentHint' in audio) audio.contentHint = 'music';
       if (window.roomcast?.desktop) {
         const rendered = await createNativeFrameStream(stream, { width, height, fps: targetFps, compatibilityCanvas });

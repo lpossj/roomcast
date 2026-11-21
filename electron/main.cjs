@@ -22,6 +22,7 @@ const { createCampusNetwork } = require('./campus-network.cjs');
 const { liveWebContents, ownsWindowEvent } = require('./window-owner.cjs');
 const { ObsFixedFpsEngine, validateVideoSettings, waitForObsVirtualCameraAvailable } = require('./obs-fixed-fps.cjs');
 const { NativeMedia } = require('./native-media.cjs');
+const { createNetworkPermissions } = require('./network-permissions.cjs');
 const { ensureObsVirtualCameraRegistration, registrationStatus } = require('./obs-virtualcam-registration.cjs');
 const { cleanText: cleanAudioText, normalizeCaptureSources, windowsAudioSources } = require('./windows-sources.cjs');
 let service;
@@ -53,6 +54,7 @@ let obsCaptureEngine = null;
 let nativeMedia = null;
 let nativeMediaStarting = null;
 let nativeMediaGeneration = 0;
+let networkPermissions = null;
 
 function stopNativeMedia(captureId = '') {
   const current = nativeMedia;
@@ -278,9 +280,35 @@ function inviteFrom(args) {
   return '';
 }
 let pendingInvite = inviteFrom(process.argv);
-if (process.env.ROOMCAST_PROFILE_DIR) {
-  require('node:fs').mkdirSync(process.env.ROOMCAST_PROFILE_DIR, { recursive: true });
-  app.setPath('userData', process.env.ROOMCAST_PROFILE_DIR);
+// Normal beta launches use the user's own Roomcast profile. Only an explicitly
+// requested secondary instance gets a separate profile.
+const roomcastProfile = process.env.ROOMCAST_PROFILE_DIR || app.getPath('userData');
+fs.mkdirSync(roomcastProfile, { recursive: true });
+app.setPath('userData', roomcastProfile);
+app.setPath('sessionData', roomcastProfile);
+app.setAppLogsPath(path.join(roomcastProfile, 'logs'));
+const gpuPreferencesPath = path.join(app.getPath('userData'), 'gpu-preferences.json');
+function readGpuPreferences() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(gpuPreferencesPath, 'utf8'));
+    if (parsed && typeof parsed === 'object') {
+      return { hardwareAcceleration: parsed.hardwareAcceleration !== false };
+    }
+  } catch { }
+  return { hardwareAcceleration: true };
+}
+function writeGpuPreferences(next) {
+  const payload = { hardwareAcceleration: next?.hardwareAcceleration !== false };
+  fs.mkdirSync(path.dirname(gpuPreferencesPath), { recursive: true });
+  const temp = `${gpuPreferencesPath}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(payload, null, 2), 'utf8');
+  fs.renameSync(temp, gpuPreferencesPath);
+  return payload;
+}
+const initialGpuPreferences = readGpuPreferences();
+const activeHardwareAcceleration = initialGpuPreferences.hardwareAcceleration;
+if (!activeHardwareAcceleration) {
+  app.disableHardwareAcceleration();
 }
 // Keep Chromium's mDNS host-candidate privacy and hardware video decoding defaults.
 // Roomcast falls back at the affected stream/encoder instead of weakening every PC.
@@ -303,7 +331,7 @@ else {
         isPackaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
         projectDir: path.resolve(__dirname, '..'),
-        dataDir: process.env.ROOMCAST_DATA_DIR,
+        dataDir: process.env.ROOMCAST_DATA_DIR || path.join(roomcastProfile, 'data'),
       });
 
       const obsRuntimePreflightRequested = String(process.env.ROOMCAST_OBS_PREFLIGHT_RESULT || '').trim();
@@ -389,7 +417,7 @@ else {
       // is used or safeStorage is temporarily unavailable.
       const themePreferencesPath = path.join(app.getPath('userData'), 'theme-preferences.json');
       const legacyThemePreferencesPath = path.join(rootDir, 'theme-preferences.json');
-      const preferenceKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion', 'avatar', 'voiceSettings', 'panelWidths', 'appearance']);
+      const preferenceKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion', 'avatar', 'voiceSettings', 'panelWidths', 'appearance', 'gpuSettings']);
       let preferences = {};
       let themePreferences = {};
       let loadedThemeFromStablePath = false;
@@ -412,7 +440,8 @@ else {
       } catch { }
       const savePreferences = () => {
         const encoded = JSON.stringify(preferences);
-        if (encoded.length > 65536 || !safeStorage.isEncryptionAvailable()) return false;
+        // Keep the existing settings budget in addition to the supported avatar.
+        if (encoded.length > 65536 + 170000 || !safeStorage.isEncryptionAvailable()) return false;
         try {
           fs.mkdirSync(path.dirname(preferencesPath), { recursive: true });
           const temporary = `${preferencesPath}.tmp`;
@@ -450,6 +479,9 @@ else {
       // therefore the renderer's first enumerateDevices()) is created. Users
       // who explicitly saved native capture are not prompted for OBS setup.
       const preferredCaptureBackend = preferences?.shareSettings?.captureBackend === 'native' ? 'native' : 'obs';
+      networkPermissions = createNetworkPermissions({ app, runtimeRoot: runtimePaths.runtimeRoot });
+      const networkSetupScript = await networkPermissions.prepare();
+      let networkSetupBundled = false;
       if (process.platform === 'win32' && app.isPackaged && preferredCaptureBackend === 'obs') {
         let startupRegistration;
         const logBootstrapFailure = error => {
@@ -473,21 +505,33 @@ else {
             allowBundleOverride: false,
           });
           try {
+            networkPermissions.record('obs-registration', 'requested');
             const bootstrapRegistration = await ensureObsVirtualCameraRegistration({
               engine: bootstrapEngine,
               dataRoot: app.getPath('userData'),
+              networkSetupScript,
+              onElevation: () => {
+                networkSetupBundled = Boolean(networkSetupScript);
+                if (networkSetupBundled) networkPermissions.beginAttempt('bundled-elevation-requested');
+              },
             });
+            if (!bootstrapRegistration.installedByRoomcast) networkSetupBundled = false;
+            networkPermissions.record('obs-registration', 'completed');
             startupMark(bootstrapRegistration?.installedByRoomcast ? 'obs-vcam-prewindow-installed' : 'obs-vcam-prewindow-ready');
           } catch (error) {
+            networkPermissions.record('obs-registration', 'failed', error.code);
             // Do not block Roomcast itself when UAC is cancelled or registration
             // fails. Native capture must still open; the OBS start path will
             // surface the concrete registration error if the user selects OBS.
             logBootstrapFailure(error);
           } finally {
+            if (networkSetupBundled) await networkPermissions.complete('bundled-registration-finished');
             await bootstrapEngine.close().catch(() => {});
           }
         }
       }
+
+      if (networkSetupScript && !networkSetupBundled) await networkPermissions.install();
 
       let savedWindow = {};
       try { savedWindow = JSON.parse(fs.readFileSync(windowStatePath, 'utf8')); } catch { }
@@ -517,7 +561,9 @@ else {
         } : {}),
         show: false,
         autoHideMenuBar: true,
-        webPreferences: { session: privateSession, preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false },
+        webPreferences: { session: privateSession,
+          additionalArguments: fs.existsSync(path.join(runtimePaths.runtimeRoot, 'runtime/native-ice/RoomcastNativeIce.exe')) ? ['--roomcast-native-ice'] : [],
+          preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false },
       });
       startupMark('create-window-end');
       window.once('show', () => startupMark('window-show'));
@@ -674,21 +720,73 @@ else {
       });
       ipcMain.handle('roomcast:campus-start', async (event, value) => {
         if (!owns(event, window)) throw new Error('不允许此窗口开启校园互联。');
-        try { return await campusNetwork.start(value); }
+        networkPermissions?.record('campus', 'start-requested');
+        try {
+          const result = await campusNetwork.start(value);
+          networkPermissions?.record('campus', 'started');
+          return result;
+        }
         catch (error) {
+          networkPermissions?.record('campus', 'failed', error.campusFailure?.stage || error.code);
           // IPC exception serialization discards custom Error fields. Return only
           // the bounded diagnostic fields, never command lines, paths or secrets.
           return { failure: error.campusFailure || { stage: 'unknown', code: '' } };
         }
       });
+      ipcMain.handle('roomcast:network-diagnostics', event => {
+        if (!owns(event, window)) throw new Error('不允许此窗口读取网络诊断。');
+        return networkPermissions?.collectDiagnostics() || null;
+      });
+      ipcMain.handle('roomcast:network-prepare', async event => {
+        if (!owns(event, window)) throw new Error('不允许此窗口准备网络权限。');
+        await networkPermissions?.install({ retry: true });
+        return networkPermissions?.diagnostics().state || null;
+      });
       ipcMain.handle('roomcast:campus-stop', (event, lease) => {
         if (!owns(event, window) || typeof lease !== 'string' || !lease) throw new Error('校园互联会话无效。');
+        networkPermissions?.record('campus', 'stop-requested');
         return campusNetwork.stop(lease);
       });
       ipcMain.handle('roomcast:web-invite-stop', event => {
         if (!owns(event, window)) throw new Error('不允许此窗口关闭网页入口。');
         return webInvite.stop();
       });
+      ipcMain.handle('roomcast:gpu-config-get', event => {
+        if (!owns(event, window)) throw new Error('不允许此窗口读取图形加速配置。');
+        return {
+          hardwareAcceleration: readGpuPreferences().hardwareAcceleration,
+          activeHardwareAcceleration,
+        };
+      });
+      ipcMain.handle('roomcast:gpu-hw-accel-set', (event, enabled) => {
+        if (!owns(event, window)) throw new Error('不允许此窗口修改图形加速配置。');
+        return {
+          ...writeGpuPreferences({ hardwareAcceleration: enabled !== false }),
+          activeHardwareAcceleration,
+        };
+      });
+      ipcMain.handle('roomcast:app-relaunch', event => {
+        if (!owns(event, window)) throw new Error('不允许此窗口重启应用。');
+        app.relaunch({
+          args: process.argv.slice(1),
+          ...(app.isPackaged && process.env.PORTABLE_EXECUTABLE_FILE
+            ? { execPath: process.env.PORTABLE_EXECUTABLE_FILE } : {}),
+        });
+        setTimeout(() => quitAfterCleanup(), 80);
+        return true;
+      });
+      const sendWindowActivity = () => {
+        if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+        const visible = window.isVisible() && !window.isMinimized();
+        const focused = visible && window.isFocused();
+        window.webContents.send('roomcast:window-activity', { visible, focused });
+      };
+      window.on('focus', sendWindowActivity);
+      window.on('blur', sendWindowActivity);
+      window.on('minimize', sendWindowActivity);
+      window.on('restore', sendWindowActivity);
+      window.on('show', sendWindowActivity);
+      window.on('hide', sendWindowActivity);
       // Update check and automatic update. Chromium's network stack is used instead of
       // Node's fetch so the request follows the Windows proxy and certificate
       // configuration; the renderer never supplies a URL, it only names an asset from the
@@ -702,6 +800,7 @@ else {
       // window: reading `webContents` off a destroyed BrowserWindow throws, which would make
       // every updater-window call (status/retry/open page) fail once the main window is gone.
       const owns = (event, candidate) => ownsWindowEvent(event, candidate, trusted);
+      require('./native-ice.cjs').installNativeIce({ ipcMain, owns, window, runtimeRoot: runtimePaths.runtimeRoot });
       const requireOwner = (event, reason) => {
         if (!owns(event, window) && !owns(event, updaterWindow)) throw new Error(reason);
       };
@@ -862,17 +961,15 @@ else {
       };
       ipcMain.handle('roomcast:update-check', async event => {
         requireOwner(event, '不允许此窗口检查更新。');
-        lastUpdateCheck = await (await ensureUpdateChecker()).check();
-        return lastUpdateCheck;
+        throw new Error('当前版本尚未连接更新通道。');
       });
       ipcMain.handle('roomcast:update-target', async event => {
         requireOwner(event, '不允许此窗口读取更新方式。');
-        const target = await describeTarget();
-        return { kind: target.kind, supported: target.supported, reason: target.reason };
+        return { kind: 'campus-lab', supported: false, reason: '当前版本尚未连接更新通道。' };
       });
       ipcMain.handle('roomcast:update-start', async event => {
         requireMainWindow(event, '不允许此窗口启动自动更新。');
-        return beginUpdate();
+        return { ok: false, unsupported: true, reason: '当前版本尚未连接更新通道。' };
       });
       ipcMain.handle('roomcast:update-status', event => {
         requireOwner(event, '不允许此窗口读取更新状态。');
@@ -880,7 +977,7 @@ else {
       });
       ipcMain.handle('roomcast:update-retry', async event => {
         requireOwner(event, '不允许此窗口重试更新。');
-        return beginUpdate();
+        return { ok: false, unsupported: true, reason: '当前版本尚未连接更新通道。' };
       });
       ipcMain.handle('roomcast:update-quit', event => {
         requireOwner(event, '不允许此窗口退出程序。');
@@ -905,13 +1002,7 @@ else {
       });
       ipcMain.handle('roomcast:update-open-page', async event => {
         requireOwner(event, '不允许此窗口打开发布页。');
-        const { RELEASES_PAGE } = await import(pathToFileURL(path.join(__dirname, 'update-check.mjs')).href);
-        const page = String(lastUpdateCheck?.pageUrl || '');
-        // The only manual route: everything else installs itself, so this must work even when
-        // the API check or a download timed out.
-        const target = /^https:\/\/github\.com\/lpossj\/roomcast\/releases\//.test(page) ? page : RELEASES_PAGE;
-        await shell.openExternal(target);
-        return { ok: true, url: target };
+        return { ok: false, reason: '当前版本尚未连接更新通道。' };
       });
       ipcMain.handle('roomcast:copy-image', async (event, value) => {
         if (!owns(event, window)) throw new Error('不允许此窗口写入图片剪贴板。');
@@ -1081,16 +1172,19 @@ else {
         const allowed = owns(event, window)
           && payload && preferenceKeys.has(payload.key);
         if (!allowed) return void (event.returnValue = false);
+        const previous = preferences[payload.key];
         try {
           const serialized = JSON.stringify(payload.value);
-          if (serialized.length > (payload.key === 'avatar' ? 32770 : 12000)) return void (event.returnValue = false);
+          if (serialized.length > (payload.key === 'avatar' ? 170000 : 12000)) return void (event.returnValue = false);
           if (payload.key === 'relaySettings') {
             const previous = preferences.relaySettings && typeof preferences.relaySettings === 'object' ? preferences.relaySettings : {};
             const next = payload.value && typeof payload.value === 'object' && !Array.isArray(payload.value) ? payload.value : {};
             preferences.relaySettings = normalizeRelaySettings(next, previous);
           } else preferences[payload.key] = payload.value;
-          event.returnValue = savePreferences();
-        } catch { event.returnValue = false; }
+          const saved = savePreferences();
+          if (!saved) preferences[payload.key] = previous;
+          event.returnValue = saved;
+        } catch { preferences[payload.key] = previous; event.returnValue = false; }
       });
       ipcMain.handle('roomcast:capture-sources', async event => {
         if (!owns(event, window)) throw new Error('不允许此窗口枚举屏幕');
@@ -1111,6 +1205,7 @@ else {
             // user actually starts an OBS share.
             await engine.prepare();
             assertCurrent();
+            networkPermissions?.record('obs', 'source-list-start');
             await engine.launch(settings);
             assertCurrent();
             const value = await engine.sources();
@@ -1187,6 +1282,7 @@ else {
             // event from the pre-registration OBS cannot invalidate this fresh
             // connection.
             startPhase = 'launch';
+            networkPermissions?.record('obs', 'capture-start');
             await engine.launch(settings);
             assertCurrent();
 
@@ -1290,11 +1386,14 @@ else {
         });
         const pending = (async () => {
           try {
+            networkPermissions?.record('native-media', 'start-requested');
             const encoder = await media.start();
+            networkPermissions?.record('native-media', 'started');
             if (nativeMedia !== media || captureId !== obsCaptureSessionId) throw new Error('原生媒体启动已取消。');
             return { ok: true, encoder };
           } catch (error) {
             if (nativeMedia === media) { nativeMedia = null; nativeMediaStarting = null; }
+            networkPermissions?.record('native-media', 'failed', error.code);
             await media.close();
             return { ok: false, message: String(error.message || '原生媒体不可用。') };
           }
@@ -1363,22 +1462,13 @@ else {
           observer.observe(document.documentElement, { childList: true, subtree: true });
         })`);
       }
-      await (await loadUpdateInstall()).confirmUpdateStartup(app.getVersion());
       if (savedWindow?.maximized) window.maximize();
-      // Neither default-session cleanup nor protocol registration is needed to
-      // render the private-session UI. Keep both off the first-window path.
+      // Default-session cleanup stays off the first-window path.
       setImmediate(() => {
         if (quitting || !window || window.isDestroyed()) return;
-        if (app.isPackaged) {
-          app.setAsDefaultProtocolClient('roomcast', process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
-        }
+        // Pasted invitations remain supported; the lab does not take roomcast:// ownership.
         void Promise.allSettled([session.defaultSession.clearCache(), session.defaultSession.clearStorageData()])
           .then(() => startupMark('maintenance-end'));
-        // A previous automatic update cannot delete its own temporary directory; do it here
-        // once the app is up again (anything newer than ten minutes is left alone).
-        void loadUpdateInstall()
-          .then(module => module.cleanupStaleUpdateWorkDirs())
-          .catch(() => { });
       });
     } catch (e) {
       dialog.showErrorBox('同屏启动失败', `${e.message}\n\n请关闭其他正在运行的 Roomcast 后重试；若仍失败，请查看使用说明。`);

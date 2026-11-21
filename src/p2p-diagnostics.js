@@ -24,7 +24,7 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null, rout
     state = { id: nextId++, previous: new Map() };
     states.set(pc, state);
   }
-  const transportRoute = campusStatsRoute(report);
+  const transportRoute = route === 'native' ? '原生直连' : campusStatsRoute(report);
   const sample = { at: Date.now(), state: pc.connectionState, policy, transportRoute, easytierUnderlay: transportRoute === 'EasyTier虚拟网' ? 'unknown' : null, streams: [] };
   const next = new Map();
   for (const stat of report.values()) {
@@ -78,7 +78,7 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null, rout
       codec: report.get(stat.codecId)?.mimeType ?? null,
       encoderImplementation: typeof stat.encoderImplementation === 'string' ? stat.encoderImplementation.slice(0, 128) : null,
       decoderImplementation: typeof stat.decoderImplementation === 'string' ? stat.decoderImplementation.slice(0, 128) : null,
-      ...Object.fromEntries(['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'jitter']
+      ...Object.fromEntries(['frameWidth', 'frameHeight', 'framesPerSecond', 'targetBitrate', 'jitter', 'estimatedPlayoutTimestamp']
         .map(key => [key, numeric(stat[key])])),
       qualityLimitationReason: stat.qualityLimitationReason ?? null,
       qualityLimitationDurations: Object.fromEntries(['none', 'cpu', 'bandwidth', 'other']
@@ -87,6 +87,11 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null, rout
         local: localCandidate?.candidateType ?? null,
         remote: remoteCandidate?.candidateType ?? null,
         protocol: localCandidate?.protocol ?? null,
+        relay: localCandidate?.candidateType && remoteCandidate?.candidateType
+          ? localCandidate.candidateType === 'relay' || remoteCandidate.candidateType === 'relay' : null,
+        remoteSource: !remoteCandidate?.foundation ? 'unknown'
+          : /^rcnp[pm][1-4]$/.test(remoteCandidate.foundation) ? 'predicted' : 'ordinary',
+        dtlsState: transport?.dtlsState ?? null,
       } : null,
       remotePacketsLost: numeric(remote?.packetsLost),
       remoteJitter: numeric(remote?.jitter),
@@ -102,6 +107,11 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null, rout
   state.previous = next;
   let history = histories.get(state.id);
   if (!history) history = { connection: state.id, direction, route, samples: [] };
+  if (route === 'native') {
+    // Preserve the clocks and freeze counters from startup across a long watch.
+    history.startupSamples ??= [];
+    if (history.startupSamples.length < 16) history.startupSamples.push(sample);
+  }
   history.samples.push(sample);
   if (history.samples.length > 120) history.samples.shift();
   histories.delete(state.id);

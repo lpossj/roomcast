@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.5-beta.4",
+  "version": "0.14.5-beta.6",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -23,11 +23,12 @@
     "package:runtime": "node scripts/package-loopback-asset.mjs",
     "checksums": "node scripts/generate-checksums.mjs",
     "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder --win portable",
-    "dist:zip": "npm run build && electron-builder --win zip",
-    "dist:nsis": "npm run build && electron-builder --win nsis",
-    "release:build": "npm run build && electron-builder --win portable --publish never && electron-builder --win zip --publish never",
+    "dist": "npm run dist:nsis",
+    "dist:zip": "npm run build && electron-builder --win zip --publish never",
+    "dist:nsis": "npm run build && electron-builder --win nsis --publish never --config.directories.output=release/installer",
+    "release:build": "npm run build && electron-builder --win portable zip --publish never",
     "prepare:obs": "node scripts/prepare-embedded-obs.mjs",
+    "prepare:native-ice": "node scripts/prepare-native-ice.mjs",
     "prepare:campus": "node scripts/prepare-easytier.mjs",
     "prepare:obs:release": "node scripts/prepare-embedded-obs.mjs --release",
     "prepare:release": "npm run fetch:runtime && npm run prepare:obs:release",
@@ -43,10 +44,12 @@
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "socket.io": "^4.8.1",
+    "three": "^0.187.0",
     "turn-server": "0.6.6"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",
+    "@socket.io/component-emitter": "3.1.2",
     "@vitejs/plugin-react": "^5.1.1",
     "electron": "44.3.0",
     "electron-builder": "^26.0.12",
@@ -59,7 +62,7 @@
     "vite": "^7.3.0"
   },
   "build": {
-    "appId": "local.roomcast.desktop",
+    "appId": "local.roomcast.campuslab",
     "productName": "Roomcast",
     "asarUnpack": [
       "electron/campus-adapter-worker.mjs",
@@ -76,6 +79,7 @@
       "package.json"
     ],
     "extraResources": [
+      { "from": "runtime/native-ice", "to": "runtime/native-ice", "filter": ["RoomcastNativeIce.exe", "LICENSES.txt"] },
       {
         "from": "runtime/easytier",
         "to": "runtime/easytier",
@@ -198,14 +202,6 @@
       "uninstallerIcon": "build-assets/roomcast-icon.ico",
       "installerHeaderIcon": "build-assets/roomcast-icon.ico"
     },
-    "protocols": [
-      {
-        "name": "Roomcast Invite",
-        "schemes": [
-          "roomcast"
-        ]
-      }
-    ],
     "beforePack": "./scripts/before-pack.cjs",
     "electronFuses": {
       "runAsNode": false,

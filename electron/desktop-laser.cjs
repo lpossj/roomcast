@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto');
 const { spawn } = require('node:child_process');
 
 const TRAIL_IDLE_MS = 1300;
+const TRAIL_LIFETIME_MS = 1250; // Keep aligned with laser-canvas.mjs.
 const SURFACE_SCHEME = 'roomcast-laser';
 const SURFACE_URL = `${SURFACE_SCHEME}://overlay/desktop-laser.html`;
 function registerDesktopLaserScheme(protocol) {
@@ -88,6 +89,14 @@ function createDesktopLaser({ app, BrowserWindow, ipcMain, screen, session, isOw
   });
   const rates = new Map();
   const displayEvents = ['display-added', 'display-removed', 'display-metrics-changed'];
+  const hideSurface = () => {
+    clearTimeout(idleTimer); idleTimer = null;
+    queue = []; lastPacketAt = 0;
+    if (overlay && !overlay.isDestroyed()) {
+      overlay.hide();
+      if (ready) overlay.webContents.send('roomcast:desktop-laser-data', { clear: true });
+    }
+  };
   const destroySurface = () => {
     generation += 1;
     helperGeneration += 1;
@@ -95,7 +104,7 @@ function createDesktopLaser({ app, BrowserWindow, ipcMain, screen, session, isOw
     clearTimeout(readyTimer); readyTimer = null;
     if (helper) { const child = helper; helper = null; child.kill(); }
     for (const event of displayEvents) screen.removeListener(event, refreshDisplay);
-    const previous = overlay; overlay = null; ready = false; bounds = null; queue = [];
+    const previous = overlay; overlay = null; ready = false; bounds = null; queue = []; lastPacketAt = 0;
     if (previous && !previous.isDestroyed()) previous.destroy();
   };
   const stop = () => { destroySurface(); target = null; active = false; rates.clear(); };
@@ -235,11 +244,18 @@ function createDesktopLaser({ app, BrowserWindow, ipcMain, screen, session, isOw
   ipcMain.on('roomcast:desktop-laser', (event, payload) => {
     if (!isOwner(event) || process.platform !== 'win32' || !payload || typeof payload !== 'object') return;
     if (payload.captureStopped === true) { stop(); return; }
-    if (payload.clear === true) { destroySurface(); rates.clear(); return; }
-    if (payload.captureStarted === true) { active = Boolean(target); diagnostic('capture-state', { active, type: target?.type || 'none' }); return; }
+    if (payload.clear === true) { hideSurface(); rates.clear(); return; }
+    if (payload.captureStarted === true) {
+      active = Boolean(target);
+      diagnostic('capture-state', { active, type: target?.type || 'none' });
+      // Prepare the hidden renderer before the first remote stroke arrives.
+      try { ensureSurface(); } catch (error) { diagnostic('surface-create-failed', errorDetails(error)); destroySurface(); }
+      return;
+    }
     if (!active || !target || helperFailed) return;
     const value = sanitize(payload);
     if (!value || !value.packet.points.length) return;
+    diagnostic('packet-received');
     const now = Date.now(), rate = rates.get(value.packet.from);
     if (rate && now - rate.at < 1000 && rate.count >= 40) return;
     if (!rate || now - rate.at >= 1000) {
@@ -248,8 +264,11 @@ function createDesktopLaser({ app, BrowserWindow, ipcMain, screen, session, isOw
     } else rate.count += 1;
     lastPacketAt = now;
     try { ensureSurface(); } catch (error) { diagnostic('surface-create-failed', errorDetails(error)); destroySurface(); helperFailed = true; return; }
-    clearTimeout(idleTimer); idleTimer = setTimeout(destroySurface, TRAIL_IDLE_MS);
-    if (ready && overlay && !overlay.isDestroyed()) overlay.webContents.send('roomcast:desktop-laser-data', value);
+    clearTimeout(idleTimer); idleTimer = setTimeout(hideSurface, TRAIL_IDLE_MS);
+    if (ready && overlay && !overlay.isDestroyed()) {
+      overlay.webContents.send('roomcast:desktop-laser-data', { ...value, at: now });
+      if (bounds && !overlay.isVisible()) overlay.showInactive();
+    }
     else { queue.push({ value, at: now }); queue = queue.slice(-64); }
   });
   ipcMain.on('roomcast:desktop-laser-ready', event => {
@@ -258,14 +277,16 @@ function createDesktopLaser({ app, BrowserWindow, ipcMain, screen, session, isOw
     ready = true;
     clearTimeout(readyTimer); readyTimer = null;
     diagnostic('surface-ready');
-    for (const entry of queue) if (Date.now() - entry.at < 300) overlay.webContents.send('roomcast:desktop-laser-data', entry.value);
+    for (const entry of queue) if (Date.now() - entry.at < TRAIL_LIFETIME_MS) {
+      overlay.webContents.send('roomcast:desktop-laser-data', { ...entry.value, at: entry.at });
+    }
     queue = [];
     if (bounds && Date.now() - lastPacketAt < TRAIL_IDLE_MS) overlay.showInactive();
   });
   ipcMain.on('roomcast:desktop-laser-idle', event => {
     // The canvas can report idle after a later packet is already in IPC transit;
     // keep the main-process 1300 ms deadline authoritative.
-    if (event.sender === overlay?.webContents && Date.now() - lastPacketAt >= TRAIL_IDLE_MS) destroySurface();
+    if (event.sender === overlay?.webContents && Date.now() - lastPacketAt >= TRAIL_IDLE_MS) hideSurface();
   });
   return {
     selectNative(source) {

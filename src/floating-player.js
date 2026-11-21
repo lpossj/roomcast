@@ -1,5 +1,6 @@
 import { attachLaserSurface } from './laser-surface.js';
 import { bindLaserShortcut } from './laser-shortcut.js';
+import { cleanAvatar } from '../server/avatar-policy.mjs';
 
 const AVATAR_PALETTE = [
   ['#394631', '#c5d4a7'],
@@ -22,6 +23,8 @@ const normalizeAvatarColor = value => Number.isInteger(value) && value >= 0 && v
 export function openFloatingPlayer(source, {
   title,
   onState,
+  playbackNotice,
+  onReconnect,
   onVolume,
   onSound,
   soundAvailable,
@@ -103,6 +106,8 @@ export function openFloatingPlayer(source, {
     .floating-viewer img { width: 100%; height: 100%; object-fit: cover; }
     html.is-fullscreen .floating-viewers { top: 15px; }
     html.ui-hidden .floating-viewers { opacity: 0; pointer-events: none; }
+    .playback-notice:not([hidden]) { position: absolute; z-index: 9; top: 50%; left: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 10px; max-width: calc(100% - 16px); padding: 6px 10px; border-radius: 6px; background: var(--control-bg); color: var(--control-text); font-size: 13px; -webkit-app-region: no-drag; }
+    .playback-notice button { flex-shrink: 0; padding: 5px; color: inherit; background: transparent; text-decoration: underline; }
     video { position: relative; z-index: 0; flex: 1 1 0; width: 100%; height: 0; min-width: 0; min-height: 0; object-fit: contain; background: #06090c; }
     html.is-fullscreen video { position: relative; inset: auto; width: 100%; height: 0; flex: 1 1 0; }
     button, input { font: inherit; outline: none; }
@@ -217,8 +222,10 @@ export function openFloatingPlayer(source, {
       node.setAttribute('aria-label', node.title);
       const [background, foreground] = AVATAR_PALETTE[normalizeAvatarColor(member.avatarColor)];
       node.style.background = background; node.style.color = foreground;
-      if (typeof member.avatar === 'string' && member.avatar.length <= 32768 && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(member.avatar)) {
-        const image = doc.createElement('img'); image.src = member.avatar; image.alt = ''; image.draggable = false; node.append(image);
+      let validAvatar = '';
+      try { validAvatar = cleanAvatar(member.avatar || ''); } catch { validAvatar = ''; }
+      if (validAvatar) {
+        const image = doc.createElement('img'); image.src = validAvatar; image.alt = ''; image.draggable = false; node.append(image);
       } else node.textContent = [...String(member.name || '访').trim()][0]?.toUpperCase() || '访';
       return node;
     }));
@@ -334,7 +341,21 @@ export function openFloatingPlayer(source, {
     action: () => popup.close(),
   });
 
-  doc.body.append(infoCard, viewers, video, controls);
+  const notice = doc.createElement('div');
+  notice.className = 'playback-notice';
+  const noticeText = doc.createElement('span');
+  noticeText.setAttribute('role', 'status');
+  const reconnectButton = doc.createElement('button');
+  reconnectButton.type = 'button';
+  reconnectButton.textContent = '重新连接';
+  reconnectButton.onclick = onReconnect;
+  notice.append(noticeText, reconnectButton);
+  const updatePlaybackNotice = message => {
+    notice.hidden = !message;
+    noticeText.textContent = message || '';
+  };
+  updatePlaybackNotice(playbackNotice);
+  doc.body.append(infoCard, viewers, video, controls, notice);
   if (laserOptions) {
     const surface = doc.createElement('div'), canvas = doc.createElement('canvas');
     surface.className = 'laser-layer'; surface.append(canvas); doc.body.append(surface);
@@ -556,5 +577,17 @@ export function openFloatingPlayer(source, {
     throw error;
   }
 
-  return { close: dispose, id, updateAudio, updateInfo, updateLaser };
+  function replaceSource(next) {
+    if (disposed || !next || next === source) return;
+    source.removeEventListener('loadedmetadata', bind);
+    source.removeEventListener('volumechange', syncAudioFromSource);
+    stopObserving();
+    releaseCapture();
+    video.srcObject = null;
+    source = next;
+    source.addEventListener('loadedmetadata', bind);
+    source.addEventListener('volumechange', syncAudioFromSource);
+    if (source.srcObject) bind();
+  }
+  return { close: dispose, id, updateAudio, updateInfo, updateLaser, updatePlaybackNotice, replaceSource };
 }

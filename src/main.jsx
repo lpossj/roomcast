@@ -1,11 +1,11 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
-import './styles.css';
-import './enhancements.css';
-import './multi-share.css';
+import './styles/studio.css';
 import { installIcePolicy } from './ice-policy.js';
 import { unlockSounds } from './sounds.js';
+
+if (window.roomcast?.desktop) document.documentElement.dataset.roomcastDesktop = 'true';
 
 installIcePolicy();
 document.addEventListener('pointerdown', unlockSounds, { capture: true });
@@ -18,5 +18,3 @@ if (window.top === window.self) {
 } else {
   document.getElementById('root').textContent = '请直接打开网页观看链接。';
 }
-
-import './appearance.css';

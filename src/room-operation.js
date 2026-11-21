@@ -1,3 +1,16 @@
+export function withTimeout(promise, ms, text, signal) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(text);
+      error.roomcastTimeout = true;
+      reject(error);
+    }, ms);
+  });
+  const result = Promise.race([promise, deadline]);
+  return (signal ? waitForRoomOperation(result, signal) : result).finally(() => clearTimeout(timer));
+}
+
 // Stop awaiting an operation even when the underlying transport never settles.
 // Its eventual result is consumed, but cannot update a cancelled room session.
 export function waitForRoomOperation(task, signal) {

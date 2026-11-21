@@ -1,10 +1,12 @@
 // `autoCheckUpdates` and `dismissedUpdateVersion` must be listed here as well as in the
 // main process `preferenceKeys`, otherwise the startup-check switch and "不再弹出此框"
 // would silently fall back to their defaults on every launch.
-const allowedKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion', 'avatar', 'voiceSettings', 'panelWidths', 'appearance']);
+const allowedKeys = new Set(['shareSettings', 'relaySettings', 'audioDevices', 'playbackVolume', 'nickname', 'server', 'autoCheckUpdates', 'dismissedUpdateVersion', 'avatar', 'voiceSettings', 'panelWidths', 'appearance', 'gpuSettings']);
+const storageKey = key => window.roomcast?.desktop ? key : key.replace(/^roomcast[.:]/, 'roomcast-campus-lab.');
 
 export function loadPreference(key, fallback, legacyKey = `roomcast.${key}`) {
   if (!allowedKeys.has(key)) return fallback;
+  legacyKey = storageKey(legacyKey);
   try {
     const stored = window.roomcast?.getPreference?.(key);
     if (stored !== undefined && stored !== null) return stored;
@@ -24,8 +26,13 @@ export function loadPreference(key, fallback, legacyKey = `roomcast.${key}`) {
 
 export function savePreference(key, value) {
   if (!allowedKeys.has(key)) return;
-  try { if (window.roomcast?.setPreference?.(key, value)) return; } catch {}
+  try {
+    if (window.roomcast?.setPreference?.(key, value)) {
+      try { localStorage.removeItem(storageKey(`roomcast.${key}`)); } catch {}
+      return;
+    }
+  } catch {}
   if (key === 'relaySettings') return;
   // Keep a fallback for browser development and migrate older installations.
-  try { localStorage.setItem(`roomcast.${key}`, typeof value === 'string' ? value : JSON.stringify(value)); } catch {}
+  try { localStorage.setItem(storageKey(`roomcast.${key}`), typeof value === 'string' ? value : JSON.stringify(value)); } catch {}
 }

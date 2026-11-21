@@ -3,6 +3,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
+const { gzipSync } = require('node:zlib');
 const { VIRTUALCAM_HASHES, virtualCameraTrustScript } = require('./obs-virtualcam-trust.cjs');
 
 const OBS_VIRTUAL_CAM_CLSID = '{A3FCE0F5-3493-419F-958A-ABA1250EC20B}';
@@ -215,6 +216,7 @@ function buildElevatedRegistrationScript({
   resultPath,
   register32 = true,
   register64 = true,
+  networkSetupScript = '',
 }) {
   const subKey = `SOFTWARE\\Classes\\CLSID\\${OBS_VIRTUAL_CAM_CLSID}\\InprocServer32`;
   return [
@@ -273,6 +275,7 @@ function buildElevatedRegistrationScript({
     '  }',
     '}',
     'try {',
+    ...(networkSetupScript ? ['  try {', networkSetupScript, "  } catch { $Result.networkSetupError = 'NETWORK_SETUP_FAILED' }"] : []),
     "  $Result.phase = 'validate-source'",
     "  $TrustedBase = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Roomcast'",
     "  $TrustedDir = Join-Path $TrustedBase 'obs-virtualcam\\32.1.2'",
@@ -351,7 +354,11 @@ function buildElevatedRegistrationScript({
 
 function elevatedRegistrationCommand(script) {
   // Carry the fixed script in the process arguments, never reopen a user-writable .ps1 as admin.
-  const encoded = encodePowerShell(script);
+  // Compress before encoding: combined component setup can otherwise exceed
+  // Windows' 32767-character command line limit for long installation paths.
+  const compressed = gzipSync(Buffer.from(script, 'utf8')).toString('base64');
+  const bootstrap = `$rcBytes=[Convert]::FromBase64String('${compressed}'); $rcStream=[IO.MemoryStream]::new($rcBytes); $rcGzip=[IO.Compression.GZipStream]::new($rcStream,[IO.Compression.CompressionMode]::Decompress); $rcReader=[IO.StreamReader]::new($rcGzip,[Text.Encoding]::UTF8); $rcCode=$rcReader.ReadToEnd(); $rcReader.Dispose(); & ([ScriptBlock]::Create($rcCode))`;
+  const encoded = encodePowerShell(bootstrap);
   return [
     "$ErrorActionPreference = 'Stop'",
     "$PowerShell = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)) 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'",
@@ -464,6 +471,8 @@ async function registerRoomcastVirtualCamera({
   dataRoot,
   register32 = true,
   register64 = true,
+  networkSetupScript = '',
+  onElevation = () => {},
 }) {
   if (process.platform !== 'win32') throw new Error('OBS Virtual Camera 注册只支持 Windows。');
   if (register32 && (!module32 || !fs.existsSync(module32))) {
@@ -488,12 +497,14 @@ async function registerRoomcastVirtualCamera({
     resultPath,
     register32,
     register64,
+    networkSetupScript,
   });
 
   let launcherCode = 1;
   let result = null;
   try {
     const command = elevatedRegistrationCommand(script);
+    onElevation();
     launcherCode = await runProcess('powershell.exe', [
       '-NoProfile',
       '-NonInteractive',
@@ -549,7 +560,7 @@ async function prepareEngineForFreshVirtualCameraRegistration(engine) {
   return { modules, stoppedPreRegistrationObs };
 }
 
-async function ensureObsVirtualCameraRegistration({ engine, dataRoot }) {
+async function ensureObsVirtualCameraRegistration({ engine, dataRoot, networkSetupScript = '', onElevation }) {
   await engine.prepare();
   const modules = engine.virtualCameraModules();
   const before = registrationStatus();
@@ -565,6 +576,8 @@ async function ensureObsVirtualCameraRegistration({ engine, dataRoot }) {
     };
   }
 
+  // Startup runs once; a later explicit share request is a new attempt. Keep
+  // actual registration state authoritative after cancellation or a failure.
   const { stoppedPreRegistrationObs } = await prepareEngineForFreshVirtualCameraRegistration(engine);
   const registration = await registerRoomcastVirtualCamera({
     module32: modules.module32,
@@ -572,6 +585,8 @@ async function ensureObsVirtualCameraRegistration({ engine, dataRoot }) {
     dataRoot,
     register32: assessment.register32,
     register64: assessment.register64,
+    networkSetupScript,
+    onElevation,
   });
 
   const markerPath = path.join(dataRoot, 'obs-virtualcam-registration.json');

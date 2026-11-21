@@ -8,6 +8,9 @@ const numeric = value => typeof value === 'number' && Number.isFinite(value) ? v
 export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
   const guard = createVideoEncoderGuard(quality, now);
   let started = false, stopped = false, timer = null, inFlight = null;
+  let lastVideoSentAt = -Infinity;
+  let lastReport;
+  let firstKeyFrame = 'idle';
 
   const poll = () => {
     if (stopped) return Promise.resolve();
@@ -16,13 +19,22 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', now =
       if (pc.connectionState !== 'connected') { guard.resetSamples(); return; }
       const report = await pc.getStats();
       if (stopped || pc.connectionState !== 'connected' || sender.track?.readyState === 'ended') return;
+      lastReport = report;
       const sample = recordP2pNetworkStats(pc, report, 'publisher', null, route);
       const video = sample.streams.find(stat => stat.type === 'outbound-rtp' && stat.kind === 'video');
+      if (video?.sampleIntervalMs > 0 && video.sampleIntervalMs <= 3000
+        && (video.delta.framesSent > 0 || video.delta.framesEncoded > 0)) lastVideoSentAt = now();
       // BWE, loss recovery, pacing and ordinary resource adaptation already
       // belong to libwebrtc. A local pacer queue after idle/motion is not an
       // independent reason to clamp resolution for another 10-60 seconds.
       const decision = await guard.apply(sender, video, () => stopped);
+      if (stopped) return;
       const parameters = sender.getParameters();
+      if (firstKeyFrame === 'pending' && parameters.encodings?.length) {
+        firstKeyFrame = 'requested';
+        const encodingOptions = parameters.encodings.map(() => ({ keyFrame: true }));
+        await sender.setParameters(parameters, { encodingOptions }).catch(() => {});
+      }
       sample.policy = {
         ...decision,
         degradationPreference: parameters.degradationPreference ?? null,
@@ -39,6 +51,19 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', now =
   };
   return {
     poll,
+    get latestReport() { return !stopped && pc.connectionState === 'connected' ? lastReport : undefined; },
+    requestKeyFrame() {
+      if (firstKeyFrame !== 'idle' || stopped) return;
+      firstKeyFrame = 'pending';
+      void poll();
+    },
+    // Queried only after this viewer has already decoded a frame and then gone quiet.
+    expectsVideo() {
+      const age = now() - lastVideoSentAt;
+      return !stopped && pc.connectionState === 'connected' && (
+        !sender.track || sender.track.readyState === 'ended' || (age >= 0 && age < 3000)
+      );
+    },
     start() { if (started || stopped) return; started = true; void tick(); },
     stop() { stopped = true; if (timer !== null) cancel(timer); timer = null; },
   };

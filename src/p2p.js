@@ -1,16 +1,24 @@
 import { configureScreenVideoSender } from './video-sender-settings.js';
 import { prepareNativeReceiveOffer } from './video-codec-policy.js';
 import { createNativeScreenPublisher } from './transports/native-screen-publisher.js';
-import { configureCampusSession, prepareCampusConnection, stopCampusSession, campusRequestProof, verifyCampusRequest, campusStatsRoute } from './campus-session.js';
+import { configureCampusSession, prepareCampusConnection, stopCampusSession, verifyCampusRequest, campusStatsRoute } from './campus-session.js';
+import { installNativeControl } from './transports/native-room-control.js';
+import { NativeScreenConnection } from './transports/native-screen-connection.js';
+import { nativeAvailable } from './transports/native-endpoint.js';
 import { Peer } from 'peerjs';
 import { io } from 'socket.io-client';
 import { createRoomcastPeerConnection, DEFAULT_STUN_ICE, mediaIceServers, turnIceServers } from './ice-policy.js';
 import { ack, recordLifecycle } from './lib.js';
-import { createPeerAuthProof, MAX_UNAUTHENTICATED_PEERS, PEER_AUTH_PROTOCOL, PEER_AUTH_TIMEOUT_MS, randomPeerAuthNonce, verifyPeerAuthProof } from './p2p-auth.js';
+import { createPeerAuthProof, MAX_UNAUTHENTICATED_PEERS, PEER_AUTH_PROTOCOL, PEER_AUTH_TIMEOUT_MS, PEER_AUTH_ICE_TIMEOUT_MS, randomPeerAuthNonce, verifyPeerAuthProof } from './p2p-auth.js';
 import { encodeRelayInvite, optionalRelayIce } from './relay.js';
 import { createP2pVideoPolicy, p2pResolutionScale } from './p2p-video-policy.js';
 import { CAMPUS_ANSWER_TIMEOUT_MS } from './fallback-policy.js';
-import { recordFailure } from './lifecycle-diagnostics.js';
+import { createJoinTrace, recordFailure } from './lifecycle-diagnostics.js';
+import { connectGuestControl, CONTROL_DISCONNECT_GRACE_MS, joinGuestRoom } from './guest-room-join.js';
+import { withTimeout } from './room-operation.js';
+import { enableControlNatPrediction, markControlAuthenticated, markControlFailure } from './control-nat-prediction.js';
+import { enableEnhancedIce, setEnhancedIceRemote } from './enhanced-ice.js';
+import { localNetworkCapabilities, negotiateNetwork } from './network-capabilities.js';
 
 export const P2P_ICE = DEFAULT_STUN_ICE;
 
@@ -64,6 +72,7 @@ const allowed = new Set([
 ]);
 
 const beforeJoin = new Set(['room:join']);
+const lastBackupByConnection = new WeakMap();
 const INVITE_SECRET = /^[A-Za-z0-9_-]{43}$/;
 const LASER_QUEUE_MAX_BYTES = 16 * 1024;
 const LASER_MESSAGE_MAX_BYTES = 2048;
@@ -77,14 +86,6 @@ function laserQueueBusy(connection) {
     || Number(connection?.bufferSize || 0) > 0;
 }
 
-// The host does not start the authentication clock until the data channel is
-// actually open (see accept()). The viewer must therefore wait for
-// PEER_AUTH_ICE_TIMEOUT_MS + PEER_AUTH_TIMEOUT_MS, otherwise a first join whose
-// ICE setup is slow fails on the viewer side even though the host is still
-// waiting and able to authenticate.
-const PEER_AUTH_ICE_TIMEOUT_MS = 25_000;
-const PEER_AUTH_TOTAL_TIMEOUT_MS = PEER_AUTH_ICE_TIMEOUT_MS + PEER_AUTH_TIMEOUT_MS;
-
 const defaultScreenSettings = {
   width: 1920,
   height: 1080,
@@ -93,7 +94,7 @@ const defaultScreenSettings = {
   performanceMode: 'quality',
 };
 
-function lockVideoBitrate(sdp, kbps) {
+function lockVideoBitrate(sdp, kbps, startAtTarget) {
   const bits = Math.max(200, Number(kbps) || 0) * 1000;
   if (!bits) return sdp;
 
@@ -128,9 +129,10 @@ function lockVideoBitrate(sdp, kbps) {
           line => line.startsWith(`a=fmtp:${payload} `),
         );
 
-        const controls =
-          `x-google-start-bitrate=${Math.round(bits / 1000)};` +
-          `x-google-max-bitrate=${Math.round(bits / 1000)}`;
+        const limit = Math.round(bits / 1000);
+        const controls = startAtTarget
+          ? `x-google-start-bitrate=${limit};x-google-max-bitrate=${limit}`
+          : `x-google-max-bitrate=${limit}`;
 
         if (index >= 0) {
           // Keep the target ceiling, but never pin congestion control to a floor.
@@ -147,20 +149,6 @@ function lockVideoBitrate(sdp, kbps) {
     },
   );
 }
-
-const withTimeout = (promise, ms, text) => {
-  let timer;
-
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(text)),
-        ms,
-      );
-    }),
-  ]).finally(() => clearTimeout(timer));
-};
 
 const withAbort = (promise, signal) => {
   if (!signal) return promise;
@@ -265,6 +253,7 @@ export class P2PRoom {
 
     this.screenViewers = new Map();
     this.screenSessions = new Map();
+    this.idleScreenTracks = new Map();
     this.vdoPending = new Map();
 
     this.vdoPublisher = null;
@@ -275,6 +264,7 @@ export class P2PRoom {
     this.screenSettings = defaultScreenSettings;
 
     this.closed = false;
+    this.guestJoinController = new AbortController();
 
     this.controlIceServers = [...P2P_ICE];
     this.mediaIceServers = [...P2P_ICE];
@@ -359,7 +349,7 @@ export class P2PRoom {
       if (changed) this.recoveryBackup = null;
       this.inviteSecret = value.inviteSecret;
       if (this.pendingMigrationCommit) this.pendingMigrationCommit.inviteSecret = value.inviteSecret;
-      if (changed && this.screenStream?.active) {
+      if (changed && this.screenStream?.active && (this.vdoPublisher || this.vdoPublisherReady)) {
         this.stopVdoPublisher();
         void this.startVdoPublisher(this.screenStream).catch(() => { });
       }
@@ -367,6 +357,12 @@ export class P2PRoom {
     if (event === 'room:state') {
       this.refreshCachedRecovery(value);
       this.room = value;
+      if (this.idleScreenTracks.size) {
+        const viewers = value?.streams?.find(stream => stream.memberId === this.id)?.viewers;
+        for (const owner of this.idleScreenTracks.keys()) {
+          if (!viewers?.some(viewer => viewer.memberId === owner)) this.releaseIdleScreenTrack(owner);
+        }
+      }
       if (value?.members?.find(member => member.id === this.id)?.canShare === false) this.stopScreenStream();
     }
     if (this.isHost && ['room:state', 'chat:message', 'chat:recalled', 'room:credential', 'room:resumed'].includes(event)) {
@@ -388,6 +384,7 @@ export class P2PRoom {
       this.closeScreenOwner(
         value.memberId,
       );
+      this.releaseIdleScreenTrack(value.memberId);
     }
 
     for (
@@ -525,7 +522,7 @@ export class P2PRoom {
     return socket;
   }
 
-  async openPeer(id, override, { adopt = true, timeout = 20000 } = {}) {
+  async openPeer(id, override, { adopt = true, timeout = 20000, signal } = {}) {
     this.assertOpen();
     const options = {
       config: {
@@ -562,6 +559,7 @@ export class P2PRoom {
     const peer = id
       ? new Peer(id, options)
       : new Peer(options);
+    installNativeControl(peer, this);
 
     try { await withTimeout(
       new Promise(
@@ -590,9 +588,10 @@ export class P2PRoom {
       ),
       timeout,
       '公共信令服务连接超时；当前网络可能无法访问该服务。',
+      signal,
     ); } catch (error) { peer.destroy(); throw error; }
 
-    if (this.closed) { peer.destroy(); this.assertOpen(); }
+    if (this.closed || signal?.aborted) { peer.destroy(); signal?.throwIfAborted(); this.assertOpen(); }
     if (adopt) this.peer = peer;
     peer.on(
       'disconnected',
@@ -824,6 +823,7 @@ export class P2PRoom {
 
       signalServer = parsed.searchParams.get('signal') || '';
       campusSecret = parsed.searchParams.get('campus') || '';
+      this.nativeHost = parsed.searchParams.get('native') === '1';
       if (parsed.searchParams.has('campus') && !INVITE_SECRET.test(campusSecret)) throw new Error('校园互联邀请密钥无效。');
 
       if (
@@ -901,53 +901,14 @@ export class P2PRoom {
 
     await configureCampusSession(this, campusSecret);
     this.assertOpen();
-    await this.openPeer(
-      undefined,
-      this.peerServer,
-    );
+    const result = await joinGuestRoom(this, 'initial', { nickname: details.nickname });
     this.assertOpen();
-
-    this.peer.on(
-      'connection',
-      connection => (
-        connection.close()
-      ),
-    );
-
-    await this.connectRemote();
-    this.assertOpen();
-
-    this.connected = true;
-
-    const result =
-      await this.request(
-        'room:join',
-        {
-          roomId:
-            this.roomId,
-          nickname:
-            details.nickname,
-        },
-      );
-
-    this.assertOpen();
-    if (!result.ok) {
-      throw new Error(
-        result.error,
-      );
-    }
-
-    this.id =
-      result.selfId;
-
-    this.room =
-      result.room;
 
     const connectionStats = await this.remote?.peerConnection?.getStats().catch(() => null);
     this.assertOpen();
     return {
       ...result,
-      roomConnection: connectionStats ? campusStatsRoute(connectionStats) : '路线检测中',
+      roomConnection: this.remote?.roomcastNative ? '原生直连' : connectionStats ? campusStatsRoute(connectionStats) : '路线检测中',
       campusSecret: this.campusSecret || '',
       iceServers:
         this.controlIceServers,
@@ -967,268 +928,43 @@ export class P2PRoom {
     };
   }
 
-  async connectRemote(timeout) {
-    try {
-      return await this.connectRemoteAttempt(false, timeout);
-    } catch (error) {
-      this.assertOpen();
-      if (!this.campusSecret || !window.roomcast?.startCampusNetwork || !error.campusRetryable) throw error;
-      return this.connectRemoteAttempt(true, timeout);
+  connectRemote(timeout, trace, signal) {
+    return connectGuestControl(this, timeout, trace, signal);
+  }
+
+  handleGuestData(remote, data) {
+    if (this.closed || this.remote !== remote) return;
+    if (data.event === 'room:credential') { this.dispatch(data.event, data.data); return; }
+    if (data.control) void this.handleControl(data, remote);
+    if (forwarded.includes(data.event) && !this.migrating) this.dispatch(data.event, data.data);
+
+    const pending = this.pending.get(data.reply);
+    if (pending) {
+      this.pending.delete(data.reply);
+      pending.reply?.(data.result);
+      pending.resolve(data.result);
     }
   }
 
-  async connectRemoteAttempt(campus, timeout) {
-    const authMode = 'invite';
-    const campusRequest = campus ? await campusRequestProof(this) : undefined;
-    this.assertOpen();
-
-    const remote =
-      this.peer.connect(
-        `roomcast-v1-${this.roomId}`,
-        {
-          reliable: true,
-          serialization: 'binary',
-          metadata: {
-            protocol:
-              PEER_AUTH_PROTOCOL,
-            authMode,
-            ...(campusRequest ? { campusRequest } : {}),
-          },
-        },
-      );
-
-    this.remote = remote;
-    if (campus) void prepareCampusConnection(this, remote.peerConnection);
-
-    let ready;
-    let rejectReady;
-
-    const hostReady =
-      new Promise(
-        (resolve, reject) => {
-          ready = resolve;
-          rejectReady = reject;
-        },
-      );
-
-    const peer =
-      this.peer;
-
-    let authChallenge = null;
-    let authVerified = false;
-    let authResponseSeen = false;
-    const clientNonce = randomPeerAuthNonce();
-
-    const failed = error => {
-      recordFailure('join-connection', error, { pc: remote.peerConnection, campus });
-      const stage = {
-        createOffer: '发起连接',
-        createAnswer: '回应连接',
-        setLocalDescription: '准备连接',
-        setRemoteDescription: '确认远端连接',
-        addIceCandidate: '交换连接信息',
-        prepareCampus: '准备备用连接',
-      }[error?.roomcastOperation];
-      const failure = new Error(
-        error?.type === 'webrtc'
-          ? `房间连接协商失败${stage ? `（${stage}）` : ''}，请重新加入。`
-          : error?.message || error?.type || '房间连接已关闭',
-        { cause: error },
-      );
-      if (error?.type) failure.type = error.type;
-      rejectReady(failure);
-    };
-
-    const peerFailed = error => {
-      if (error?.type === 'webrtc' && error.roomcastPeerConnection) {
-        const pc = error.roomcastPeerConnection;
-        if (pc !== remote.peerConnection || (pc.signalingState === 'closed' && error.roomcastOperation !== 'prepareCampus')) return;
-        // A rejected candidate does not establish that every ICE path failed.
-        // Keep waiting for this connection's final state or existing deadline.
-        if (error.roomcastOperation === 'addIceCandidate') return;
+  handleGuestClose(remote, { transportLoss = false } = {}) {
+    if (this.closed || this.isHost || this.remote !== remote) return;
+    // Only the old host closing its own connection commits an armed handover.
+    if (this.pendingMigrationCommit) {
+      if (transportLoss) return;
+      const payload = this.pendingMigrationCommit;
+      this.pendingMigrationCommit = null;
+      this.migrating = true;
+      this.migrationCompletion = new Promise(resolve => { this.resolveMigration = resolve; });
+      this.failPending();
+      void this.finishMigration(payload).catch(error => this.disconnect('房间迁移失败：' + error.message));
+    } else if (this.connected && !this.migrating) {
+      this.remote = null;
+      if (transportLoss) {
+        try { remote.close(); } catch { /* The old transport is already gone. */ }
       }
-      failed(error);
-    };
-
-    peer.on(
-      'error',
-      peerFailed,
-    );
-
-    remote.on(
-      'error',
-      failed,
-    );
-
-    remote.once(
-      'close',
-      failed,
-    );
-
-    remote.on(
-      'data',
-      data => {
-        if (
-          !data
-          || typeof data
-          !== 'object'
-        ) {
-          return;
-        }
-
-        if (
-          data.authChallenge?.protocol
-          === PEER_AUTH_PROTOCOL
-          && data.authChallenge.mode
-          === authMode
-        ) {
-          if (authChallenge || data.authChallenge.roomId !== this.roomId) { remote.close(); failed(new Error('P2P 鉴权挑战无效。')); return; }
-          authChallenge = { protocol: PEER_AUTH_PROTOCOL, roomId: this.roomId, mode: authMode, nonce: data.authChallenge.nonce };
-          const secret =
-            this.inviteSecret;
-
-          void createPeerAuthProof(
-            secret,
-            authChallenge,
-          )
-            .then(
-              proof => {
-                if (remote.open) {
-                  remote.send({
-                    authProof:
-                      proof,
-                    authNonce: clientNonce,
-                  });
-                }
-              },
-            )
-            .catch(failed);
-        }
-
-        if (
-          data.authenticated
-          === true
-        ) {
-          if (authResponseSeen || authVerified) return;
-          if (!authChallenge) { remote.close(); failed(new Error('P2P 鉴权状态无效。')); return; }
-          authResponseSeen = true;
-          void verifyPeerAuthProof(this.inviteSecret, { ...authChallenge, role: 'host', clientNonce }, data.hostProof)
-            .then(valid => {
-              if (!valid) { remote.close(); failed(new Error('P2P 房主鉴权失败。')); return; }
-              if (!remote.open || this.closed) return;
-              authVerified = true;
-              ready();
-            }).catch(failed);
-          return;
-        }
-
-        if (!authVerified) return;
-        if (this.remote !== remote) return;
-        if (data.event === 'room:credential') { this.dispatch(data.event, data.data); return; }
-
-        if (data.control) {
-          void this.handleControl(
-            data,
-            remote,
-          );
-        }
-
-        if (
-          data.event
-          && forwarded.includes(
-            data.event,
-          )
-          && !this.migrating
-        ) {
-          this.dispatch(
-            data.event,
-            data.data,
-          );
-        }
-
-        if (
-          data.reply
-          && this.pending.has(
-            data.reply,
-          )
-        ) {
-          this.pending
-            .get(data.reply)(
-              data.result,
-            );
-
-          this.pending.delete(
-            data.reply,
-          );
-        }
-      },
-    );
-
-    remote.on(
-      'close',
-      () => {
-        // The successor stays in the old room until its host actually leaves.
-        // A lost arm acknowledgement can therefore still be safely aborted.
-        if (!this.closed && this.remote === remote && this.pendingMigrationCommit) {
-          const payload = this.pendingMigrationCommit;
-          this.pendingMigrationCommit = null;
-          this.migrating = true;
-          this.migrationCompletion = new Promise(resolve => { this.resolveMigration = resolve; });
-          this.failPending();
-          void this.finishMigration(payload).catch(error => this.disconnect(
-            '房间迁移失败：' + error.message,
-          ));
-          return;
-        }
-        if (
-          !this.closed
-          && this.connected
-          && !this.migrating
-          && this.remote
-          === remote
-        ) {
-          if (this.recoveryBackup) this.beginRecovery();
-          else this.disconnect('房主连接已结束，尚未收到可恢复的房间状态。');
-        }
-      },
-    );
-
-    // Give ordinary ICE and authentication their full existing deadline.
-    // PeerJS still rejects a definitive ICE failure immediately; merely having
-    // a campus fallback must not cut a still-checking ordinary attempt short.
-    try {
-      await withTimeout(
-        hostReady,
-        timeout || (campus ? 220000 : PEER_AUTH_TOTAL_TIMEOUT_MS),
-        '无法与房主建立 P2P 连接。',
-      );
-    } catch (error) {
-      // A shorter recovery connection deadline is not an ordinary ICE failure.
-      // Keep the existing fallback ordering; only a definitive failure may
-      // accelerate the campus route during this recovery attempt.
-      error.campusRetryable = (!timeout || error?.type === 'webrtc') && !authChallenge && !authVerified && !this.closed
-        && !['peer-unavailable', 'network', 'server-error', 'socket-error', 'socket-closed'].includes(error.type || error.message);
-      if (!this.connected && this.remote === remote) this.remote = null;
-      remote.close();
-      throw error;
-    } finally {
-      peer.off(
-        'error',
-        peerFailed,
-      );
-
-      remote.off(
-        'error',
-        failed,
-      );
-
-      remote.off(
-        'close',
-        failed,
-      );
+      if (this.recoveryBackup) this.beginRecovery(transportLoss);
+      else this.disconnect('房主连接已结束，尚未收到可恢复的房间状态。');
     }
-
-    return remote;
   }
 
   refreshCachedRecovery(room) {
@@ -1266,6 +1002,7 @@ export class P2PRoom {
     this.lastBackupAt = performance.now();
     const exportSecret = this.inviteSecret;
     const exportMembers = recoveryMemberKey(this.room);
+    const recipients = new Map(this.guestMembers);
     try {
       const result = await ack(this.local, 'room:recovery-export', {}, 3000);
       if (!result.ok || this.closed || !this.isHost) return;
@@ -1274,7 +1011,8 @@ export class P2PRoom {
         this.backupUrgent = true;
         return;
       }
-      for (const [memberId, connection] of this.guestMembers) {
+      for (const [memberId, connection] of recipients) {
+        if (this.guestMembers.get(memberId) !== connection) continue;
         if (!connection.open || !result.tickets[memberId]) continue;
         if (Number(connection.dataChannel?.bufferedAmount || 0) > 64 * 1024 || connection.bufferSize > 0) {
           this.backupDirty = true;
@@ -1292,13 +1030,15 @@ export class P2PRoom {
     }
   }
 
-  beginRecovery() {
+  beginRecovery(transportLoss = false) {
     if (this.closed || this.recoveryPromise || !this.recoveryBackup) return;
+    recordLifecycle('room-recovery', 'started');
+    this.confirmResumeOn = null;
     const backup = this.recoveryBackup;
     this.migrating = true;
     this.migrationCompletion = new Promise(resolve => { this.resolveMigration = resolve; });
     this.failPending();
-    const pending = this.recoverRoom(backup);
+    const pending = this.recoverRoom(backup, transportLoss);
     this.recoveryPromise = pending;
     void pending.catch(error => {
       if (!this.closed) this.disconnect(`房间接任失败：${error.message}`);
@@ -1307,24 +1047,26 @@ export class P2PRoom {
     });
   }
 
-  async recoverRoom(backup) {
+  async recoverRoom(backup, transportLoss) {
     const rank = backup.transfer.successorIds.indexOf(this.id);
     const deadline = performance.now() + 45_000;
-    // All surviving members have the same ordered candidate list. A slow or
-    // unavailable administrator must not prevent the following member taking over.
     await pause(250 + Math.max(0, rank) * 900);
+    // Survivors can observe the same ICE loss seconds apart. Give the preferred
+    // successor one grace period, then let the remaining candidates claim the ID.
+    const preferredUntil = transportLoss && rank > 0 ? performance.now() + CONTROL_DISCONNECT_GRACE_MS : 0;
     let lastError;
     let mayClaim = rank >= 0;
     while (!this.closed && performance.now() < deadline) {
       let candidate = null;
       let local = null;
       const arrivals = new Set();
+      const deferClaim = mayClaim && performance.now() < preferredUntil;
       const queueArrival = connection => {
         if (this.closed || arrivals.size >= MAX_UNAUTHENTICATED_PEERS) connection.close();
         else arrivals.add(connection);
       };
       try {
-        if (mayClaim) {
+        if (mayClaim && !deferClaim) {
           candidate = await this.openPeer(`roomcast-v1-${this.roomId}`, this.peerServer, { adopt: false, timeout: 5000 });
           this.recoveryCandidate = candidate;
           candidate.on('connection', queueArrival);
@@ -1380,29 +1122,33 @@ export class P2PRoom {
       }
       if (this.closed) return;
       try {
-        if (!this.peer || this.peer.destroyed || this.peer.disconnected) {
-          this.peer?.destroy();
-          await this.openPeer(undefined, this.peerServer, { timeout: 5000 });
-        }
-        await this.connectRemote(Math.min(PEER_AUTH_TOTAL_TIMEOUT_MS, Math.max(1000, deadline - performance.now())));
-        if (this.closed) return;
-        const result = await this.request('room:join', { roomId: this.roomId, ticket: backup.ticket });
-        if (!result.ok) throw new Error(result.error || '新房主尚未完成接任。');
+        // Rejoining the live host can proceed even while a higher-ranked member has first claim.
+        const joinDeadline = deferClaim ? Math.min(preferredUntil, deadline) : deadline;
+        const result = await joinGuestRoom(this, 'recovery', { ticket: backup.ticket }, joinDeadline);
         this.assertOpen();
-        this.id = result.selfId;
-        this.room = result.room;
         this.connected = true;
         this.migrating = false;
-        this.recoveryBackup = null;
         this.resolveMigration?.();
         this.dispatch('room:resumed', result);
-        void this.request('room:migration-confirm').catch(() => {});
+        const fresh = this.recoveryBackup;
+        const replacementReady = fresh && fresh.ticket !== backup.ticket && lastBackupByConnection.get(this.remote) === fresh;
+        if (result.resumedHere && !replacementReady) {
+          // Keep the presented ticket usable until the replacement snapshot reaches this channel.
+          if (backup.inviteSecret === this.inviteSecret) this.recoveryBackup = backup;
+          this.confirmResumeOn = { connection: this.remote, ticket: backup.ticket };
+        } else {
+          if (this.recoveryBackup === backup) this.recoveryBackup = null;
+          void this.request('room:migration-confirm').catch(() => {});
+        }
         return;
       } catch (error) {
+        if (this.closed || error.name === 'AbortError') return;
         lastError = error;
-        this.remote?.close();
       }
-      await pause(500 + Math.floor(Math.random() * 200));
+      const retryDelay = deferClaim
+        ? Math.max(0, preferredUntil - performance.now())
+        : 500 + Math.floor(Math.random() * 200);
+      await pause(retryDelay);
     }
     if (!this.closed) throw lastError || new Error('没有可连接的接任成员。');
   }
@@ -1474,7 +1220,7 @@ export class P2PRoom {
     reason = '房间协调器正在切换',
   ) {
     for (
-      const resolve
+      const { resolve }
       of this.pending.values()
     ) {
       resolve({
@@ -1541,7 +1287,12 @@ export class P2PRoom {
       const previous = this.recoveryBackup?.transfer;
       if (previous?.epoch === transfer.epoch && previous.revision > transfer.revision) return;
       this.recoveryBackup = payload;
+      lastBackupByConnection.set(connection, payload);
       this.refreshCachedRecovery(this.room);
+      if (this.confirmResumeOn?.connection === connection && this.confirmResumeOn.ticket !== payload.ticket) {
+        this.confirmResumeOn = null;
+        void this.request('room:migration-confirm').catch(() => {});
+      }
       return;
     }
     const reply =
@@ -1937,31 +1688,8 @@ export class P2PRoom {
       attempt += 1
     ) {
       try {
-        await this.connectRemote();
-
-        this.connected = true;
-
-        const result =
-          await this.request(
-            'room:join',
-            {
-              roomId:
-                this.roomId,
-              ticket,
-            },
-          );
-
-        if (!result.ok) {
-          throw new Error(
-            result.error,
-          );
-        }
-
-        this.id =
-          result.selfId;
-
-        this.room =
-          result.room;
+        const result = await joinGuestRoom(this, 'migration', { ticket });
+        this.assertOpen();
 
         this.migrating =
           false;
@@ -1975,9 +1703,8 @@ export class P2PRoom {
 
         return;
       } catch (error) {
+        if (this.closed || error.name === 'AbortError') return;
         lastError = error;
-
-        this.remote?.close();
 
         await pause(
           250
@@ -1995,6 +1722,9 @@ export class P2PRoom {
   async leave() {
     // Room recovery is pre-copied to the remaining members. Local departure must
     // never depend on remote acknowledgements or coordinator reachability.
+    if (!this.isHost && this.connected && !this.migrating && this.remote?.open) {
+      void this.request('room:leave').catch(() => {});
+    }
     this.disconnect();
     return { ok: true };
   }
@@ -2006,6 +1736,11 @@ export class P2PRoom {
         === 'object'
         ? connection.metadata
         : {};
+
+    const campus = !!metadata.campusRequest;
+    const route = connection.roomcastNative ? 'native' : campus ? 'campus' : 'ordinary';
+    const trace = createJoinTrace('host', 'incoming', metadata.joinAttemptId);
+    trace.mark('control', 'offer-received', route);
 
     const authMode =
       metadata.protocol
@@ -2025,9 +1760,10 @@ export class P2PRoom {
       >= MAX_UNAUTHENTICATED_PEERS
       || !authMode
       || !authSecret
-      || (!metadata.campusRequest && [...this.unauthenticated].some(peer => peer.peer && peer.peer === connection.peer))
+      || (!connection.roomcastNative && !metadata.campusRequest && [...this.unauthenticated].some(peer => peer.peer && peer.peer === connection.peer))
       || (this.authFailures.get(connection.peer) || 0) > Date.now()
     ) {
+      trace.mark('control', this.closed ? 'cancelled' : 'rejected', route);
       connection.close();
       return;
     }
@@ -2035,7 +1771,9 @@ export class P2PRoom {
     this.unauthenticated
       .add(connection);
 
-    const campus = !!metadata.campusRequest;
+    if (route === 'ordinary') enableControlNatPrediction(connection.peerConnection, {
+      role: 'host', channel: connection.dataChannel, joinAttemptId: trace.id,
+    });
     if (campus) {
       const pc = connection.peerConnection;
       pc.roomcastCampus = true;
@@ -2050,6 +1788,7 @@ export class P2PRoom {
     let closed = false;
     let authenticated = false;
     let authStarted = false;
+    let repliedToJoin = false;
     let memberId = '';
 
     let windowStarted =
@@ -2065,14 +1804,20 @@ export class P2PRoom {
     let timeout;
     let authReceive;
     let rejectAuth;
+    let repeatChallengeTimer;
 
     const cleanup = () => {
       if (closed) return;
 
       closed = true;
+      if (!memberId && !repliedToJoin) {
+        const stage = authenticated ? 'admission' : authStarted ? 'authentication' : 'control';
+        trace.mark(stage, this.closed ? 'cancelled' : 'failed', route, 'closed');
+      }
       this.failControlPending(connection);
 
       clearTimeout(timeout);
+      clearTimeout(repeatChallengeTimer);
       if (authReceive) connection.off('data', authReceive);
       rejectAuth?.(new Error('P2P 连接已关闭。'));
 
@@ -2128,9 +1873,14 @@ export class P2PRoom {
         });
       }
       if (closed || !connection.open) return;
+      trace.mark('control', 'channel-open', route);
       authStarted = true;
       timeout = setTimeout(() => {
-        if (!authenticated) connection.close();
+        if (!authenticated) {
+          trace.mark('authentication', 'failed', route, 'deadline');
+          markControlFailure(connection.peerConnection);
+          connection.close();
+        }
       }, PEER_AUTH_TIMEOUT_MS);
 
       const challenge = {
@@ -2153,6 +1903,7 @@ export class P2PRoom {
               rejectAuth = reject;
               const receive =
                 message => {
+                  clearTimeout(repeatChallengeTimer);
                   authMessages += 1;
 
                   let size = 0;
@@ -2206,16 +1957,19 @@ export class P2PRoom {
                       authChallenge:
                         challenge,
                     });
+                    trace.mark('authentication', 'challenge', route);
                   }
                 };
 
-              if (connection.open) {
-                sendChallenge();
-              } else {
-                connection.once(
-                  'open',
-                  sendChallenge,
-                );
+              sendChallenge();
+              if (metadata.repeatChallenge === true) {
+                repeatChallengeTimer = setTimeout(() => {
+                  if (closed || !connection.open || authMessages) return;
+                  try {
+                    connection.send({ authChallenge: challenge });
+                    trace.mark('authentication', 'challenge-repeated', route);
+                  } catch (error) { reject(error); }
+                }, PEER_AUTH_TIMEOUT_MS / 2);
               }
             },
           ),
@@ -2251,6 +2005,9 @@ export class P2PRoom {
 
       if (closed || !connection.open) return;
       authenticated = true;
+      trace.mark('authentication', 'verified', route);
+      setEnhancedIceRemote(connection.peerConnection, metadata.networkCapabilities);
+      markControlAuthenticated(connection.peerConnection);
 
       clearTimeout(timeout);
 
@@ -2367,7 +2124,7 @@ export class P2PRoom {
           }
 
           const oversized =
-            serializedLength > 65536
+            serializedLength > (message?.event === 'member:profile' ? 220 * 1024 : 65536)
             || (
               binaryChunk && (
                 binaryLength < 1
@@ -2446,6 +2203,8 @@ export class P2PRoom {
             }
           }
 
+          const joining = message.event === 'room:join' && !socket.data.admitted;
+          if (joining) trace.mark('admission', 'request-received', route);
           let result;
 
           if (
@@ -2533,6 +2292,10 @@ export class P2PRoom {
                 message.id,
               result,
             });
+            if (joining) {
+              repliedToJoin = true;
+              trace.mark('admission', 'reply-sent', route, result.ok ? 'accepted' : 'rejected');
+            }
           }
         },
       );
@@ -2542,10 +2305,12 @@ export class P2PRoom {
       ) {
         connection.send({
           authenticated: true,
+          networkCapabilities: localNetworkCapabilities(),
           hostProof,
         });
       }
     } catch {
+      markControlFailure(connection.peerConnection, this.closed ? 'cancelled' : 'failed');
       if (authStarted && !authenticated && connection.peer) {
         this.authFailures.delete(connection.peer);
         this.authFailures.set(connection.peer, Date.now() + 3000);
@@ -2559,6 +2324,7 @@ export class P2PRoom {
   async request(
     event,
     payload = {},
+    delivery,
   ) {
     if (
       this.migrating
@@ -2623,11 +2389,7 @@ export class P2PRoom {
       return await withTimeout(
         new Promise(
           (resolve, reject) => {
-            this.pending
-              .set(
-                id,
-                resolve,
-              );
+            this.pending.set(id, { resolve, reply: delivery?.reply });
 
             try {
               this.remote.send({
@@ -2635,6 +2397,7 @@ export class P2PRoom {
                 event,
                 payload,
               });
+              delivery?.sent?.();
             } catch (error) {
               this.pending
                 .delete(id);
@@ -2645,10 +2408,28 @@ export class P2PRoom {
         ),
         15_000,
         '房主响应超时',
+        delivery?.signal,
       );
     } finally {
       this.pending.delete(id);
     }
+  }
+
+  async checkScreenFrames(owner, session, signal, requestKeyFrame = false) {
+    const requestId = crypto.randomUUID();
+    let listener;
+    const reply = new Promise(resolve => {
+      listener = message => {
+        if (message.kind === 'frame-status' && message.from === owner
+          && message.session === session && message.requestId === requestId) resolve(message.expectsVideo === true);
+      };
+    });
+    this.on('screen:signal', listener);
+    try {
+      const sent = this.request('screen:signal', { kind: 'frame-check', to: owner, session, requestId, requestKeyFrame }, { signal });
+      return await withTimeout(sent.then(result => result.ok ? reply : null), 4000, '观看状态查询超时。', signal);
+    } catch { return null; }
+    finally { this.off('screen:signal', listener); }
   }
 
   async screenSignal(message) {
@@ -2657,6 +2438,17 @@ export class P2PRoom {
       requestId,
       from,
     } = message;
+
+    if (kind === 'frame-status') return; // Delivered to the scoped request listener by dispatch().
+    if (kind === 'frame-check') {
+      const entry = this.screenSessions.get(message.session);
+      if (entry?.owner === from) {
+        if (message.requestKeyFrame === true) entry.videoPolicy?.requestKeyFrame();
+        void this.request('screen:signal', { kind: 'frame-status', to: from, requestId,
+          session: message.session, expectsVideo: entry.videoPolicy?.expectsVideo() === true }).catch(() => {});
+      }
+      return;
+    }
 
     if (
       kind === 'vdo-descriptor'
@@ -2708,6 +2500,7 @@ export class P2PRoom {
       if (
         entry.pc
           .remoteDescription
+        && !entry.restarting
       ) {
         await entry.pc
           .addIceCandidate(
@@ -2728,30 +2521,24 @@ export class P2PRoom {
       kind === 'answer'
       || kind === 'error'
     ) {
-      if (
-        this.screenViewers
-          .get(requestId)
-          ?.owner
-        === from
-      ) {
-        if (
-          kind === 'answer'
-        ) {
-          this.screenViewers
-            .get(requestId)
-            .session =
-            message.session;
+      const viewer = this.screenViewers.get(requestId);
+      if (viewer?.owner === from) {
+        if (kind === 'answer') {
+          if (viewer.session && viewer.session !== message.session) return;
+          if (!viewer.session) {
+            viewer.session = message.session;
+            viewer.onSession?.(message.session, message.publisherRelayed === true);
+          }
         }
 
         this.screenPending
           .get(requestId)
           ?.(message);
         if (kind === 'error' && message.error === 'NATIVE_MEDIA_FALLBACK' && !this.screenPending.has(requestId)) {
-          const viewer = this.screenViewers.get(requestId);
-          viewer?.pc.close();
+          viewer.pc.close();
           // close() itself does not fire this event; let the existing media
           // recovery state machine select its normal congestion-aware path.
-          viewer?.pc.dispatchEvent(new Event('connectionstatechange'));
+          viewer.pc.dispatchEvent(new Event('connectionstatechange'));
         }
       } else if (
         kind === 'answer'
@@ -2829,12 +2616,22 @@ export class P2PRoom {
       kind === 'offer'
     ) {
       try {
+        // This describes the publisher's route to the coordinator only. Read
+        // it alongside the direct negotiation without holding up its answer.
+        let publisherRelayed = false;
+        const coordinator = this.guestCoordinator(from);
+        if (coordinator && !message.restart && message.route === 'p2p' && this.getTurnMediaIceServers().length) {
+          void this.controlUsesTurnRelay(coordinator.id).then(relayed => { publisherRelayed = relayed; }).catch(() => {});
+        }
         const result =
-          await this.answerScreen(
+          message.restart === true
+          ? await this.answerScreenRestart(from, message.sdp, requestId, message.session)
+          : await this.answerScreen(
             from,
             message.sdp,
             requestId,
             message.route || 'p2p',
+            message.networkCapabilities,
           );
 
         if (
@@ -2856,6 +2653,8 @@ export class P2PRoom {
             requestId,
             to: from,
             ...result,
+            ...(publisherRelayed ? { publisherRelayed: true } : {}),
+            networkCapabilities: result.networkCapabilities || localNetworkCapabilities(),
           },
         );
         if (sent.ok) this.screenSessions.get(result.session)?.onAnswerSent?.();
@@ -2906,11 +2705,7 @@ export class P2PRoom {
     this.nativeScreenPublisher = createNativeScreenPublisher(stream, this.screenSettings);
     this.nativeFallbackOwners = new Set();
 
-    void this.startVdoPublisher(
-      stream,
-    ).catch(() => {
-      // Native P2P sharing remains authoritative if VDO prewarm is unavailable.
-    });
+    // VDO publisher is started lazily in getVdoDescriptor() only after a viewer enters the preview.
   }
 
   async startVdoPublisher(
@@ -3032,6 +2827,9 @@ export class P2PRoom {
   }
 
   async getVdoDescriptor() {
+    if (!this.vdoPublisherReady && this.screenStream?.active) {
+      void this.startVdoPublisher(this.screenStream).catch(() => { });
+    }
     const pending =
       this.vdoPublisherReady;
 
@@ -3092,19 +2890,10 @@ export class P2PRoom {
     this.nativeScreenPublisher = null;
     release(() => this.stopVdoPublisher());
 
-    for (
-      const entry
-      of this.screenSessions.values()
-    ) {
-      release(() => entry.videoPolicy?.stop());
-      clearTimeout(
-        entry.calibrateTimer,
-      );
-
-      release(() => entry.pc?.close());
+    for (const [session, entry] of this.screenSessions) {
+      this.closeLocalScreen(entry.owner, session);
     }
-
-    this.screenSessions.clear();
+    for (const owner of this.idleScreenTracks.keys()) this.releaseIdleScreenTrack(owner);
 
     for (
       const track
@@ -3136,16 +2925,41 @@ export class P2PRoom {
       return;
     }
 
-    entry.videoPolicy?.stop();
+    this.screenSessions.delete(session);
+    clearTimeout(entry.calibrateTimer);
+    clearTimeout(entry.restartWaitTimer);
+    try { entry.videoPolicy?.stop(); } catch {}
+    try { entry.pc?.close(); } catch {}
+    if (entry.videoTrack) {
+      const watching = this.room?.streams?.find(stream => stream.memberId === this.id)?.viewers
+        ?.some(viewer => viewer.memberId === owner);
+      if (watching && entry.videoTrack.readyState === 'live' && entry.videoTrack.enabled && this.screenStream?.active) {
+        // A new PC for the same watch can reuse its capture track. The closed
+        // PC owns the old encoder. Every other viewer keeps a separate track.
+        this.releaseIdleScreenTrack(owner);
+        const timer = setTimeout(() => this.releaseIdleScreenTrack(owner), 15000);
+        this.idleScreenTracks.set(owner, { source: entry.videoSource, track: entry.videoTrack, timer });
+      } else entry.videoTrack.stop();
+    }
+  }
 
-    clearTimeout(
-      entry.calibrateTimer,
-    );
+  releaseIdleScreenTrack(owner) {
+    const idle = this.idleScreenTracks.get(owner);
+    if (!idle) return;
+    this.idleScreenTracks.delete(owner);
+    clearTimeout(idle.timer);
+    idle.track.stop();
+  }
 
-    entry.pc?.close();
-
-    this.screenSessions
-      .delete(session);
+  videoTrackForViewer(owner, source) {
+    const idle = this.idleScreenTracks.get(owner);
+    if (idle?.source === source && idle.track.readyState === 'live' && idle.track.enabled) {
+      clearTimeout(idle.timer);
+      this.idleScreenTracks.delete(owner);
+      return idle.track;
+    }
+    this.releaseIdleScreenTrack(owner);
+    return source.clone();
   }
 
   closeScreenOwner(owner) {
@@ -3191,11 +3005,22 @@ export class P2PRoom {
     }
   }
 
+  waitForScreenReconnect(session, entry) {
+    clearTimeout(entry.restartWaitTimer);
+    entry.restartWaitTimer = setTimeout(() => {
+      entry.restartWaitTimer = null;
+      if (this.screenSessions.get(session) === entry && entry.pc.connectionState !== 'connected') {
+        this.closeLocalScreen(entry.owner, session);
+      }
+    }, 15000);
+  }
+
   async answerScreen(
     owner,
     sdp,
     requestId,
     route = 'p2p',
+    remoteCapabilities = null,
   ) {
     if (
       !this.screenStream
@@ -3206,13 +3031,12 @@ export class P2PRoom {
       );
     }
 
-    this.closeScreenOwner(owner);
-
     if (
       ![
         'p2p',
         'turn',
         'campus',
+        'native',
       ].includes(route)
     ) {
       throw new Error(
@@ -3220,6 +3044,10 @@ export class P2PRoom {
       );
     }
 
+    if (route === 'native' && (!nativeAvailable() || !negotiateNetwork(remoteCapabilities).features.nativeUdpMux)) {
+      throw new Error('当前共享不支持原生媒体连接。');
+    }
+    this.closeScreenOwner(owner);
     const relayOnly =
       route === 'turn' || route === 'campus';
 
@@ -3272,7 +3100,8 @@ export class P2PRoom {
         });
         if (this.screenSessions.get(session) !== entry) { pc.close(); throw new Error('共享已取消。'); }
         if (['failed', 'closed'].includes(pc.connectionState)) throw new Error('原生媒体协商失败。');
-        return { sdp: pc.localDescription.sdp, session };
+        return { sdp: pc.localDescription.sdp, session,
+          networkCapabilities: localNetworkCapabilities({ mediaIceRestart: false }) };
       } catch (error) {
         const cancelled = this.screenSessions.get(session) !== entry;
         this.closeLocalScreen(owner, session);
@@ -3285,7 +3114,7 @@ export class P2PRoom {
       }
     }
 
-    const pc =
+    const pc = route === 'native' ? new NativeScreenConnection(false, this.screenSettings.bitrate) :
       createRoomcastPeerConnection({
         iceServers:
           routeIceServers,
@@ -3299,17 +3128,6 @@ export class P2PRoom {
           : {}),
       });
 
-    for (
-      const track
-      of this.screenStream
-        .getTracks()
-    ) {
-      pc.addTrack(
-        track,
-        this.screenStream,
-      );
-    }
-
     const session =
       crypto.randomUUID();
 
@@ -3319,6 +3137,7 @@ export class P2PRoom {
       requestId,
       route,
       candidates: [],
+      network: negotiateNetwork(remoteCapabilities),
     };
 
     this.screenSessions
@@ -3328,6 +3147,20 @@ export class P2PRoom {
       );
 
     try {
+      for (const track of this.screenStream.getTracks()) {
+        if (track.kind === 'video') {
+          // Each viewer owns its outgoing video track and encoder lifetime.
+          // Keep the source running when this session is cancelled or replaced.
+          entry.videoSource = track;
+          entry.videoTrack = this.videoTrackForViewer(owner, track);
+          if ('contentHint' in entry.videoTrack) entry.videoTrack.contentHint = track.contentHint;
+          pc.addTrack(entry.videoTrack, this.screenStream);
+        } else pc.addTrack(track, this.screenStream);
+      }
+      if (route === 'p2p') {
+        enableEnhancedIce(pc, { scope: 'screen-media', role: 'publisher' });
+        setEnhancedIceRemote(pc, remoteCapabilities);
+      }
       if (route === 'campus') await prepareCampusConnection(this, pc);
       if (this.closed || !this.screenStream?.active || this.screenSessions.get(session) !== entry) throw new Error('共享画面已结束。');
       await pc.setRemoteDescription({
@@ -3360,12 +3193,10 @@ export class P2PRoom {
         ) * 1000;
 
       if (targetBits) {
-        answer.sdp =
-          lockVideoBitrate(
-            answer.sdp,
-            this.screenSettings
-              .bitrate,
-          );
+        const hasOtherViewer = [...this.screenSessions.values()].some(
+          other => other.owner !== owner && !['closed', 'failed'].includes(other.pc.connectionState),
+        );
+        answer.sdp = lockVideoBitrate(answer.sdp, this.screenSettings.bitrate, !hasOtherViewer);
       }
 
       pc.onicecandidate =
@@ -3394,21 +3225,14 @@ export class P2PRoom {
           }
         };
 
-      await pc.setLocalDescription(
-        answer,
-      );
-
-      const quality =
-        this.screenSettings;
-
-      let videoSender;
-      for (const sender of pc.getSenders()) {
-        if (sender.track?.kind !== 'video') continue;
-        videoSender = sender;
-        await configureScreenVideoSender(sender, quality, route);
-      }
-
+      const quality = this.screenSettings;
+      const videoSender = pc.getSenders().find(sender => sender.track?.kind === 'video');
+      // Apply the viewer's caps before the answer starts its encoder on a
+      // shared capture source. Some engines only expose encodings afterwards.
+      const configured = videoSender && await configureScreenVideoSender(videoSender, quality, route);
+      await pc.setLocalDescription(answer);
       if (videoSender) {
+        if (!configured) await configureScreenVideoSender(videoSender, quality, route);
         entry.videoPolicy = createP2pVideoPolicy({ pc, sender: videoSender, quality, route });
       }
 
@@ -3499,6 +3323,9 @@ export class P2PRoom {
             pc.connectionState
             === 'connected'
           ) {
+            entry.established = true;
+            clearTimeout(entry.restartWaitTimer);
+            entry.restartWaitTimer = null;
             entry.videoPolicy?.start();
             if (route === 'turn') entry.calibrateTimer =
               setTimeout(
@@ -3515,6 +3342,15 @@ export class P2PRoom {
               pc.connectionState,
             )
           ) {
+            // Give the authenticated viewer its one restart opportunity before
+            // disposing the sender. This timer never initiates another attempt.
+            if (pc.connectionState === 'failed' && route === 'p2p' && entry.established && entry.network?.features.mediaIceRestart) {
+              if (entry.restartWaitTimer) return;
+              if (!entry.restartUsed || entry.restarting) {
+                this.waitForScreenReconnect(session, entry);
+                return;
+              }
+            }
             this.closeLocalScreen(
               owner,
               session,
@@ -3522,7 +3358,7 @@ export class P2PRoom {
           }
         };
 
-      if (pc.connectionState === 'connected') pc.onconnectionstatechange();
+      if (['connected', 'failed', 'closed'].includes(pc.connectionState)) pc.onconnectionstatechange();
 
       return {
         sdp:
@@ -3546,6 +3382,29 @@ export class P2PRoom {
     );
   }
 
+  memberControl(memberId) {
+    if (this.isHost) return this.guestMembers.get(memberId);
+    const owner = this.room?.members?.find(member => member.role === 'owner');
+    return memberId === owner?.id ? this.remote : null;
+  }
+
+  guestCoordinator(otherId) {
+    if (this.isHost || !this.remote?.open || this.id === otherId) return null;
+    const members = this.room?.members || [];
+    const owner = members.find(member => member.role === 'owner');
+    return owner && owner.id !== otherId && members.some(member => member.id === otherId) ? owner : null;
+  }
+
+  async controlUsesTurnRelay(memberId) {
+    const connection = this.memberControl(memberId);
+    const pc = connection?.peerConnection;
+    if (!connection?.open || connection.roomcastNative || !pc || pc.roomcastCampus) return false;
+    // relayProtocol describes only the local allocation. The selected pair
+    // still identifies TURN when it is the publisher that needs the relay.
+    const route = campusStatsRoute(await pc.getStats());
+    return connection.open && this.memberControl(memberId) === connection && route === 'TURN中继';
+  }
+
   canUseCampus() {
     return !!this.campusSecret && !!window.roomcast?.startCampusNetwork && !this.closed;
   }
@@ -3557,6 +3416,7 @@ export class P2PRoom {
       signal,
       route = 'p2p',
       onStage,
+      onSession,
     } = {},
   ) {
     if (
@@ -3574,6 +3434,7 @@ export class P2PRoom {
         'p2p',
         'turn',
         'campus',
+        'native',
       ].includes(route)
     ) {
       throw new Error(
@@ -3589,6 +3450,7 @@ export class P2PRoom {
       pc,
       candidates: [],
       session: '',
+      onSession,
     };
 
     this.screenViewers
@@ -3597,6 +3459,7 @@ export class P2PRoom {
         entry,
       );
 
+    let resolveInitialAnswer;
     let offerSent = false;
     let offerRequested = false;
     const outgoingCandidates = [];
@@ -3639,6 +3502,7 @@ export class P2PRoom {
         }
       };
 
+    if (route === 'p2p') enableEnhancedIce(pc, { scope: 'screen-media', role: 'viewer' });
     try {
       if (route === 'campus') {
         onStage?.('local');
@@ -3651,7 +3515,10 @@ export class P2PRoom {
           signal,
         );
 
-      if (route === 'p2p') offer = await withAbort(prepareNativeReceiveOffer(offer), signal);
+      const publication = this.room?.streams?.find(stream => stream.memberId === owner);
+      if (route === 'p2p' && publication?.nativeCapable !== false) {
+        offer = await withAbort(prepareNativeReceiveOffer(offer), signal);
+      }
 
       await withAbort(
         pc.setLocalDescription(
@@ -3660,16 +3527,8 @@ export class P2PRoom {
         signal,
       );
 
-      const promise =
-        new Promise(
-          resolve => (
-            this.screenPending
-              .set(
-                requestId,
-                resolve,
-              )
-          ),
-        );
+      const promise = new Promise(resolve => { resolveInitialAnswer = resolve; });
+      this.screenPending.set(requestId, resolveInitialAnswer);
 
       offerRequested = true;
       const offerRequest = this.request(
@@ -3680,6 +3539,7 @@ export class P2PRoom {
           to: owner,
           route,
           sdp: pc.localDescription.sdp,
+          networkCapabilities: localNetworkCapabilities(),
         },
       );
       // The control channel is ordered. Dispatch the offer first, then trickle
@@ -3720,6 +3580,9 @@ export class P2PRoom {
 
       entry.session =
         result.session;
+
+      setEnhancedIceRemote(pc, result.networkCapabilities);
+      entry.network = negotiateNetwork(result.networkCapabilities);
 
       await withAbort(
         pc.setRemoteDescription({
@@ -3765,9 +3628,83 @@ export class P2PRoom {
     } finally {
       outgoingCandidates.length = 0;
 
-      this.screenPending
-        .delete(requestId);
+      if (this.screenPending.get(requestId) === resolveInitialAnswer) this.screenPending.delete(requestId);
     }
+  }
+
+  canRestartScreen(owner, pc) {
+    return [...this.screenViewers.values()].some(entry => entry.owner === owner && entry.pc === pc
+      && entry.session && entry.network?.features.mediaIceRestart && !entry.restartUsed
+      && pc.signalingState === 'stable' && !this.closed && this.connected);
+  }
+
+  async restartScreen(owner, pc, { signal } = {}) {
+    const found = [...this.screenViewers].find(([, entry]) => entry.owner === owner && entry.pc === pc);
+    if (!found || !this.canRestartScreen(owner, pc)) throw new Error('当前画面不支持原连接恢复。');
+    const [requestId, entry] = found;
+    const expectedSession = entry.session;
+    entry.restartUsed = true;
+    entry.restarting = true;
+    let resolveAnswer;
+    const answer = new Promise(resolve => { resolveAnswer = resolve; });
+    this.screenPending.set(requestId, resolveAnswer);
+    const forward = pc.onicecandidate;
+    const outgoing = [];
+    const collect = event => outgoing.push(event);
+    pc.onicecandidate = collect;
+    try {
+      signal?.throwIfAborted();
+      pc.restartIce();
+      const offer = await withAbort(pc.createOffer(), signal);
+      await withAbort(pc.setLocalDescription(offer), signal);
+      const sent = this.request('screen:signal', {
+        kind: 'offer', requestId, to: owner, route: 'p2p', session: expectedSession,
+        restart: true, sdp: pc.localDescription.sdp, networkCapabilities: localNetworkCapabilities(),
+      }, { signal }).then(ack => {
+        if (!ack.ok) throw new Error(ack.error || '原连接恢复请求未送达。');
+      });
+      pc.onicecandidate = forward;
+      for (const event of outgoing.splice(0)) forward?.call(pc, event);
+      const [, result] = await withTimeout(Promise.all([sent, answer]), 8000, '原连接恢复响应超时。', signal);
+      if (result.kind !== 'answer' || result.session !== expectedSession) throw new Error(result.error || '原连接恢复未完成。');
+      await withAbort(pc.setRemoteDescription({ type: 'answer', sdp: result.sdp }), signal);
+      entry.restarting = false;
+      for (const candidate of entry.candidates.splice(0)) await pc.addIceCandidate(candidate ?? null).catch(() => {});
+    } finally {
+      entry.restarting = false;
+      outgoing.length = 0;
+      if (pc.onicecandidate === collect) pc.onicecandidate = forward;
+      if (this.screenPending.get(requestId) === resolveAnswer) this.screenPending.delete(requestId);
+    }
+  }
+
+  async answerScreenRestart(owner, sdp, requestId, session) {
+    const entry = this.screenSessions.get(session);
+    if (!entry || entry.owner !== owner || entry.requestId !== requestId || entry.route !== 'p2p'
+      || !entry.network?.features.mediaIceRestart || entry.restartUsed || !this.screenStream?.active
+      || entry.pc.signalingState !== 'stable') throw new Error('原共享连接已不可恢复。');
+    entry.restartUsed = true;
+    entry.restarting = true;
+    // The wait for an offer ends here. Give this accepted exchange its full
+    // window, even if most of the first timer elapsed before the offer arrived.
+    this.waitForScreenReconnect(session, entry);
+    try {
+      await withTimeout((async () => {
+        await entry.pc.setRemoteDescription({ type: 'offer', sdp });
+        const answer = await entry.pc.createAnswer();
+        if (Number(this.screenSettings.bitrate) > 0) {
+          answer.sdp = lockVideoBitrate(answer.sdp, this.screenSettings.bitrate, false);
+        }
+        await entry.pc.setLocalDescription(answer);
+      })(), 8000, '原共享连接恢复协商超时。');
+      if (this.screenSessions.get(session) !== entry || !this.screenStream?.active) throw new Error('共享已结束。');
+      entry.restarting = false;
+      for (const candidate of entry.candidates.splice(0)) await entry.pc.addIceCandidate(candidate ?? null).catch(() => {});
+      return { sdp: entry.pc.localDescription.sdp, session };
+    } catch (error) {
+      this.closeLocalScreen(owner, session);
+      throw error;
+    } finally { entry.restarting = false; }
   }
 
   async requestVdoScreen(
@@ -3908,8 +3845,10 @@ export class P2PRoom {
     if (this.closed) return;
 
     this.closed = true;
+    this.guestJoinController.abort(new DOMException('操作已取消', 'AbortError'));
     this.connected = false;
     this.pendingMigrationCommit = null;
+    this.confirmResumeOn = null;
     this.recoveryBackup = null;
     clearTimeout(this.backupTimer);
     this.backupTimer = null;
@@ -3962,7 +3901,7 @@ export class P2PRoom {
     release(() => this.peer?.destroy());
 
     for (
-      const resolve
+      const { resolve }
       of this.pending.values()
     ) {
       resolve({

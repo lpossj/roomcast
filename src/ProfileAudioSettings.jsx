@@ -13,7 +13,7 @@ export function ProfileSettings({ avatar, name, onAvatar }) {
   };
   return <section className="settings-section"><h3><ImagePlus size={17} />个人头像</h3>
     <div className="profile-avatar-row"><Avatar member={{ name, avatar }} /><div className="settings-buttons">
-      <label className={`button secondary small ${busy ? 'disabled' : ''}`}>选择图片<input aria-label="选择头像图片" type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void change(file); }} /></label>
+      <label className={`button secondary small ${busy ? 'disabled' : ''}`} title="支持 JPG、PNG、WebP 与 GIF 动图">选择图片<input aria-label="选择头像图片" type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void change(file); }} /></label>
       <button type="button" className="button subtle small" disabled={busy || !avatar} onClick={() => change(null)}>恢复默认头像</button>
     </div></div>
     {error && <p className="inline-error" role="alert">{error}</p>}
@@ -77,11 +77,30 @@ export function MemberVolumeControl({ member, voice }) {
 
 export function VoiceControls({ voice, inRoom }) {
   return <div className="voice-controls" aria-label="语音控制">
-    <div className="voice-control"><button className={`voice-toggle ${voice.microphone ? 'enabled' : ''}`} aria-label={voice.microphone ? '关闭麦克风' : '开启麦克风'} title={voice.microphone ? '关闭麦克风' : '开启麦克风'} aria-pressed={voice.microphone} disabled={!inRoom} onClick={() => voice.setMicrophone(value => !value)}>{voice.microphone ? <Mic size={16} /> : <MicOff size={16} />}</button>
-      <label className="voice-volume-popover">麦克风音量 <span>{Math.round(voice.settings.microphoneVolume * 100)}%</span><input aria-label="麦克风音量" type="range" min="0" max="1" step="0.01" value={voice.settings.microphoneVolume} onChange={event => voice.setSettings(value => ({ ...value, microphoneVolume: Number(event.target.value) }))} /></label>
+    <div className="voice-control">
+      <button
+        type="button"
+        className={`voice-toggle ${voice.microphone ? 'enabled' : 'muted'}`}
+        aria-label={voice.microphone ? '关闭麦克风' : '开启麦克风'}
+        aria-pressed={voice.microphone}
+        disabled={!inRoom}
+        onClick={() => voice.setMicrophone(value => !value)}
+      >
+        {voice.microphone ? <Mic size={16} /> : <MicOff size={16} />}
+      </button>
+      <label className="voice-volume-popover">麦克风（{voice.microphone ? '已开启' : '已关闭'}） <span>{Math.round(voice.settings.microphoneVolume * 100)}%</span><input aria-label="麦克风音量" type="range" min="0" max="1" step="0.01" value={voice.settings.microphoneVolume} onChange={event => voice.setSettings(value => ({ ...value, microphoneVolume: Number(event.target.value) }))} /></label>
     </div>
-    <div className="voice-control"><button className={`voice-toggle ${voice.output ? 'enabled' : ''}`} aria-label={voice.output ? '关闭成员声音' : '开启成员声音'} title={voice.output ? '关闭成员声音' : '开启成员声音'} aria-pressed={voice.output} onClick={() => voice.setOutput(value => !value)}>{voice.output ? <Volume2 size={16} /> : <VolumeX size={16} />}</button>
-      <label className="voice-volume-popover">成员声音音量 <span>{Math.round(voice.settings.outputVolume * 100)}%</span><input aria-label="成员声音音量" type="range" min="0" max="1" step="0.01" value={voice.settings.outputVolume} onChange={event => voice.setSettings(value => ({ ...value, outputVolume: Number(event.target.value) }))} /></label>
+    <div className="voice-control">
+      <button
+        type="button"
+        className={`voice-toggle ${voice.output ? 'enabled' : 'muted'}`}
+        aria-label={voice.output ? '关闭成员声音' : '开启成员声音'}
+        aria-pressed={voice.output}
+        onClick={() => voice.setOutput(value => !value)}
+      >
+        {voice.output ? <Volume2 size={16} /> : <VolumeX size={16} />}
+      </button>
+      <label className="voice-volume-popover">扬声器（{voice.output ? '已开启' : '已静音'}） <span>{Math.round(voice.settings.outputVolume * 100)}%</span><input aria-label="成员声音音量" type="range" min="0" max="1" step="0.01" value={voice.settings.outputVolume} onChange={event => voice.setSettings(value => ({ ...value, outputVolume: Number(event.target.value) }))} /></label>
     </div>
   </div>;
 }

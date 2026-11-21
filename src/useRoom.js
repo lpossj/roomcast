@@ -69,7 +69,7 @@ export default function useRoom(onError) {
         const pc = socket.remote?.peerConnection;
         const report = !socket.isHost && pc ? await pc.getStats() : null;
         if (stopped || socketRef.current !== socket || socket.closed) return;
-        const roomConnection = socket.isHost ? 'P2P' : report ? campusStatsRoute(report) : '路线检测中';
+        const roomConnection = socket.isHost ? 'P2P' : socket.remote?.roomcastNative ? '原生直连' : report ? campusStatsRoute(report) : '路线检测中';
         setConfig(current => current?.p2p && current.roomConnection !== roomConnection ? { ...current, roomConnection } : current);
       } catch {
         // A closed connection is handled by the existing room lifecycle.
@@ -541,6 +541,9 @@ export default function useRoom(onError) {
 
     try {
       setServer(base);
+
+      // This is the user's create/join action; room recovery reuses its socket.
+      if (window.roomcast?.prepareNetwork) await wait(window.roomcast.prepareNetwork().catch(() => null));
 
       // Browser rooms run the same room rules locally and have no /api/config endpoint.
       let remoteConfig = { peerServer: '' };

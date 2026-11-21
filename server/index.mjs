@@ -74,7 +74,7 @@ export async function startServer(overrides = {}) {
     server,
     {
       maxHttpBufferSize:
-        64 * 1024,
+        256 * 1024,
 
       cors: {
         origin: (

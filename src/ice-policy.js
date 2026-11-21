@@ -160,6 +160,16 @@ export function installIcePolicy(target = window) {
       await Promise.allSettled(deferred.map(candidate => this.addIceCandidate(candidate)));
       if (endOfCandidates) await Promise.allSettled([this.addIceCandidate(null)]);
     }
+    async roomcastApplyIceCandidate(candidate) {
+      try {
+        const result = await super.addIceCandidate(candidate);
+        this.roomcastIceCandidateResult?.(candidate, true);
+        return result;
+      } catch (error) {
+        this.roomcastIceCandidateResult?.(candidate, false);
+        throw error;
+      }
+    }
     async addIceCandidate(candidate) {
       try {
         if (!this.roomcastCampus && isCampusCandidate(candidate?.candidate)) return;
@@ -167,7 +177,7 @@ export function installIcePolicy(target = window) {
         if (!this.remoteDescription) {
           return await new Promise((resolve, reject) => this.roomcastRemoteCandidates.push({ candidate, resolve, reject }));
         }
-        if (!this.roomcastIcePolicyEnabled) return await super.addIceCandidate(candidate);
+        if (!this.roomcastIcePolicyEnabled) return await this.roomcastApplyIceCandidate(candidate);
         const value = candidate?.toJSON ? candidate.toJSON() : candidate;
         if (!value?.candidate) {
           return await Promise.all([...this.roomcastCandidatePromises]).then(() => this.signalingState === 'closed' ? undefined : super.addIceCandidate(null));
@@ -176,12 +186,12 @@ export function installIcePolicy(target = window) {
         const stage = candidateStage(value.candidate);
         const delay = Math.max(0, ICE_DELAYS[stage] - (performance.now() - this.roomcastIceStarted));
         const normalized = { ...value, candidate: prioritizeCandidate(value.candidate) };
-        if (!delay) return await super.addIceCandidate(normalized);
+        if (!delay) return await this.roomcastApplyIceCandidate(normalized);
         const pending = new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
             this.roomcastCandidateTimers.delete(timer);
             if (this.signalingState === 'closed') return resolve();
-            try { super.addIceCandidate(normalized).then(resolve, reject); }
+            try { this.roomcastApplyIceCandidate(normalized).then(resolve, reject); }
             catch (error) { reject(error); }
           }, delay);
           this.roomcastCandidateTimers.set(timer, resolve);
