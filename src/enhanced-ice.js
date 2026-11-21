@@ -192,7 +192,7 @@ export function enableEnhancedIce(pc, { role = 'unknown', channel = null, scope 
       const local = pair && report.get(pair.localCandidateId);
       const remote = pair && report.get(pair.remoteCandidateId);
       const source = candidate => !candidate?.foundation ? 'unknown'
-        : /^rcnp[pm][1-4]$/.test(candidate.foundation) ? 'predicted' : 'ordinary';
+        : /^rcnp[pm][1-4](?:b\d+)?$/.test(candidate.foundation) ? 'predicted' : 'ordinary';
       summary.selectedLocalSource = source(local);
       summary.selectedRemoteSource = source(remote);
       summary.selectedPredicted = summary.selectedRemoteSource === 'unknown' ? null : summary.selectedRemoteSource === 'predicted';

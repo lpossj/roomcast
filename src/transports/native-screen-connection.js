@@ -1,13 +1,15 @@
 import { NativeEndpoint, nativeNetworkReport } from './native-endpoint.js';
+import { withScreenStartBitrate } from '../video-sender-settings.js';
 
 // Network SDP/candidates belong to Pion. The Chromium PC is only the local
 // H.264/Opus bridge. Never signal its addresses, fingerprint or ICE credentials.
 export class NativeScreenConnection extends EventTarget {
-  constructor(receive, bitrateKbps = 4500) {
+  constructor(receive, bitrateKbps = 4500, audioOnly = false) {
     super();
     this.receive = receive;
+    this.audioOnly = audioOnly;
     this.bitrateLimit = Math.max(128000, (bitrateKbps || 4500) * 1000);
-    this.local = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' });
+    this.local = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle', roomcastLocalBridge: true });
     this.endpoint = new NativeEndpoint();
     this.pending = [];
     this.localCandidates = [];
@@ -49,11 +51,13 @@ export class NativeScreenConnection extends EventTarget {
     await this.local.setLocalDescription(localOffer);
     const [sdp, localAnswer] = await this.endpoint.negotiate({
       offer: this.remoteDescription?.sdp, localOffer: this.local.localDescription.sdp,
-      receive: this.receive, bitrate: this.bitrateLimit, audio: this.receive || this.getSenders().some(s => s.track?.kind === 'audio'),
+      receive: this.receive, bitrate: this.bitrateLimit, video: !this.audioOnly,
+      audio: this.receive || this.getSenders().some(s => s.track?.kind === 'audio'),
     });
     this.bridgeReady = true;
     for (const candidate of this.localCandidates.splice(0)) await this.endpoint.command('local-candidate', { candidate });
-    await this.local.setRemoteDescription({ type: 'answer', sdp: localAnswer });
+    const bridgeAnswer = this.receive ? localAnswer : withScreenStartBitrate(localAnswer, this.bitrateLimit / 1000);
+    await this.local.setRemoteDescription({ type: 'answer', sdp: bridgeAnswer });
     return { type, sdp };
   }
   createOffer() { return this.describe('offer'); }

@@ -3,6 +3,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('roomcast', {
   desktop: true,
+  onRoomClosing: callback => {
+    const ready = () => ipcRenderer.send('roomcast:room-exit-ready');
+    const listener = () => Promise.resolve().then(callback).then(ready, ready);
+    ipcRenderer.on('roomcast:room-closing', listener);
+    return () => ipcRenderer.removeListener('roomcast:room-closing', listener);
+  },
+  physicalDirect: process.platform === 'win32' && process.argv.includes('--roomcast-physical-direct'),
   nativeIce: process.platform === 'win32' && process.arch === 'x64' && process.argv.includes('--roomcast-native-ice')
     ? payload => ipcRenderer.invoke('roomcast:native-ice', payload) : undefined,
   onNativeIce: callback => {

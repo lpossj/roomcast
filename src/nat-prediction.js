@@ -6,7 +6,7 @@ export const MAX_NAT_PREDICTION_CANDIDATES = 8;
 
 export function isPredictedCandidate(value) {
   const candidate = typeof value === 'string' ? value : value?.candidate;
-  return /^candidate:rcnp[pm][1-4]\s/i.test(candidate?.trim() || '');
+  return /^candidate:rcnp[pm][1-4](?:b\d+)?\s/i.test(candidate?.trim() || '');
 }
 
 function normalizeStunUrl(value) {

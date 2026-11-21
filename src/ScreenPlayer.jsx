@@ -3,7 +3,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { watchPlayableFrame } from './fallback-policy.js';
 import { createScreenWatchSession } from './screen-watch-session.js';
 import { FULLSCREEN_ELEMENT, FULLSCREEN_VIDEO, pickFullscreenMode } from './fullscreen-policy.js';
-import { campusStatsRoute } from './campus-session.js';
 import { selectScreenPlayback } from './local-preview.js';
 import { loadPreference, savePreference } from './preferences.js';
 import { playSound } from './sounds.js';
@@ -22,7 +21,7 @@ const readPlaybackVolume = () => {
 };
 
 const emptyMetrics = {
-  width: 0, height: 0, fps: 0, bitrate: 0, codec: '检测中',
+  width: 0, height: 0, fps: null, bitrate: 0, codec: '检测中',
   route: '连接中',
   lost: 0, decoder: '', encoder: ''
 };
@@ -200,36 +199,21 @@ export default function ScreenPlayer({ laser, room, stream, iceServers, outputDe
     }
     if (playback.mode === 'local-stream') {
       const local = localStream;
-      let closed = false;
-      let lastSample;
-      const update = async () => {
-        const track = local.getVideoTracks()[0];
-        const value = track?.getSettings?.() || {};
-        let bytes = 0, outbound, codec;
-        const routes = new Set();
-        const sessions = [...(transport.screenSessions?.values?.() || [])];
-        for (const { pc, route, videoPolicy } of sessions) {
-          // Native media sessions do not expose browser RTCStats.
-          if (typeof pc?.getStats !== 'function') continue;
-          const report = videoPolicy?.latestReport ?? await pc.getStats().catch(() => null);
-          const fallback = { native: '原生直连', campus: 'EasyTier' }[route];
-          if (report) routes.add(campusStatsRoute(report, fallback));
-          report?.forEach(item => {
-            if (item.type === 'outbound-rtp' && item.kind === 'video') { bytes += item.bytesSent || 0; if (!outbound) { outbound = item; codec = report.get(item.codecId); } }
-          });
-        }
-        if (closed) return;
+      let lastPreview;
+      const update = () => {
         const now = performance.now();
-        const bitrate = lastSample && now > lastSample.at ? Math.max(0, (bytes - lastSample.bytes) * 8 / (now - lastSample.at)) : 0;
-        lastSample = { at: now, bytes };
-        // Without a viewer there is no outbound-rtp report, so the numbers fall back to the
-        // capture settings. `source` keeps those two meanings from being confused.
-        setMetrics({ ...emptyMetrics, source: outbound ? 'outbound' : 'capture', viewers: sessions.length, width: outbound?.frameWidth || video?.videoWidth || value.width || 0, height: outbound?.frameHeight || video?.videoHeight || value.height || 0, fps: outbound?.framesPerSecond || value.frameRate || 0, bitrate, codec: codec?.mimeType?.split('/')[1] || 'H.264 优先', route: [...routes].join(' / ') || '本机预览', encoder: outbound?.encoderImplementation || '' });
+        const quality = video?.getVideoPlaybackQuality?.();
+        const frames = quality ? quality.totalVideoFrames - quality.droppedVideoFrames : null;
+        const fps = frames != null && lastPreview?.frames != null && frames >= lastPreview.frames && now > lastPreview.at
+          ? (frames - lastPreview.frames) * 1000 / (now - lastPreview.at) : null;
+        lastPreview = { frames, at: now };
+        setMetrics({ ...emptyMetrics, source: 'capture', width: video?.videoWidth, height: video?.videoHeight, fps });
       };
       setSound(false); setState('live'); setError('');
       const detach = presentStream(video, local);
-      update().catch(() => { }); const statsTimer = setInterval(() => update().catch(() => { }), 2000);
-      return () => { closed = true; clearInterval(statsTimer); detach(); };
+      update();
+      const statsTimer = setInterval(update, 2000);
+      return () => { clearInterval(statsTimer); detach(); };
     }
     if (playback.mode === 'unavailable') {
       setSound(false); setState('failed'); setError('本机预览暂不可用；不会改用公网 P2P 或 TURN。'); setMetrics(emptyMetrics);
@@ -284,19 +268,17 @@ export default function ScreenPlayer({ laser, room, stream, iceServers, outputDe
   }, [entered, stream.memberId, stream.startedAt, viewerMemberId, transport, playback.mode, localStream, reportViewing, previewRetry]);
 
   const info = playerInfo(metrics);
+  const statsLine = own ? `${info.resolution} · ${info.fps}` : `${info.resolution} · ${info.fps} · ${info.bitrate}`;
   const avatarColor = Number.isInteger(stream.avatarColor) && stream.avatarColor >= 0 && stream.avatarColor < 10 ? stream.avatarColor : 0;
   const floatingInfo = () => ({
     title: stream.name,
     avatarColor,
     viewers: stream.viewers || [],
-    lines: [
-      `${info.resolution} · ${info.fps} · ${info.bitrate}`,
-      info.route,
-    ],
+    lines: own ? [`本机预览 · ${statsLine}`] : [statsLine, info.route],
   });
   useEffect(() => {
     if (floating) floatingPlayer.current?.updateInfo?.(floatingInfo());
-  }, [floating, stream.name, stream.viewers, avatarColor, info.resolution, info.fps, info.bitrate, info.route]);
+  }, [floating, stream.name, stream.viewers, avatarColor, own, statsLine, info.route]);
   const toggleFullscreen = async () => {
     try {
       if (document.fullscreenElement) { await document.exitFullscreen(); return; }
@@ -392,8 +374,9 @@ export default function ScreenPlayer({ laser, room, stream, iceServers, outputDe
     >
       {!floating && <div className={`stream-parameter-bar player-info-overlay avatar-color-${avatarColor}`}>
         <strong title={stream.name}>{stream.name}</strong>
-        <span>{info.resolution} · {info.fps} · {info.bitrate}</span>
-        <span>{entered ? info.route : '未加入'}</span>
+        {own && entered && <span>本机预览</span>}
+        <span>{statsLine}</span>
+        {(!own || !entered) && <span>{entered ? info.route : '未加入'}</span>}
       </div>}
 
       <div className="player-stage">

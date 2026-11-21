@@ -1,7 +1,7 @@
 // Optional fields on existing messages. Unknown/missing versions keep legacy ICE.
 export const NETWORK_PROTOCOL = 1;
 export const NETWORK_FEATURES = Object.freeze([
-  'enhancedIce', 'natPrediction', 'nativeUdpMux', 'nativeSocketPreparation', 'browserWebRtc', 'optionalTurn', 'mediaIceRestart',
+  'enhancedIce', 'natPrediction', 'nativeUdpMux', 'nativeSocketPreparation', 'browserWebRtc', 'optionalTurn', 'mediaIceRestart', 'signedRoomControl',
 ]);
 
 export function normalizeNetworkCapabilities(value) {

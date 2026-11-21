@@ -8,6 +8,34 @@ export function preferH264High(codecs = []) {
   return [...codecs].sort((a, b) => rank(a) - rank(b));
 }
 
+export async function screenReceiveCodecs(codecs, settings = {}) {
+  const compatible = preferH264High(codecs);
+  const vp8 = compatible.find(codec => codec.mimeType?.toLowerCase() === 'video/vp8');
+  const capabilities = globalThis.navigator?.mediaCapabilities;
+  if (!vp8 || !capabilities?.decodingInfo) return compatible;
+  let timer;
+  try {
+    const info = await Promise.race([
+      capabilities.decodingInfo({ type: 'webrtc', video: { contentType: 'video/VP8',
+        width: settings.width || 1920, height: settings.height || 1080,
+        framerate: settings.fps || 30, bitrate: (settings.bitrate || 4500) * 1000 } }),
+      new Promise(resolve => { timer = setTimeout(resolve, 600); }),
+    ]);
+    if (info?.supported && info.smooth) return [vp8, ...compatible.filter(codec => codec !== vp8)];
+  } catch { /* Keep the existing H.264 preference when capability data is unavailable. */ }
+  finally { clearTimeout(timer); }
+  return compatible;
+}
+
+// A bridge can forward the same encoded payload only when both legs offer it.
+export function offeredVideoCodecs(sdp = '') {
+  const media = sdp.split(/(?=^m=)/m).find(part => /^m=video [1-9]\d* /m.test(part));
+  if (!media) return [];
+  const names = new Map([...media.matchAll(/^a=rtpmap:(\d+) ([^/]+)\//gmi)].map(match => [match[1], match[2].toLowerCase()]));
+  return media.split(/\r?\n/, 1)[0].trim().split(/\s+/).slice(3)
+    .map(pt => names.get(pt)).filter(name => name && !['rtx', 'red', 'ulpfec', 'flexfec-03'].includes(name));
+}
+
 let nativeReceiveSupport;
 function nativeReceiveLevel() {
   if (!nativeReceiveSupport) {

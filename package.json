@@ -27,6 +27,7 @@
     "dist:zip": "npm run build && electron-builder --win zip --publish never",
     "dist:nsis": "npm run build && electron-builder --win nsis --publish never --config.directories.output=release/installer",
     "release:build": "npm run build && electron-builder --win portable zip --publish never",
+    "release:physical": "npm run build && electron-builder --win portable zip --publish never --config.extraMetadata.roomcastNetworkMode=physical-direct --config.directories.output=release/physical-direct",
     "prepare:obs": "node scripts/prepare-embedded-obs.mjs",
     "prepare:native-ice": "node scripts/prepare-native-ice.mjs",
     "prepare:campus": "node scripts/prepare-easytier.mjs",

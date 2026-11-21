@@ -60,10 +60,17 @@ export function installIcePolicy(target = window) {
     static roomcastIcePolicy = true;
     constructor(config = {}, constraints) {
       const scoped = config?.roomcastIcePolicy === true;
+      const nativeOnly = target.roomcast?.physicalDirect === true && !config?.roomcastLocalBridge;
       const nativeConfig = { ...config };
       delete nativeConfig.roomcastIcePolicy;
-      super(scoped ? { ...nativeConfig, iceTransportPolicy: 'all' } : nativeConfig, constraints);
-      this.roomcastIcePolicyEnabled = scoped;
+      delete nativeConfig.roomcastLocalBridge;
+      // Chromium has no per-socket adapter selector. In physical mode only
+      // Pion may make network ICE checks. An empty relay-only list yields no
+      // candidates and makes no TURN requests, including for legacy offers.
+      super(nativeOnly ? { ...nativeConfig, iceServers: [], iceTransportPolicy: 'relay' } :
+        scoped ? { ...nativeConfig, iceTransportPolicy: 'all' } : nativeConfig, constraints);
+      this.roomcastNativeOnly = nativeOnly;
+      this.roomcastIcePolicyEnabled = scoped && !nativeOnly;
       this.roomcastCandidateTimers = new Map();
       this.roomcastCandidatePromises = new Set();
       this.roomcastRemoteCandidates = [];
@@ -79,6 +86,7 @@ export function installIcePolicy(target = window) {
       return sdp === description.sdp ? description : new RTCSessionDescription({ type: description.type, sdp });
     }
     setConfiguration(config) {
+      if (this.roomcastNativeOnly) return super.setConfiguration({ ...config, iceServers: [], iceTransportPolicy: 'relay' });
       if (this.roomcastCampus) {
         this.roomcastIcePolicyEnabled = false;
         const nativeConfig = { ...config };

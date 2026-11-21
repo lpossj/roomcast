@@ -9,7 +9,6 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', now =
   const guard = createVideoEncoderGuard(quality, now);
   let started = false, stopped = false, timer = null, inFlight = null;
   let lastVideoSentAt = -Infinity;
-  let lastReport;
   let firstKeyFrame = 'idle';
 
   const poll = () => {
@@ -19,14 +18,12 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', now =
       if (pc.connectionState !== 'connected') { guard.resetSamples(); return; }
       const report = await pc.getStats();
       if (stopped || pc.connectionState !== 'connected' || sender.track?.readyState === 'ended') return;
-      lastReport = report;
       const sample = recordP2pNetworkStats(pc, report, 'publisher', null, route);
       const video = sample.streams.find(stat => stat.type === 'outbound-rtp' && stat.kind === 'video');
       if (video?.sampleIntervalMs > 0 && video.sampleIntervalMs <= 3000
         && (video.delta.framesSent > 0 || video.delta.framesEncoded > 0)) lastVideoSentAt = now();
-      // BWE, loss recovery, pacing and ordinary resource adaptation already
-      // belong to libwebrtc. A local pacer queue after idle/motion is not an
-      // independent reason to clamp resolution for another 10-60 seconds.
+      // Link estimation and pacing stay on the transport. Compare this
+      // viewer's encoded output with the source before changing its size.
       const decision = await guard.apply(sender, video, () => stopped);
       if (stopped) return;
       const parameters = sender.getParameters();
@@ -47,11 +44,10 @@ export function createP2pVideoPolicy({ pc, sender, quality, route = 'p2p', now =
   const tick = async () => {
     timer = null;
     await poll();
-    if (!stopped) timer = schedule(tick, 1000);
+    if (!stopped) timer = schedule(tick, quality.performanceMode === 'smooth' ? 500 : 1000);
   };
   return {
     poll,
-    get latestReport() { return !stopped && pc.connectionState === 'connected' ? lastReport : undefined; },
     requestKeyFrame() {
       if (firstKeyFrame !== 'idle' || stopped) return;
       firstKeyFrame = 'pending';

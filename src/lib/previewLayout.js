@@ -34,7 +34,7 @@ export const defaultShareSettings = {
   systemAudio: false,
   microphone: false,
   compatibilityCanvas: false,
-  performanceMode: 'quality',
+  performanceMode: 'smooth',
   facingMode: 'user',
 };
 
@@ -63,7 +63,8 @@ export function loadShareSettings() {
       'none', 'system', 'application', 'exclude', 'microphone',
       'system-microphone', 'application-microphone', 'exclude-microphone',
     ].includes(saved.audioMode) ? saved.audioMode : legacyAudioMode;
-    clean.performanceMode = 'quality';
+    // Earlier builds wrote "quality" for every preset, including high-frame-rate sharing.
+    clean.performanceMode = defaultShareSettings.performanceMode;
     clean.compatibilityCanvas = false;
     return window.roomcast?.desktop
       ? clean

@@ -17,3 +17,9 @@ Electron 主窗口通过受检查的 IPC 使用同一普通权限子进程。每
 “设置 → 关于”导出的诊断修订为 `native-step4-20261120`。入房时间线的 `route=native`、`nativeTransports` 的角色和状态、`playback-native` 的开始和首帧完成事件可用于将控制、网络媒体和播放器对齐。控制记录与媒体记录独立；默认使用普通路线的会话可能没有原生记录。导出字段只保留本地会话 ID、阶段及网络计数。
 
 Pion WebRTC v4.2.26 的 [TrackLocalStaticRTP](https://pkg.go.dev/github.com/pion/webrtc/v4@v4.2.26#TrackLocalStaticRTP.WriteRTP) 提供压缩 RTP 转发，拥塞估计使用同版本示例依赖的 Pion GCC。
+
+## Windows 物理网卡直连
+
+用 `Roomcast.exe --physical-direct` 启动独立配置的房主，创建房间后分享手机网页邀请。Windows x64 引擎仅在操作系统标记为物理且已连接的网卡上建立 WebRTC 房间和媒体通道。UDP 按地址和接口索引绑定，TCP 在相应物理地址上监听。此启动方式使用纯直连，适用于当前网页与支持签名原生控制通道的桌面成员。网站和公共信令的 HTTPS 连接仍由系统网络设置管理。
+
+公网 IPv6 需要物理网卡启用 IPv6 并取得可路由的地址，双方还必须能通过 ICE 连通性检查。关闭这个房主即可结束会话。

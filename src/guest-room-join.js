@@ -1,5 +1,4 @@
 import { openNativeControl } from './transports/native-room-control.js';
-import { nativeAvailable } from './transports/native-endpoint.js';
 import { campusRequestProof, prepareCampusConnection } from './campus-session.js';
 import { enableControlNatPrediction, markControlAuthenticated, markControlFailure } from './control-nat-prediction.js';
 import { setEnhancedIceRemote } from './enhanced-ice.js';
@@ -82,10 +81,17 @@ export async function joinGuestRoom(room, purpose, credentials, recoveryDeadline
   }
 }
 
-// Leave an ordinary connection in progress when a desktop peer can also use
-// native ICE. Only the first open channel may exchange proofs and join.
-async function connectDesktopControl(room, trace, signal, recoveryDeadline) {
+// A desktop host can answer a signed offer from either a browser or a native
+// guest. Leave ordinary ICE running; only the first open channel authenticates.
+async function connectToNativeHost(room, trace, signal, recoveryDeadline) {
   const controllers = { ordinary: new AbortController(), native: new AbortController() };
+  const cancelAttempts = () => {
+    controllers.ordinary.abort(signal.reason);
+    controllers.native.abort(signal.reason);
+  };
+  const detach = () => signal.removeEventListener('abort', cancelAttempts);
+  signal.throwIfAborted();
+  signal.addEventListener('abort', cancelAttempts, { once: true });
   let selected;
   let releaseNative;
   const headStart = new Promise(resolve => { releaseNative = resolve; });
@@ -93,7 +99,7 @@ async function connectDesktopControl(room, trace, signal, recoveryDeadline) {
   const timer = setTimeout(releaseNative, headStartMs);
 
   async function attempt(route, other) {
-    const attemptSignal = AbortSignal.any([signal, controllers[route].signal]);
+    const attemptSignal = controllers[route].signal;
     if (route === 'native') {
       await waitForRoomOperation(headStart, attemptSignal);
       attemptSignal.throwIfAborted();
@@ -120,8 +126,11 @@ async function connectDesktopControl(room, trace, signal, recoveryDeadline) {
     throw error;
   });
   try {
-    return await Promise.any([ordinary, attempt('native', 'ordinary')]);
+    const remote = await Promise.any([ordinary, attempt('native', 'ordinary')]);
+    remote.once('close', detach);
+    return remote;
   } catch (errors) {
+    detach();
     signal.throwIfAborted();
     const [ordinaryError, nativeError] = errors.errors;
     if (recoveryDeadline !== undefined && selected === 'ordinary' && ordinaryError.closedBeforeProof
@@ -144,9 +153,10 @@ async function connectDesktopControl(room, trace, signal, recoveryDeadline) {
 export async function connectGuestControl(room, timeout, trace = createJoinTrace('guest', 'initial'), signal = room.guestJoinController.signal) {
   const deadline = performance.now() + (timeout ?? PEER_AUTH_TOTAL_TIMEOUT_MS);
   try {
-    if (room.nativeHost && nativeAvailable()) {
+    if (window.roomcast?.physicalDirect) return await connectAttempt(room, 'native', timeout, trace, signal);
+    if (room.nativeHost) {
       if (!timeout || !room.lastControlNative) {
-        return await connectDesktopControl(room, trace, signal, timeout ? deadline : undefined);
+        return await connectToNativeHost(room, trace, signal, timeout ? deadline : undefined);
       }
       try { return await connectAttempt(room, 'native', Math.ceil(timeout / 2), trace, signal); }
       catch (error) {
@@ -361,7 +371,8 @@ async function connectAttempt(room, route, timeout, trace, signal, claim, handsh
       void verifyPeerAuthProof(room.inviteSecret, { ...challenge, role: 'host', clientNonce }, data.hostProof).then(valid => {
         if (!waiting || !current() || !remote.open) return;
         if (!valid) { invalid('P2P 房主鉴权失败。'); return; }
-        room.nativeHost = data.networkCapabilities?.features?.nativeUdpMux === true;
+        const features = data.networkCapabilities?.features;
+        room.nativeHost = features?.signedRoomControl === true || features?.nativeUdpMux === true;
         setEnhancedIceRemote(remote.peerConnection, data.networkCapabilities);
         markControlAuthenticated(remote.peerConnection);
         remote.off('data', receive);

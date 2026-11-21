@@ -237,6 +237,19 @@ function quitAfterCleanup() {
       try { if (!opened.isDestroyed()) opened.hide(); } catch {}
     }
   } catch {}
+  const contents = window && !window.isDestroyed() ? window.webContents : null;
+  const roomLeft = new Promise(resolve => {
+    if (!contents || contents.isDestroyed()) { resolve(); return; }
+    const finishNotice = () => {
+      clearTimeout(timer);
+      ipcMain.removeListener('roomcast:room-exit-ready', onReady);
+      resolve();
+    };
+    const onReady = event => { if (event.sender === contents) finishNotice(); };
+    const timer = setTimeout(finishNotice, 850);
+    ipcMain.on('roomcast:room-exit-ready', onReady);
+    try { contents.send('roomcast:room-closing'); } catch { finishNotice(); }
+  });
   try { stopAllAudioCaptures(); } catch {}
   // Cancel a hung OBS startup/enumeration instead of queuing cleanup behind it.
   void Promise.allSettled([
@@ -244,8 +257,8 @@ function quitAfterCleanup() {
       await closeObsCaptureEngine({ cancelPending: true });
       await Promise.allSettled([...obsCaptureClosures]);
     }),
-    Promise.resolve().then(() => campusNetwork.stop()),
-    Promise.resolve().then(() => service?.close()),
+    roomLeft.then(() => campusNetwork.stop()),
+    roomLeft.then(() => service?.close()),
     Promise.resolve().then(() => webInvite?.stop()),
   ]).finally(async () => {
     await Promise.race([clearChatSession(), new Promise(resolve => setTimeout(resolve, 1000))]).catch(() => {});
@@ -282,6 +295,9 @@ function inviteFrom(args) {
 let pendingInvite = inviteFrom(process.argv);
 // Normal beta launches use the user's own Roomcast profile. Only an explicitly
 // requested secondary instance gets a separate profile.
+const physicalDirect = process.platform === 'win32' && process.arch === 'x64' &&
+  (require('../package.json').roomcastNetworkMode === 'physical-direct' ||
+   process.argv.includes('--physical-direct') || process.env.ROOMCAST_PHYSICAL_DIRECT === '1');
 const roomcastProfile = process.env.ROOMCAST_PROFILE_DIR || app.getPath('userData');
 fs.mkdirSync(roomcastProfile, { recursive: true });
 app.setPath('userData', roomcastProfile);
@@ -562,7 +578,8 @@ else {
         show: false,
         autoHideMenuBar: true,
         webPreferences: { session: privateSession,
-          additionalArguments: fs.existsSync(path.join(runtimePaths.runtimeRoot, 'runtime/native-ice/RoomcastNativeIce.exe')) ? ['--roomcast-native-ice'] : [],
+          additionalArguments: fs.existsSync(path.join(runtimePaths.runtimeRoot, 'runtime/native-ice/RoomcastNativeIce.exe'))
+            ? ['--roomcast-native-ice', ...(physicalDirect ? ['--roomcast-physical-direct'] : [])] : [],
           preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false },
       });
       startupMark('create-window-end');
@@ -800,7 +817,7 @@ else {
       // window: reading `webContents` off a destroyed BrowserWindow throws, which would make
       // every updater-window call (status/retry/open page) fail once the main window is gone.
       const owns = (event, candidate) => ownsWindowEvent(event, candidate, trusted);
-      require('./native-ice.cjs').installNativeIce({ ipcMain, owns, window, runtimeRoot: runtimePaths.runtimeRoot });
+      require('./native-ice.cjs').installNativeIce({ ipcMain, owns, window, runtimeRoot: runtimePaths.runtimeRoot, physicalDirect });
       const requireOwner = (event, reason) => {
         if (!owns(event, window) && !owns(event, updaterWindow)) throw new Error(reason);
       };

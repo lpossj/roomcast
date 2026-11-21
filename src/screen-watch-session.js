@@ -12,7 +12,7 @@ import { adaptivePlayoutTarget, MIN_PLAYOUT_BUFFER_MS } from './playout.js';
 import { NativeScreenConnection } from './transports/native-screen-connection.js';
 import { nativeAvailable } from './transports/native-endpoint.js';
 import { createVdoScreenViewer } from './transports/vdo-screen-viewer.js';
-import { preferH264High } from './video-codec-policy.js';
+import { screenReceiveCodecs } from './video-codec-policy.js';
 
 const routeNames = { p2p: 'P2P', vdo: 'VDO', campus: 'EasyTier', native: '原生直连', turn: 'TURN' };
 const stageNames = { local: '本机备用组件准备', answer: '共享者响应', ice: '媒体连接', frame: '首帧画面' };
@@ -284,7 +284,8 @@ function createViewingRoutes({
     applyReceiverLatency(attempt);
     onMetrics({
       width: video.frameWidth || 0, height: video.frameHeight || 0,
-      fps: video.framesPerSecond || 0, bitrate, lost: video.packetsLost || 0,
+      fps: video.framesPerSecond ?? (decodedFrames >= 0 ? decodedFrames * 1000 / (now - previous.at) : null),
+      bitrate, lost: video.packetsLost || 0,
       codec: report.get(video.codecId)?.mimeType?.split('/')[1] || '检测中',
       route: campusStatsRoute(report, routeNames[attempt.route]), decoder: video.decoderImplementation || '',
     });
@@ -576,7 +577,8 @@ function createViewingRoutes({
     const { route, controller: { signal } } = attempt;
     const options = { iceServers: servers, targetLatency: 'lowest' };
     if (route !== 'p2p') options.iceTransportPolicy = 'relay';
-    const pc = route === 'native' ? new NativeScreenConnection(true) : createRoomcastPeerConnection(options);
+    const pc = route === 'native' || (route === 'p2p' && window.roomcast?.physicalDirect)
+      ? new NativeScreenConnection(true) : createRoomcastPeerConnection(options);
     attempt.pc = pc;
     const video = pc.addTransceiver('video', { direction: 'recvonly' });
     const audio = pc.addTransceiver('audio', { direction: 'recvonly' });
@@ -584,8 +586,9 @@ function createViewingRoutes({
     applyReceiverLatency(attempt);
     try {
       const codecs = RTCRtpReceiver.getCapabilities('video')?.codecs || [];
-      if (codecs.length) video.setCodecPreferences(preferH264High(codecs));
+      if (codecs.length) video.setCodecPreferences(await screenReceiveCodecs(codecs, currentPublication()?.settings));
     } catch {}
+    if (!isAttemptOpen(attempt)) return;
     pc.ontrack = event => receiveTrack(attempt, event.track);
     pc.onconnectionstatechange = () => connectionChanged(attempt);
     if (route === 'p2p') pc.oniceconnectionstatechange = pc.onconnectionstatechange;
@@ -620,6 +623,7 @@ function createViewingRoutes({
   }
 
   async function connectVdo(attempt) {
+    if (window.roomcast?.physicalDirect) throw new Error('当前使用物理网卡直连。');
     const signal = attempt.controller.signal;
     const descriptor = await transport.requestVdoScreen(publisherId, { signal });
     if (!isAttemptOpen(attempt)) return;

@@ -4,7 +4,7 @@ const path = require('node:path');
 
 // A single unprivileged helper per trusted renderer. The executable path and
 // launch arguments are never supplied by the renderer or by signaling peers.
-function installNativeIce({ ipcMain, owns, window, runtimeRoot }) {
+function installNativeIce({ ipcMain, owns, window, runtimeRoot, physicalDirect }) {
   const sessions = new Set();
   let child;
   const executable = path.join(runtimeRoot, 'runtime/native-ice/RoomcastNativeIce.exe');
@@ -19,7 +19,8 @@ function installNativeIce({ ipcMain, owns, window, runtimeRoot }) {
   }
   function start() {
     if (child) return child;
-    const proc = spawn(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    const proc = spawn(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
+      env: { ...process.env, ROOMCAST_PHYSICAL_DIRECT: physicalDirect ? '1' : '0' } });
     child = proc;
     const lost = () => {
       if (proc !== child) return;

@@ -477,14 +477,15 @@ export default function App() {
   }, [room, self?.canShare, notify, stopLocalShare]);
 
   useEffect(() => {
+    const offClosing = window.roomcast?.onRoomClosing?.(() => socketRef.current?.leave?.());
     const unload = event => {
       if (event.type === 'pagehide' && event.persisted) return;
-      if (!window.roomcast?.desktop) { void leave(true); return; }
+      if (!window.roomcast?.desktop) { void leave(!socketRef.current?.p2p); return; }
       if (ownsCapture.current) socketRef.current?.stopScreenStream?.();
     };
     if (desktopChrome) window.addEventListener('beforeunload', unload);
     window.addEventListener('pagehide', unload);
-    return () => { window.removeEventListener('beforeunload', unload); window.removeEventListener('pagehide', unload); };
+    return () => { offClosing?.(); window.removeEventListener('beforeunload', unload); window.removeEventListener('pagehide', unload); };
   }, [leave, desktopChrome, socketRef]);
 
   const copy = async text => {
@@ -512,7 +513,7 @@ export default function App() {
   const handleEnter = async (mode, details) => {
     if (mode === 'create' && !canHostRoom) {
       setModal(null);
-      notify('网页端只用于用邀请链接加入并观看；请在电脑上用 Roomcast 客户端创建房间。');
+      notify('当前浏览器缺少创建房间所需的安全连接或 WebRTC 能力，请用支持的浏览器打开 HTTPS 页面。');
       return;
     }
     const action = ++roomAction.current;
@@ -530,13 +531,13 @@ export default function App() {
     const action = ++roomAction.current;
     setModal(null);
     const socket = socketRef.current;
-    if (socket?.connected) playSound('leave');
+    if (socket?.connected && !socket.p2p) playSound('leave');
     if (ownsCapture.current) {
       ownsCapture.current = false;
       void stopLocalShare(socket).catch(error => { if (action === roomAction.current) notify(`停止采集失败：${error.message}`); });
     }
     try {
-      const outcome = await leave(true);
+      const outcome = await leave(!socket?.p2p);
       if (action !== roomAction.current) return;
       setChat('');
       refresh();
@@ -1310,7 +1311,7 @@ export default function App() {
           inviteSecret={config?.inviteSecret}
           peerServer={config?.peerServer}
           campusSecret={config?.campusSecret}
-          nativeHost={socketRef.current?.isHost ? !!window.roomcast?.nativeIce : !!socketRef.current?.nativeHost}
+          nativeHost={socketRef.current?.isHost || socketRef.current?.nativeHost}
         />
       )}
 

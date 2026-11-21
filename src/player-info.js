@@ -9,7 +9,7 @@ export function playerInfo(metrics = {}) {
   const routes = String(metrics.route || '').split(' / ').map(routeLabel).filter(Boolean);
   return {
     resolution: positive(metrics.width) && positive(metrics.height) ? `${metrics.width}×${metrics.height}` : '—',
-    fps: positive(metrics.fps) ? `${Math.round(metrics.fps)} FPS` : '— FPS',
+    fps: Number.isFinite(metrics.fps) && metrics.fps >= 0 ? `${Math.round(metrics.fps)} FPS` : '— FPS',
     bitrate: positive(metrics.bitrate) ? `${metrics.bitrate.toFixed(0)} Kbps` : '— Kbps',
     route: metrics.source === 'capture' ? '—' : [...new Set(routes)].join(' / ') || '—',
   };

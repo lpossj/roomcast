@@ -1,6 +1,7 @@
 import { Emitter } from '@socket.io/component-emitter';
 import { util } from 'peerjs';
 import { NativeEndpoint, nativeAvailable, nativeNetworkReport, encodeBytes, decodeBytes } from './native-endpoint.js';
+import { BrowserControlEndpoint } from './browser-control-endpoint.js';
 
 const label = 'roomcast-native-v1';
 const encoder = new TextEncoder();
@@ -34,7 +35,7 @@ class NativeControl extends Emitter {
     this.metadata = { protocol, authMode, joinAttemptId, networkCapabilities };
     this.peerConnection = this;
     this.roomcastNative = true;
-    this.dataChannel = { bufferedAmount: 0 };
+    this.nativeChannel = { bufferedAmount: 0 };
     this.connectionState = 'connecting';
     this.signalingState = 'stable';
     this.sendTail = Promise.resolve();
@@ -46,11 +47,14 @@ class NativeControl extends Emitter {
     const { provider, peer, room, connectionId } = this;
     const secret = room.inviteSecret;
     if (incoming) {
-      if (!room.isHost || !incoming.signature || !/^[a-f0-9-]{36}$/.test(connectionId)) throw new Error('原生协商请求无效。');
+      if ((!room.isHost && room.recoveryCandidate !== provider) || !incoming.signature
+        || !/^[a-f0-9-]{36}$/.test(connectionId)) throw new Error('原生协商请求无效。');
       await signedDescription(room, peer, provider.id, connectionId, 'offer', incoming.sdp?.sdp, incoming.signature);
     }
     if (this.closed || room.closed || secret !== room.inviteSecret) return this.close();
-    const endpoint = this.endpoint = new NativeEndpoint();
+    const endpoint = this.endpoint = nativeAvailable() ? new NativeEndpoint() : new BrowserControlEndpoint(room.controlIceServers);
+    const transport = endpoint.pc || endpoint;
+    if (endpoint.pc) this.peerConnection = endpoint.pc;
     const outgoing = [];
     let signaled = false;
     endpoint.oncandidate = candidate => {
@@ -58,13 +62,13 @@ class NativeControl extends Emitter {
       else outgoing.push(candidate);
     };
     endpoint.onfailure = error => this.fail(error);
-    endpoint.addEventListener('connectionstatechange', () => {
-      this.connectionState = endpoint.connectionState;
+    transport.addEventListener('connectionstatechange', () => {
+      this.connectionState = transport.connectionState;
       this.emit('connectionstatechange');
     });
     endpoint.onevent = value => {
       if (value.event === 'data' && this.open) {
-        try { this.emit('data', util.unpack(decodeBytes(value.data))); } catch (error) { this.fail(error); }
+        try { this.emit('data', util.unpack(value.bytes ?? decodeBytes(value.data))); } catch (error) { this.fail(error); }
       } else if (value.event === 'open') {
         this.open = true; this.emit('open');
       } else if (value.event === 'buffer') this.dataChannel.bufferedAmount = value.amount;
@@ -104,14 +108,20 @@ class NativeControl extends Emitter {
     this.queued = (this.queued || 0) + size;
     if (this.queued > 16 * 1024 * 1024) { this.fail(new Error('原生发送队列已满。')); return; }
     this.sendTail = this.sendTail.then(async () => {
-      if (!this.closed) await this.endpoint.command('send', { data: encodeBytes(await packed) });
+      const bytes = await packed;
+      if (!this.closed) await this.endpoint.sendControl(bytes);
     }).catch(error => this.fail(error)).finally(() => { this.queued -= size; });
   }
   get bufferSize() { return this.queued || 0; }
+  get dataChannel() { return this.endpoint?.channel || this.nativeChannel; }
   get iceConnectionState() { return this.connectionState; }
   addEventListener(type, fn) { this.on(type, fn); }
   removeEventListener(type, fn) { this.off(type, fn); }
-  async getStats() { return this.open ? nativeNetworkReport(await this.endpoint.stats()) : new Map(); }
+  async getStats() {
+    if (!this.open) return new Map();
+    if (this.endpoint.pc) return this.endpoint.pc.getStats();
+    return nativeNetworkReport(await this.endpoint.stats());
+  }
   fail(error) { if (!this.closed) { this.emit('error', error); this.close(); } }
   close() {
     if (this.closed) return;
@@ -127,10 +137,12 @@ class NativeControl extends Emitter {
 // PeerJS 1.5.5 selects an incoming DataConnection by serialization. Keep its
 // standard binary wire envelope so old hosts can process an outdated invitation.
 export function installNativeControl(provider, room) {
-  if (!nativeAvailable()) return;
   const Binary = provider._serializers.binary;
   provider._serializers.binary = function(peerId, peer, options) {
-    return options.label === label ? new NativeControl(room, peerId, peer, options) : new Binary(peerId, peer, options);
+    if (options.label === label) {
+      return new NativeControl(room, peerId, peer, options);
+    }
+    return new Binary(peerId, peer, options);
   };
 }
 export function openNativeControl(room, metadata) {

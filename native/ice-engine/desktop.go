@@ -90,7 +90,7 @@ func (p *peer) bridgeMedia(c command) error {
 	settings.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() || socket.addresses[ip.String()] })
 	settings.SetICEUDPMux(mux)
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	media, _, _, err := mediaCodecs(c)
+	media, videoCodec, audioCodec, err := mediaCodecs(c)
 	if err != nil {
 		return err
 	}
@@ -111,14 +111,14 @@ func (p *peer) bridgeMedia(c command) error {
 	senders := map[webrtc.RTPCodecType]*webrtc.RTPSender{}
 	outputs := map[webrtc.RTPCodecType]*webrtc.TrackLocalStaticRTP{}
 	for _, kind := range []webrtc.RTPCodecType{webrtc.RTPCodecTypeVideo, webrtc.RTPCodecTypeAudio} {
-		if kind == webrtc.RTPCodecTypeAudio && !c.Audio {
+		if (kind == webrtc.RTPCodecTypeAudio && !c.Audio) || (kind == webrtc.RTPCodecTypeVideo && !c.Video) {
 			continue
 		}
 		var sender *webrtc.RTPSender
 		if c.Receive {
-			codec := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}
+			codec := audioCodec
 			if kind == webrtc.RTPCodecTypeVideo {
-				codec = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000, SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=" + c.Profile}
+				codec = videoCodec
 			}
 			track, e := webrtc.NewTrackLocalStaticRTP(codec, kind.String(), "roomcast")
 			if e != nil {
@@ -157,6 +157,15 @@ func (p *peer) bridgeMedia(c command) error {
 			return
 		}
 		sender := senders[t.Kind()]
+		// An older publisher can choose H.264 from our VP8/H.264 receive offer.
+		// Bind the local outgoing payload type to the codec actually received.
+		if c.Receive && t.Kind() == webrtc.RTPCodecTypeVideo && t.Codec().MimeType != output.Codec().MimeType {
+			next, err := webrtc.NewTrackLocalStaticRTP(t.Codec().RTPCodecCapability, output.ID(), output.StreamID())
+			if err != nil || sender.ReplaceTrack(next) != nil {
+				return
+			}
+			output = next
+		}
 		var firstPacket chan struct{}
 		sourceTimeID := captureTimeID(receiver.GetParameters().HeaderExtensions)
 		var destTimeID uint8
@@ -266,7 +275,11 @@ func (p *peer) bridgeFeedback(sender *webrtc.RTPSender, source *webrtc.PeerConne
 			case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
 				_ = source.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: ssrc}})
 			case *rtcp.ReceiverEstimatedMaximumBitrate:
-				_ = source.WriteRTCP([]rtcp.Packet{&rtcp.ReceiverEstimatedMaximumBitrate{Bitrate: r.Bitrate, SSRCs: []uint32{ssrc}}})
+				// Only the network receiver can cap the publishing encoder. The
+				// local playback bridge observes the already-paced incoming stream.
+				if source == p.bridge {
+					_ = source.WriteRTCP([]rtcp.Packet{&rtcp.ReceiverEstimatedMaximumBitrate{Bitrate: r.Bitrate, SSRCs: []uint32{ssrc}}})
+				}
 			case *rtcp.ReceiverReport:
 				for _, block := range r.Reports {
 					emit(map[string]any{"id": p.id, "event": "feedback", "fractionLost": block.FractionLost, "jitter": block.Jitter})

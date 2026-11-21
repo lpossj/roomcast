@@ -90,7 +90,7 @@ export function recordP2pNetworkStats(pc, report, direction, policy = null, rout
         relay: localCandidate?.candidateType && remoteCandidate?.candidateType
           ? localCandidate.candidateType === 'relay' || remoteCandidate.candidateType === 'relay' : null,
         remoteSource: !remoteCandidate?.foundation ? 'unknown'
-          : /^rcnp[pm][1-4]$/.test(remoteCandidate.foundation) ? 'predicted' : 'ordinary',
+          : /^rcnp[pm][1-4](?:b\d+)?$/.test(remoteCandidate.foundation) ? 'predicted' : 'ordinary',
         dtlsState: transport?.dtlsState ?? null,
       } : null,
       remotePacketsLost: numeric(remote?.packetsLost),

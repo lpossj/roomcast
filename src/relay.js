@@ -64,6 +64,7 @@ export async function fetchRelayIce(settings, fetcher = fetch) {
 }
 
 export async function optionalRelayIce({ settings, encoded = '', fetcher } = {}) {
+  if (globalThis.window?.roomcast?.physicalDirect) return { iceServers: [], unavailable: false };
   try {
     // A relay embedded in a Roomcast invite is the room owner's explicit TURN
     // policy for this room. The joining client must be able to use those

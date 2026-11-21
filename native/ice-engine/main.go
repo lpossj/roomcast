@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"regexp"
 	"sort"
@@ -32,6 +31,7 @@ type command struct {
 	Bitrate    int                     `json:"bitrate"`
 	Control    bool                    `json:"control"`
 	LocalOffer string                  `json:"localOffer"`
+	MotionVP8  bool                    `json:"motionVP8"`
 	Cmd        string                  `json:"cmd"`
 	ID         string                  `json:"id"`
 	Offer      string                  `json:"offer"`
@@ -115,8 +115,17 @@ func mediaCodecs(c command) (*webrtc.MediaEngine, webrtc.RTPCodecCapability, web
 	audioCodec := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2,
 		SDPFmtpLine: "minptime=10;useinbandfec=1"}
 	if c.Video {
-		if err := media.RegisterCodec(webrtc.RTPCodecParameters{RTPCodecCapability: videoCodec, PayloadType: 102}, webrtc.RTPCodecTypeVideo); err != nil {
-			return nil, videoCodec, audioCodec, err
+		h264 := videoCodec
+		if c.MotionVP8 && c.LocalOffer != "" {
+			videoCodec = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000, RTCPFeedback: h264.RTCPFeedback}
+			if err := media.RegisterCodec(webrtc.RTPCodecParameters{RTPCodecCapability: videoCodec, PayloadType: 96}, webrtc.RTPCodecTypeVideo); err != nil {
+				return nil, videoCodec, audioCodec, err
+			}
+		}
+		if c.Receive || videoCodec.MimeType == webrtc.MimeTypeH264 {
+			if err := media.RegisterCodec(webrtc.RTPCodecParameters{RTPCodecCapability: h264, PayloadType: 102}, webrtc.RTPCodecTypeVideo); err != nil {
+				return nil, videoCodec, audioCodec, err
+			}
 		}
 	}
 	if c.Audio {
@@ -146,6 +155,11 @@ func newPeer(c command) (*peer, error) {
 	settings := webrtc.SettingEngine{}
 	settings.SetNet(mux.network)
 	settings.SetInterfaceFilter(func(name string) bool { return !campusAdapter.MatchString(name) })
+	if mux.listenPhysicalTCP != nil {
+		// Pion creates active ICE-TCP sockets with its own unpinned dialer.
+		// The browser can dial our physical listeners; never dial via the OS default route.
+		settings.DisableActiveTCP(true)
+	}
 	settings.SetICEUDPMux(mux)
 	types := []webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6}
 	mux.enableTCP()
@@ -240,7 +254,9 @@ func newPeer(c command) (*peer, error) {
 			p.close()
 			return nil, err
 		}
-		p.videoPackets = rtp.NewPacketizer(1200, 102, random32(), &codecs.H264Payloader{}, rtp.NewRandomSequencer(), 90000)
+		if c.LocalOffer == "" {
+			p.videoPackets = rtp.NewPacketizer(1200, 102, random32(), &codecs.H264Payloader{}, rtp.NewRandomSequencer(), 90000)
+		}
 	}
 	if c.Audio {
 		p.audio, err = add(webrtc.RTPCodecTypeAudio, audioCodec)
@@ -333,9 +349,11 @@ func (p *peer) writeMedia(c command) error {
 }
 
 type observation struct {
-	address string
-	port    int
-	source  int
+	address  string
+	port     int
+	source   int
+	basePort int
+	socketID int
 }
 
 func (p *peer) survey() {
@@ -364,47 +382,55 @@ func (p *peer) survey() {
 		if mid == "" || fragment == "" {
 			return
 		}
-		observations := []observation{}
+		observations := make(map[int][]observation)
 		for item := range p.mux.observations {
 			if p.closed.Load() || ctx.Err() != nil {
 				return
 			}
-			observations = append(observations, item)
+			observations[item.socketID] = append(observations[item.socketID], item)
 			p.observations.Add(1)
 			p.emitMapped(item, mid, fragment, fmt.Sprintf("rcns%d", item.source), "observed")
 		}
-		if len(observations) != 3 || ctx.Err() != nil {
-			return
-		}
-		sort.Slice(observations, func(i, j int) bool { return observations[i].port < observations[j].port })
-		low, high := observations[0], observations[2]
-		step := observations[1].port - low.port
-		if step <= 0 || high.port-observations[1].port != step || low.address != high.address || low.address != observations[1].address {
-			return
-		}
-		for _, direction := range []int{1, -1} {
-			anchor := high
-			sign := "p"
-			if direction < 0 {
-				anchor = low
-				sign = "m"
-			}
-			for offset := 1; offset <= 4; offset++ {
-				port := anchor.port + direction*step*offset
-				if port < 1 || port > 65535 || ctx.Err() != nil || p.closed.Load() {
-					continue
-				}
-				p.emitMapped(observation{address: anchor.address, port: port}, mid, fragment, fmt.Sprintf("rcnp%s%d", sign, offset), "predicted")
-				p.predicted.Add(1)
-			}
+		for _, samples := range observations {
+			p.predictMapped(ctx, mid, fragment, samples)
 		}
 	}()
 }
 
+func (p *peer) predictMapped(ctx context.Context, mid, fragment string, observations []observation) {
+	if len(observations) != 3 || ctx.Err() != nil {
+		return
+	}
+	sort.Slice(observations, func(i, j int) bool { return observations[i].port < observations[j].port })
+	low, high := observations[0], observations[2]
+	step := observations[1].port - low.port
+	if step <= 0 || high.port-observations[1].port != step || low.address != high.address || low.address != observations[1].address {
+		return
+	}
+	for _, direction := range []int{1, -1} {
+		anchor := high
+		sign := "p"
+		if direction < 0 {
+			anchor = low
+			sign = "m"
+		}
+		for offset := 1; offset <= 4; offset++ {
+			port := anchor.port + direction*step*offset
+			if port < 1 || port > 65535 || ctx.Err() != nil || p.closed.Load() {
+				continue
+			}
+			p.emitMapped(observation{address: anchor.address, port: port, basePort: anchor.basePort, socketID: anchor.socketID}, mid, fragment, fmt.Sprintf("rcnp%s%d", sign, offset), "predicted")
+			p.predicted.Add(1)
+		}
+	}
+}
+
 func (p *peer) emitMapped(value observation, mid, fragment, foundation, source string) {
+	if value.socketID > 1 {
+		foundation += fmt.Sprintf("b%d", value.socketID)
+	}
 	index := uint16(0)
-	base := p.mux.LocalAddr().(*net.UDPAddr)
-	candidate := webrtc.ICECandidateInit{Candidate: fmt.Sprintf("candidate:%s 1 udp 1694498815 %s %d typ srflx raddr 0.0.0.0 rport %d ufrag %s", foundation, value.address, value.port, base.Port, fragment), SDPMid: &mid, SDPMLineIndex: &index, UsernameFragment: &fragment}
+	candidate := webrtc.ICECandidateInit{Candidate: fmt.Sprintf("candidate:%s 1 udp 1694498815 %s %d typ srflx raddr 0.0.0.0 rport %d ufrag %s", foundation, value.address, value.port, value.basePort, fragment), SDPMid: &mid, SDPMLineIndex: &index, UsernameFragment: &fragment}
 	emit(map[string]any{"event": "candidate", "id": p.id, "candidate": candidate, "source": source})
 }
 

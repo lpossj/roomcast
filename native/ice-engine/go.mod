@@ -10,6 +10,7 @@ require (
 	github.com/pion/stun/v4 v4.0.1
 	github.com/pion/transport/v5 v5.1.4
 	github.com/pion/webrtc/v4 v4.2.26
+	golang.org/x/sys v0.41.0
 )
 
 require (
@@ -26,6 +27,5 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/net v0.50.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )

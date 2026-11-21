@@ -1,4 +1,5 @@
 import { ack } from './lib.js';
+import { NativeScreenConnection } from './transports/native-screen-connection.js';
 import { createRoomcastPeerConnection, DEFAULT_STUN_ICE } from './ice-policy.js';
 import { prepareCampusConnection } from './campus-session.js';
 import { CAMPUS_TOTAL_TIMEOUT_MS, MEDIA_DISCONNECT_GRACE_MS, P2P_CONNECT_TIMEOUT_MS } from './fallback-policy.js';
@@ -154,7 +155,7 @@ export class RoomVoice {
   }
   create(memberId, id, side, route = 'p2p') {
     const campus = route === 'campus';
-    const pc = createRoomcastPeerConnection({ iceServers: campus ? [] : this.iceServers,
+    const pc = !campus && window.roomcast?.physicalDirect ? new NativeScreenConnection(side === 'listener', undefined, true) : createRoomcastPeerConnection({ iceServers: campus ? [] : this.iceServers,
       ...(campus ? { iceTransportPolicy: 'relay' } : {}) });
     const entry = { memberId, id, side, route, pc, candidates: [], localCandidates: [], signaled: false, ready: false,
       connected: false, disconnectTimer: null };

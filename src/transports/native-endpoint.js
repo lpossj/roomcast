@@ -1,5 +1,6 @@
 import { recordNativeTransport } from '../lifecycle-diagnostics.js';
 import { DEFAULT_STUN_ICE } from '../ice-policy.js';
+import { offeredVideoCodecs } from '../video-codec-policy.js';
 
 export const nativeAvailable = () => typeof globalThis.window?.roomcast?.nativeIce === 'function';
 export function encodeBytes(buffer) {
@@ -61,6 +62,9 @@ export class NativeEndpoint extends EventTarget {
     if (this.closed) return Promise.reject(new Error('原生连接已关闭。'));
     return window.roomcast.nativeIce({ ...args, cmd, id: this.id });
   }
+  sendControl(bytes) {
+    return this.command('send', { data: encodeBytes(bytes) });
+  }
   wait(event) {
     if (this.closed) throw new Error('原生连接已关闭。');
     const current = this.waiting.get(event);
@@ -78,15 +82,18 @@ export class NativeEndpoint extends EventTarget {
     this.waiting.delete(event);
     pending.resolve(value);
   }
-  async negotiate({ offer, localOffer, receive, audio, control, bitrate }) {
+  async negotiate({ offer, localOffer, receive, audio, video = !!localOffer, control, bitrate }) {
     this.role = control ? (offer ? 'host' : 'guest') : (receive ? 'viewer' : 'publisher');
     const prepared = this.wait('prepared');
     await this.command('prepare', { iceServers: DEFAULT_STUN_ICE.map(s => ({ urls: [].concat(s.urls) })) });
     await prepared;
     const description = this.wait(offer ? 'answer' : 'offer');
     const local = localOffer ? this.wait('local-answer') : null;
+    const localCodecs = localOffer && video ? offeredVideoCodecs(localOffer) : [];
+    const motionVP8 = receive ? localCodecs[0] === 'vp8'
+      : localCodecs.includes('vp8') && offeredVideoCodecs(offer)[0] === 'vp8';
     await this.command('create', {
-      bitrate, control: !!control, video: !!localOffer, audio: !!audio, receive: !!receive,
+      bitrate, control: !!control, video, audio: !!audio, receive: !!receive, motionVP8,
       offer: offer ? encodeSDP(offer) : '', localOffer: localOffer ? encodeSDP(localOffer) : '',
       profileLevelId: localOffer ? '42e01f' : '',
     });

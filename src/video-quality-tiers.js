@@ -1,6 +1,7 @@
 const STANDARD_VIDEO_RESOLUTIONS = Object.freeze([
   { width: 1920, height: 1080 },
   { width: 1280, height: 720 },
+  { width: 960, height: 540 },
   { width: 854, height: 480 },
   { width: 640, height: 360 },
 ]);
