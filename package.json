@@ -1,6 +1,6 @@
 {
   "name": "roomcast",
-  "version": "0.14.5-beta.6",
+  "version": "0.14.5-beta.7",
   "description": "同屏Roomcast屏幕共享工具",
   "author": "D4Y0 / Roomcast",
   "license": "Apache-2.0",
@@ -26,8 +26,8 @@
     "dist": "npm run dist:nsis",
     "dist:zip": "npm run build && electron-builder --win zip --publish never",
     "dist:nsis": "npm run build && electron-builder --win nsis --publish never --config.directories.output=release/installer",
-    "release:build": "npm run build && electron-builder --win portable zip --publish never",
-    "release:physical": "npm run build && electron-builder --win portable zip --publish never --config.extraMetadata.roomcastNetworkMode=physical-direct --config.directories.output=release/physical-direct",
+    "release:build": "npm run build && electron-builder --win portable zip --publish never --config.extraMetadata.roomcastNetworkMode=physical-direct",
+    "release:physical": "npm run release:build -- --config.directories.output=release/physical-direct",
     "prepare:obs": "node scripts/prepare-embedded-obs.mjs",
     "prepare:native-ice": "node scripts/prepare-native-ice.mjs",
     "prepare:campus": "node scripts/prepare-easytier.mjs",
