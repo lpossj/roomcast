@@ -1315,6 +1315,8 @@ a:hover {
 
 .screen-stage.has-stream.multi-stage {
   overflow: auto;
+  /* Reserve the width used by the scrollbar before measuring the previews. */
+  scrollbar-gutter: stable;
 }
 
 /* ============================================================================

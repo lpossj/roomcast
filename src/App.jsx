@@ -417,7 +417,7 @@ export default function App() {
   useEffect(() => {
     const grid = screenGridRef.current;
     if (!grid) { setScreenGridWidth(0); return undefined; }
-    const measure = () => setScreenGridWidth(Math.round(grid.getBoundingClientRect().width));
+    const measure = () => setScreenGridWidth(grid.getBoundingClientRect().width);
     measure();
     if (typeof ResizeObserver !== 'function') {
       window.addEventListener('resize', measure);

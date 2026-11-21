@@ -106,7 +106,8 @@ export const previewCardWidthFor = (count, width, scale) => {
   const columns = Math.max(1, Math.min(count, previewColumnsFor(count, innerWidth)));
   const baseWidth = Math.max(1, (innerWidth - (gap * (columns - 1))) / columns);
   const minimum = Math.min(260, innerWidth);
-  return Math.round(Math.min(innerWidth, Math.max(minimum, baseWidth * clampPreviewScale(scale))));
+  // Rounding up can make a full row of cards wider than the grid.
+  return Math.floor(Math.min(innerWidth, Math.max(minimum, baseWidth * clampPreviewScale(scale))));
 };
 
 export async function shrinkForSharing(file) {
